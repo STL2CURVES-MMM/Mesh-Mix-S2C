@@ -323,3 +323,16 @@ def test_pid_alive():
 
     assert system.pid_alive(os.getpid())
     assert not system.pid_alive(999999999 if sys.platform != "win32" else 0x7FFFFFF0)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_windows_show_in_explorer(tmp_path):
+    """Explorer opens with the files selected (the shell call doesn't fail)."""
+    from mmm_app import system
+
+    a = tmp_path / "a.step"
+    b = tmp_path / "Peça b.step"
+    a.write_text("x")
+    b.write_text("x")
+    assert system._windows_reveal([str(a), str(b)])
+    assert system.reveal([str(a)])
