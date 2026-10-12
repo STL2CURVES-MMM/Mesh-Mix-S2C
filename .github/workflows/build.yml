@@ -204,9 +204,11 @@ jobs:
           fi
       - uses: actions/download-artifact@v4
         with:
-          pattern: "*-{appimage,installer,zip}"
-          path: release
-          merge-multiple: true
+          path: artifacts
+      - name: Collect the downloads
+        run: |
+          mkdir release
+          cp artifacts/linux-appimage/*.AppImage artifacts/windows-installer/*.exe artifacts/macos-zip/*.zip release/
       - name: Checksums
         working-directory: release
         run: |
@@ -217,7 +219,10 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "${GITHUB_REF_NAME}" release/*
-          --title "Manifold Mesh Mix ${GITHUB_REF_NAME#v}"
-          --generate-notes
+        run: |
+          # hand-written notes for this version if there are any (they also
+          # show in the apps' update window), else a list of the changes
+          notes=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --title "Manifold Mesh Mix ${GITHUB_REF_NAME#v}" "${how[@]}"

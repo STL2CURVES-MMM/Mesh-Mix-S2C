@@ -164,3 +164,18 @@ def test_install_target_without_installer(monkeypatch):
     monkeypatch.delenv("APPIMAGE", raising=False)
     ok, why = updater.install_target()
     assert not ok and why
+
+
+def test_update_addresses_are_restricted(monkeypatch):
+    """The test override only works for a server on this computer, and
+    downloads must use HTTPS (plain HTTP only from such a test server)."""
+    monkeypatch.setenv("MMM_UPDATE_URL", "http://example.com/latest")
+    assert updater._api_url() == updater.API_LATEST
+    monkeypatch.setenv("MMM_UPDATE_URL", "http://127.0.0.1:8000/latest")
+    assert updater._api_url() == "http://127.0.0.1:8000/latest"
+    assert updater._allowed("https://github.com/x/y.exe")
+    assert updater._allowed("http://localhost:9/a")
+    assert not updater._allowed("http://github.com/x/y.exe")
+    assert not updater._allowed("ftp://127.0.0.1/a")
+    with pytest.raises(updater.UpdateError):
+        updater._open("http://github.com/x/y.exe")

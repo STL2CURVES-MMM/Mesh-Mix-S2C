@@ -19,6 +19,7 @@ import ssl
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import REPO, REPO_URL, __version__, system
@@ -70,8 +71,20 @@ class UpdateInfo:
         self.page_url = page_url
 
 
+def _is_local(url):
+    return (urllib.parse.urlsplit(url).hostname or "") in ("127.0.0.1", "localhost", "::1")
+
+
+def _allowed(url):
+    """Updates only come over HTTPS (plain HTTP only from a test server on
+    this computer)."""
+    return url.startswith("https://") or (url.startswith("http://") and _is_local(url))
+
+
 def _api_url():
-    return os.environ.get("MMM_UPDATE_URL") or API_LATEST
+    # MMM_UPDATE_URL is for tests against a server on this computer only
+    url = os.environ.get("MMM_UPDATE_URL")
+    return url if url and _is_local(url) else API_LATEST
 
 
 def _ssl_context():
@@ -86,6 +99,8 @@ def _ssl_context():
 
 
 def _open(url, timeout=30):
+    if not _allowed(url):
+        raise UpdateError("The update's download address isn't secure, so it wasn't used.")
     req = urllib.request.Request(url, headers={
         "User-Agent": f"ManifoldMeshMix/{__version__} ({system.OS_NAME})",
         "Accept": "application/vnd.github+json" if "api.github.com" in url else "*/*",

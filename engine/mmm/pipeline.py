@@ -150,7 +150,7 @@ def _smooth_ok(shape, body, tol):
     return stepio.is_valid(shape) or stepio.is_valid(fix_shape(shape, tol))
 
 
-RECONVERTED = "part converted again with the other method"
+RECONVERTED = "part converted again with another method"
 
 
 def _broken(check):
@@ -181,19 +181,18 @@ def _check_shape(shape, body, report):
 
 def _fix_broken_parts(items, item_bodies, item_presets, bodies, path, check, write, verify, convert_alt, tol, report, stage):
     """Last resort, when the saved file still has problems after repairing:
-    convert the broken parts again with the other method (smooth surfaces
-    instead of CAD faces, or the other way round) and keep a part's new
-    version only if it checks out clean on its own.
+    convert the broken parts again with another method (see convert_alt)
+    and keep a part's new version only if it checks out clean on its own.
     Returns (items, presets, check, steps taken)."""
     if not _broken(check) or len(items) != len(item_bodies):
         return items, item_presets, check, []
-    report.log("The STEP file still has problems, so the parts with errors are converted again with the other method.")
+    report.log("The STEP file still has problems, so the parts with errors are converted again with another method.")
     new_items, new_presets, changed = list(items), list(item_presets), False
     for k, ((shape, name), bi, pr) in enumerate(zip(items, item_bodies, item_presets)):
         body = bodies[bi]
         if len(items) > 1 and not _broken(_check_shape(shape, body, report)):
             continue
-        alt, alt_preset = convert_alt(bi, pr)
+        alt, alt_preset, how = convert_alt(bi, pr)
         if alt is None:
             continue
         if _broken(_check_shape(alt, body, report)):
@@ -202,9 +201,7 @@ def _fix_broken_parts(items, item_bodies, item_presets, bodies, path, check, wri
         new_items[k] = (alt, name)
         new_presets[k] = alt_preset
         changed = True
-        first, other = ("smooth surfaces", "CAD faces") if alt_preset == "smooth" else ("CAD faces", "smooth surfaces")
-        report.warn(f"One part was saved with {first} instead of {other}, because its first version had errors "
-                    "that couldn't be repaired.")
+        report.warn(f"One part was saved with {how}, because its first version had errors that couldn't be repaired.")
     if not changed:
         return items, item_presets, check, []
     new_items, check, done = _save_checked(new_items, path, write, verify, tol, report, stage)
@@ -310,6 +307,11 @@ def convert(input_path, output_path, opts=None, report=NULL):
     body_names = info.body_names or [None] * len(bodies)
     n_bodies = len(bodies)
 
+    def looks_mechanical(body):
+        """CAD faces only make sense as a fallback for mechanical parts (on
+        organic shapes they're slow and no better)."""
+        return choose_preset_body(body, body_tol(body, "cad"), q, NULL)[0] == "cad"
+
     def convert_one(bi, body, lo, hi, label):
         """Convert one body; returns (shape or None, preset used)."""
         preset = req
@@ -364,7 +366,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
 
             report.stage("Fitting smooth surfaces" + label, lo, hi)
             shape = convert_body_smooth(B, body, btol, body_opts, report)
-            if shape is not None and opts.validate and not _smooth_ok(shape, body, btol):
+            if shape is not None and opts.validate and not _smooth_ok(shape, body, btol) and looks_mechanical(body):
                 # Only when the smooth surfaces came out broken (mechanical
                 # parts with thin walls and sharp holes can do that): CAD
                 # faces for this part instead, if they are valid *and*
@@ -387,23 +389,37 @@ def convert(input_path, output_path, opts=None, report=NULL):
         return shape, preset
 
     def convert_alt(bi, preset):
-        """One body with the other method: smooth surfaces instead of CAD
-        faces, or CAD faces instead of smooth surfaces."""
+        """One body with another method: smooth surfaces instead of CAD
+        faces; CAD faces instead of smooth surfaces for mechanical parts;
+        denser smooth surfaces for organic ones (thin walls and lattices
+        need them). Returns (shape or None, preset, how it was made)."""
+        from .cad import convert_body_cad
+        from .smooth import convert_body_smooth
+
         body = bodies[bi]
-        alt = "smooth" if preset in ("cad", "precise") else "cad"
-        report.log(f"Converting {body_names[bi] or 'the part'} again with "
-                   + ("smooth surfaces" if alt == "smooth" else "CAD faces"))
+        name = body_names[bi] or "the part"
         try:
-            if alt == "smooth":
-                from .smooth import convert_body_smooth
-
-                return convert_body_smooth(B, body, body_tol(body, alt), opts, report), alt
-            from .cad import convert_body_cad
-
-            return convert_body_cad(B, body, body_tol(body, alt), opts, report), alt
+            if preset in ("cad", "precise"):
+                report.log(f"Converting {name} again with smooth surfaces")
+                return (convert_body_smooth(B, body, body_tol(body, "smooth"), opts, report), "smooth",
+                        "smooth surfaces instead of CAD faces")
+            if looks_mechanical(body):
+                report.log(f"Converting {name} again with CAD faces")
+                return (convert_body_cad(B, body, body_tol(body, "cad"), opts, report), "cad",
+                        "CAD faces instead of smooth surfaces")
+            used = min(1.0, q + 0.2) if req == "precise" else q
+            denser = min(1.0, used + 0.2)
+            if denser <= used:
+                report.log("This part is organic and already has the densest smooth surfaces.")
+                return None, preset, ""
+            report.log("This part is organic, so it is fitted again with denser smooth surfaces")
+            dense_opts = Options(**{**opts.__dict__, "quality": denser})
+            dense_opts.max_faces = opts.max_faces
+            return (convert_body_smooth(B, body, body_tol(body, "precise"), dense_opts, report), "smooth",
+                    "denser smooth surfaces")
         except Exception as e:
             report.log(f"That didn't work either ({e})")
-            return None, alt
+            return None, preset, ""
 
     if opts.split and info.parts > 1 and len(info.body_part) == n_bodies:
         return _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt)

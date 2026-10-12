@@ -28,7 +28,7 @@ struct UpdateView: View {
             if let r = updater.release, !r.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                [.available, .downloading, .ready, .failed].contains(state) {
                 ScrollView {
-                    Text(r.notes)
+                    Text(Self.formatted(r.notes))
                         .font(.system(size: 11.5))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -126,5 +126,20 @@ struct UpdateView: View {
             updater.showWindow = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSApp.terminate(nil) }
         }
+    }
+}
+
+extension UpdateView {
+    /// Release notes are Markdown (they're written for the GitHub release
+    /// page): show bold, italics, code and links, with headings as plain
+    /// lines and the line breaks kept.
+    static func formatted(_ notes: String) -> AttributedString {
+        let lines = notes.components(separatedBy: "\n").map { line -> String in
+            guard line.hasPrefix("#") else { return line }
+            return String(line.drop(while: { $0 == "#" }).drop(while: { $0 == " " }))
+        }
+        let text = lines.joined(separator: "\n")
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
     }
 }

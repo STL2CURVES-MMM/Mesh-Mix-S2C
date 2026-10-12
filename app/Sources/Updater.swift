@@ -73,9 +73,15 @@ final class Updater: ObservableObject {
     // MARK: checking
 
     private var apiURL: URL {
-        if let s = ProcessInfo.processInfo.environment["MMM_UPDATE_URL"], let u = URL(string: s) { return u }
+        // MMM_UPDATE_URL is for tests against a server on this computer only
+        if let s = ProcessInfo.processInfo.environment["MMM_UPDATE_URL"], let u = URL(string: s), Self.isLocal(u) { return u }
         return URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!
     }
+
+    static func isLocal(_ u: URL) -> Bool { ["127.0.0.1", "localhost", "::1"].contains(u.host ?? "") }
+
+    /// Updates only come over HTTPS (plain HTTP only from a test server on this computer).
+    static func allowed(_ u: URL) -> Bool { u.scheme == "https" || (u.scheme == "http" && isLocal(u)) }
 
     /// Looks for a newer release; `completion` runs on the main thread when done.
     func check(completion: (() -> Void)? = nil) {
@@ -128,6 +134,9 @@ final class Updater: ObservableObject {
         }
         guard let s = sums, let surl = (s["browser_download_url"] as? String).flatMap({ URL(string: $0) }) else {
             throw UpdateError("Version \(version) is out, but its checksum file is missing, so it can't be installed safely.")
+        }
+        guard allowed(aurl), allowed(surl) else {
+            throw UpdateError("The update's download address isn't secure, so it wasn't used.")
         }
         return Release(version: version, notes: obj["body"] as? String ?? "", assetName: name, assetURL: aurl,
                        size: a["size"] as? Int ?? 0, sumsURL: surl,
