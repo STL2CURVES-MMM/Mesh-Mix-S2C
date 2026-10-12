@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Manifold Mesh Mix
+GenericName=Mesh to STEP Converter
+Comment=Convert 3D-printing meshes (STL, 3MF, OBJ, PLY) into editable STEP files
+Exec=ManifoldMeshMix %F
+Icon=manifold-mesh-mix
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;
+MimeType=model/stl;model/x.stl-ascii;model/x.stl-binary;application/sla;model/3mf;application/vnd.ms-3mfdocument;model/obj;application/x-tgif;application/x-ply;model/x-ply;
+Keywords=STL;STEP;3MF;CAD;mesh;convert;
+StartupWMClass=manifold-mesh-mix
+X-AppImage-Version=@VERSION@

@@ -26,15 +26,51 @@ enum SelfTest {
     private static var frame = NSRect(x: 80, y: 80, width: 1360, height: 860)
     private static var step = 0
 
-    static func run(model: AppModel, settings: Settings) {
+    static func run(model: AppModel, settings: Settings, updater: Updater) {
         guard let dir = outputDir else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         Task { @MainActor in
             await walkthrough(model: model, settings: settings, dir: dir)
-            let data = try? JSONSerialization.data(withJSONObject: log, options: [.prettyPrinted])
-            try? data?.write(to: dir.appendingPathComponent("report.json"))
+            // With MMM_UPDATE_URL: check for updates against it and show the window
+            if ProcessInfo.processInfo.environment["MMM_UPDATE_URL"] != nil {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    updater.check { c.resume() }
+                }
+                updater.showWindow = true
+                await sleep(1.0)
+                shot("update-dialog", dir)
+                var info: [String: Any] = ["state": updater.stateName, "error": updater.error]
+                if let r = updater.release {
+                    info["version"] = r.version
+                    info["asset"] = r.assetName
+                }
+                info["can_install"] = [updater.installProblem == nil, updater.installProblem ?? ""] as [Any]
+                note("update-check", info)
+                updater.showWindow = false
+                await sleep(0.5)
+                // MMM_SELFTEST_INSTALL_UPDATE: download, check and install for real.
+                // The app quits and the new version opens by itself, so the
+                // report is written first.
+                if ProcessInfo.processInfo.environment["MMM_SELFTEST_INSTALL_UPDATE"] != nil && updater.state == .available {
+                    note("update-install-started", ["version": updater.release?.version ?? ""])
+                    writeReport(dir)
+                    updater.download()
+                    _ = await wait(timeout: 600) { updater.state == .ready || updater.state == .failed }
+                    if updater.state == .ready && updater.install() {
+                        NSApp.terminate(nil)
+                        return
+                    }
+                    note("update-install-failed", ["state": updater.stateName, "error": updater.error])
+                }
+            }
+            writeReport(dir)
             NSApp.terminate(nil)
         }
+    }
+
+    private static func writeReport(_ dir: URL) {
+        let data = try? JSONSerialization.data(withJSONObject: log, options: [.prettyPrinted])
+        try? data?.write(to: dir.appendingPathComponent("report.json"))
     }
 
     private static func note(_ event: String, _ extra: [String: Any] = [:]) {

@@ -1,5 +1,6 @@
 # PyInstaller spec for the Manifold Mesh Mix conversion engine (onedir).
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -54,6 +55,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=True,
-    target_arch="arm64",
+    # Apple silicon on macOS; Windows and Linux build for the machine's own architecture
+    target_arch="arm64" if sys.platform == "darwin" else None,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="mmm-engine")

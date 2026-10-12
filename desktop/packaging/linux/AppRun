@@ -1,0 +1,4 @@
+#!/bin/sh
+# Starts Manifold Mesh Mix from inside the AppImage.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/manifold-mesh-mix/ManifoldMeshMix" "$@"

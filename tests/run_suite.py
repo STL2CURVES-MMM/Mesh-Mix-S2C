@@ -1,6 +1,6 @@
 """Run every test model through the engine and summarise the results.
 
-    python run_suite.py [--presets exact,cad,smooth] [--only substr] [--render]
+    python run_suite.py [--presets exact,cad,smooth] [--only substr] [--render] [--engine path/to/mmm-engine] [--strict]
 
 Each conversion runs in its own subprocess (with a timeout) through the real
 CLI in JSON mode, exactly like the app does. The STEP output is then read
@@ -15,20 +15,22 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-PY = os.path.join(ROOT, ".venv", "bin", "python")
+PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe") if os.name == "nt" else os.path.join(ROOT, ".venv", "bin", "python")
+if not os.path.exists(PY):
+    PY = sys.executable
 ENGINE = os.path.join(ROOT, "engine", "mmm_engine.py")
 MODELS = os.path.join(HERE, "models")
 OUT = os.path.join(HERE, "out")
 
 
-def run_one(model, preset, timeout, extra=()):
+def run_one(model, preset, timeout, extra=(), engine=None):
     name = os.path.splitext(os.path.basename(model))[0]
     out = os.path.join(OUT, f"{name}.{preset}.step")
     prev = os.path.join(OUT, f"{name}.{preset}.mmmp")
     for p in (out, prev):
         if os.path.exists(p):
             os.remove(p)
-    cmd = [PY, ENGINE, "convert", model, "-o", out, "--preset", preset, "--json", "--preview", prev, *extra]
+    cmd = [*(engine or [PY, ENGINE]), "convert", model, "-o", out, "--preset", preset, "--json", "--preview", prev, *extra]
     t0 = time.time()
     try:
         cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -91,6 +93,8 @@ def main():
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--reread", action="store_true")
     ap.add_argument("--json-out", default=os.path.join(OUT, "suite.json"))
+    ap.add_argument("--engine", default=None, help="run a built engine program instead of the Python sources")
+    ap.add_argument("--strict", action="store_true", help="exit with an error when a model isn't converted to a valid solid")
     args = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
     models = sorted(os.path.join(MODELS, f) for f in os.listdir(MODELS) if f.lower().endswith(".stl"))
@@ -103,7 +107,7 @@ def main():
     rows = []
     for preset in args.presets.split(","):
         for m in models:
-            row = run_one(m, preset, args.timeout)
+            row = run_one(m, preset, args.timeout, engine=[args.engine] if args.engine else None)
             if args.reread and row.get("status") in ("OK", "INVALID"):
                 row.update(verify_step(row["output"]))
             if args.render and row.get("preview") and os.path.exists(row["preview"]):
@@ -123,6 +127,11 @@ def main():
             )
     with open(args.json_out, "w") as fh:
         json.dump(rows, fh, indent=1)
+    if args.strict:
+        bad = [r for r in rows if r["status"] != "OK" or (r.get("reread_valid") is False)]
+        if bad or not rows:
+            print(f"{len(bad)} of {len(rows)} conversions failed" if rows else "no models were converted")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

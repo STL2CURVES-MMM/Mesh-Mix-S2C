@@ -9,6 +9,10 @@ dist/
 dist-dev/
 app/build/
 engine/build/
+desktop/build/
+dist-desktop/
+desktop/tests/fixtures/
+.pytest_cache/
 
 # Test models and results (recreate with tests/make_models.py and tests/run_suite.py)
 tests/models/

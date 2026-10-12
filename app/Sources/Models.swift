@@ -137,6 +137,8 @@ final class Settings: ObservableObject {
     @Published var splitParts: Bool { didSet { d.set(splitParts, forKey: "splitParts") } }
     /// STEP view: give every CAD face its own color (off = one color, like a CAD program)
     @Published var colorFaces: Bool { didSet { d.set(colorFaces, forKey: "colorFaces") } }
+    /// Look for a newer version once when the app opens (installing always needs a click)
+    @Published var checkUpdates: Bool { didSet { d.set(checkUpdates, forKey: "checkUpdates") } }
 
     init() {
         preset = Preset(rawValue: d.string(forKey: "preset") ?? "") ?? .auto
@@ -158,6 +160,7 @@ final class Settings: ObservableObject {
         revealWhenDone = d.object(forKey: "revealWhenDone") as? Bool ?? false
         splitParts = d.object(forKey: "splitParts") as? Bool ?? true
         colorFaces = d.object(forKey: "colorFaces") as? Bool ?? false
+        checkUpdates = d.object(forKey: "checkUpdates") as? Bool ?? true
     }
 }
 

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: Settings
+    @EnvironmentObject var updater: Updater
     @LocalState private var dropTargeted = false
 
     var accent: Color { settings.accent.color }
@@ -37,6 +38,12 @@ struct ContentView: View {
         }
         .sheet(item: $model.exportRequest) { req in
             ExportSheet(request: req)
+                .environmentObject(model)
+                .environmentObject(settings)
+        }
+        .sheet(isPresented: $updater.showWindow) {
+            UpdateView()
+                .environmentObject(updater)
                 .environmentObject(model)
                 .environmentObject(settings)
         }
@@ -87,6 +94,7 @@ struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             BrandHeader()
+            UpdateBanner()
             DropZone(targeted: dropTargeted)
             HStack {
                 SectionLabel(text: "Queue")
@@ -144,6 +152,7 @@ struct Sidebar: View {
 
 struct BrandHeader: View {
     @EnvironmentObject var settings: Settings
+    @EnvironmentObject var updater: Updater
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
@@ -164,8 +173,53 @@ struct BrandHeader: View {
                     .foregroundStyle(Theme.textDim)
             }
             Spacer()
+            Button { updater.checkFromMenu() } label: {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Color.white.opacity(0.07)))
+                    .overlay(alignment: .topTrailing) {
+                        if updater.availableVersion != nil {
+                            Circle().fill(settings.accent.color).frame(width: 8, height: 8)
+                                .overlay(Circle().stroke(Theme.panel, lineWidth: 2))
+                                .offset(x: 2, y: -2)
+                        }
+                    }
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(updater.availableVersion != nil ? settings.accent.color : Theme.textDim)
+            .help(updater.availableVersion.map { "Version \($0) is available — click to install" } ?? "Check for updates")
+            .accessibilityLabel("Check for updates")
         }
         .padding(.bottom, 2)
+    }
+}
+
+/// "Version X is available" note under the brand (after the quiet check at launch).
+struct UpdateBanner: View {
+    @EnvironmentObject var settings: Settings
+    @EnvironmentObject var updater: Updater
+
+    var body: some View {
+        if let v = updater.availableVersion {
+            Button { updater.checkFromMenu() } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 18, weight: .light))
+                        .foregroundStyle(settings.accent.color)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Version \(v) is available").font(.system(size: 12, weight: .semibold))
+                        Text("Click to install. The app restarts by itself.")
+                            .font(.system(size: 10.5)).foregroundStyle(Theme.textDim)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .card(highlighted: true, accent: settings.accent.color, padding: 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 

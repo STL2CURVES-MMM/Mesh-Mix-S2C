@@ -1,0 +1,223 @@
+# Builds and tests Manifold Mesh Mix on Linux, Windows and macOS.
+#
+# Every push: build all three, run the unit tests, the engine test suite on
+# the built engine, the app's scripted self-test (real conversions and
+# exports, with screenshots) and the self-update tests.
+# A tag like v1.2.3 also publishes a GitHub Release with the three
+# downloads and SHA256SUMS.txt; the apps' updaters look for those.
+name: Build and test
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # the engine suite: a few CAD and organic models, both presets
+  SUITE_MODELS: cad_bracket,cad_cylinder,organic_metaballs,messy_open_box
+
+jobs:
+  linux:
+    name: Linux (AppImage)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            desktop/requirements.txt
+      - name: System libraries for Qt and the display
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xkb1 libfontconfig1 libdbus-1-3 fonts-dejavu-core desktop-file-utils
+      - name: Python environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt -r desktop/requirements.txt
+      - name: Lint
+        run: .venv/bin/python -m pyflakes desktop
+      - name: Unit tests
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" .venv/bin/python -m pytest -q desktop/tests
+      - name: Test models
+        run: |
+          .venv/bin/python tests/make_models.py
+          .venv/bin/python desktop/tests/make_fixtures.py fixtures
+          cp tests/models/cad_bracket_fillets.stl tests/models/organic_metaballs.stl fixtures/
+      - name: Build (engine, app, AppImage)
+        run: .venv/bin/python desktop/build.py
+      - name: Engine test suite (built engine)
+        run: >
+          .venv/bin/python tests/run_suite.py --presets cad,smooth --only "$SUITE_MODELS"
+          --engine dist-desktop/ManifoldMeshMix/engine/mmm-engine --reread --strict
+      - name: App self-test (AppImage)
+        run: >
+          xvfb-run -a -s "-screen 0 1600x1000x24"
+          .venv/bin/python desktop/tests/run_selftest.py dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage selftest-linux
+          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl
+          --big tests/models/huge_scan_blob.stl
+      - name: Self-update test (AppImage)
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" .venv/bin/python desktop/tests/appimage_update_test.py dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-selftest-screenshots
+          path: selftest-linux
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows (installer)
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            desktop/requirements.txt
+      - name: Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+      - name: Python environment
+        run: |
+          python -m venv .venv
+          .venv/Scripts/python.exe -m pip install -r requirements.txt -r desktop/requirements.txt
+      - name: Lint
+        run: .venv/Scripts/python.exe -m pyflakes desktop
+      - name: Unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv/Scripts/python.exe -m pytest -q desktop/tests
+      - name: Test models
+        run: |
+          .venv/Scripts/python.exe tests/make_models.py
+          .venv/Scripts/python.exe desktop/tests/make_fixtures.py fixtures
+          cp tests/models/cad_bracket_fillets.stl tests/models/organic_metaballs.stl fixtures/
+      - name: Build (engine, app, installer)
+        run: .venv/Scripts/python.exe desktop/build.py
+      - name: Engine test suite (built engine)
+        run: >
+          .venv/Scripts/python.exe tests/run_suite.py --presets cad,smooth --only "$SUITE_MODELS"
+          --engine dist-desktop/ManifoldMeshMix/engine/mmm-engine.exe --reread --strict
+      - name: App self-test (built app, temporary folder with accents)
+        run: >
+          .venv/Scripts/python.exe desktop/tests/run_selftest.py dist-desktop/ManifoldMeshMix/ManifoldMeshMix.exe selftest-windows
+          --unicode-temp
+          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl
+          --big tests/models/huge_scan_blob.stl
+      - name: Install, self-update and uninstall test
+        run: .venv/Scripts/python.exe desktop/tests/windows_update_test.py dist-desktop/ManifoldMeshMix-*-Windows-x64-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist-desktop/ManifoldMeshMix-*-Windows-x64-Setup.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-selftest-screenshots
+          path: selftest-windows
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS (app)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Python environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+      - name: Test models
+        run: |
+          .venv/bin/python tests/make_models.py
+          .venv/bin/python desktop/tests/make_fixtures.py fixtures
+          cp tests/models/cad_bracket_fillets.stl tests/models/organic_metaballs.stl fixtures/
+      - name: Build (app + engine + zip)
+        run: ./build.sh --zip
+      - name: App self-test
+        run: >
+          python3 desktop/tests/run_selftest.py "dist/Manifold Mesh Mix.app/Contents/MacOS/ManifoldMeshMix" selftest-macos
+          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl
+          --big tests/models/huge_scan_blob.stl
+      - name: Self-update test
+        run: python3 app/Tests/update_test.py "dist/Manifold Mesh Mix.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-zip
+          path: dist/ManifoldMeshMix-*-macOS-arm64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-selftest-screenshots
+          path: selftest-macos
+          if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches VERSION
+        run: |
+          v="$(tr -d '[:space:]' < VERSION)"
+          if [ "v$v" != "${GITHUB_REF_NAME}" ]; then
+            echo "The tag ${GITHUB_REF_NAME} doesn't match VERSION ($v)"; exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-{appimage,installer,zip}"
+          path: release
+          merge-multiple: true
+      - name: Checksums
+        working-directory: release
+        run: |
+          ls -la
+          test "$(ls | wc -l)" -eq 3
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${GITHUB_REF_NAME}" release/*
+          --title "Manifold Mesh Mix ${GITHUB_REF_NAME#v}"
+          --generate-notes

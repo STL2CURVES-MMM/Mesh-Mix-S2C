@@ -156,7 +156,8 @@ def main(argv=None):
         elif isinstance(e, FileNotFoundError):
             msg = "The file couldn't be found. Was it moved, renamed or deleted?"
         elif isinstance(e, PermissionError):
-            msg = "macOS didn't allow reading this file or saving the STEP file in that folder. Choose another output folder in Save STEP files to."
+            system = "macOS" if sys.platform == "darwin" else "Windows" if sys.platform == "win32" else "Linux"
+            msg = f"{system} didn't allow reading this file or saving the STEP file in that folder. Choose another output folder in Save STEP files to."
         elif isinstance(e, OSError) and e.errno == errno.ENOSPC:
             msg = "The disk is full, so the STEP file couldn't be saved. Free up some space and convert again."
         elif "STEP write failed" in str(e) or "STEP transfer failed" in str(e):

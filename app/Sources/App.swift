@@ -3,6 +3,7 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: AppModel?
+    var updater: Updater?
     var pendingURLs: [URL] = []
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -16,7 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if let model, !SelfTest.isActive {
+        let installing = updater?.state == .installing
+        if let model, !SelfTest.isActive, !installing {
             let n = model.unexportedJobs.count
             if n > 0 {
                 let a = NSAlert()
@@ -38,11 +40,13 @@ struct ManifoldMeshMixApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var settings: Settings
     @StateObject private var model: AppModel
+    @StateObject private var updater: Updater
 
     init() {
         let s = Settings()
         _settings = StateObject(wrappedValue: s)
         _model = StateObject(wrappedValue: AppModel(settings: s))
+        _updater = StateObject(wrappedValue: Updater())
     }
 
     var body: some Scene {
@@ -50,9 +54,11 @@ struct ManifoldMeshMixApp: App {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(settings)
+                .environmentObject(updater)
                 .frame(minWidth: 1080, minHeight: 640)
                 .onAppear {
                     delegate.model = model
+                    delegate.updater = updater
                     if !delegate.pendingURLs.isEmpty {
                         model.add(urls: delegate.pendingURLs)
                         delegate.pendingURLs.removeAll()
@@ -60,12 +66,24 @@ struct ManifoldMeshMixApp: App {
                     let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
                     let urls = args.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
                     if !urls.isEmpty { model.add(urls: urls) }
-                    if SelfTest.isActive { SelfTest.run(model: model, settings: settings) }
+                    if SelfTest.isActive {
+                        SelfTest.run(model: model, settings: settings, updater: updater)
+                    } else {
+                        Updater.reportPreviousFailure()
+                        if settings.checkUpdates {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                                if settings.checkUpdates { updater.check() }
+                            }
+                        }
+                    }
                 }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 780)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updater.checkFromMenu() }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Add Files…") { model.openPanel() }
                     .keyboardShortcut("o", modifiers: .command)
@@ -95,6 +113,7 @@ struct ManifoldMeshMixApp: App {
         SwiftUI.Settings {
             PreferencesView()
                 .environmentObject(settings)
+                .environmentObject(updater)
                 .frame(width: 420)
                 .preferredColorScheme(.dark)
         }
@@ -103,6 +122,7 @@ struct ManifoldMeshMixApp: App {
 
 struct PreferencesView: View {
     @EnvironmentObject var settings: Settings
+    @EnvironmentObject var updater: Updater
 
     var body: some View {
         Form {
@@ -128,6 +148,15 @@ struct PreferencesView: View {
                 Toggle("Replace existing files without asking", isOn: $settings.replaceExisting)
                 Toggle("Show in Finder after exporting", isOn: $settings.revealWhenDone)
                 Toggle("Split 3MF projects into parts", isOn: $settings.splitParts)
+            }
+            Section("Updates") {
+                Toggle("Check for updates when the app opens", isOn: $settings.checkUpdates)
+                    .help("Only looks: an update is installed when you click Install.")
+                HStack {
+                    Text("Version \(Updater.currentVersion)").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check for Updates…") { updater.checkFromMenu() }
+                }
             }
         }
         .formStyle(.grouped)

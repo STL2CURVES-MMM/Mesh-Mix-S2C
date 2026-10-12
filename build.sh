@@ -4,6 +4,7 @@
 #   ./build.sh            build app + bundled engine
 #   ./build.sh --app      rebuild only the Swift app (reuse the engine build)
 #   ./build.sh --install  also copy the app to /Applications
+#   ./build.sh --zip      also make the release download (dist/ManifoldMeshMix-<version>-macOS-arm64.zip)
 set -euo pipefail
 ROOT="${0:A:h}"
 cd "$ROOT"
@@ -13,12 +14,15 @@ APP="$DIST/$APP_NAME.app"
 PY="$ROOT/.venv/bin/python"
 ONLY_APP=0
 INSTALL=0
+ZIP=0
 for a in "$@"; do
   case "$a" in
     --app) ONLY_APP=1 ;;
     --install) INSTALL=1 ;;
+    --zip) ZIP=1 ;;
   esac
 done
+VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 
 mkdir -p "$DIST" app/build
 
@@ -37,8 +41,10 @@ echo "==> Assembling bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp app/Info.plist "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 cp app/build/ManifoldMeshMix "$APP/Contents/MacOS/ManifoldMeshMix"
 cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp app/Resources/install-update.sh "$APP/Contents/Resources/install-update.sh"
 cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
 [[ -f LICENSE ]] && cp LICENSE "$APP/Contents/Resources/"
 ditto "$ROOT/engine/build/dist/mmm-engine" "$APP/Contents/Resources/engine"
@@ -48,6 +54,14 @@ codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || codesign --force --de
 
 echo "==> Smoke test"
 "$APP/Contents/Resources/engine/mmm-engine" version
+
+if [[ $ZIP -eq 1 ]]; then
+  echo "==> Zipping the release download"
+  ZIPFILE="$DIST/ManifoldMeshMix-$VERSION-macOS-arm64.zip"
+  rm -f "$ZIPFILE"
+  ditto -c -k --keepParent "$APP" "$ZIPFILE"
+  echo "Built $ZIPFILE"
+fi
 
 if [[ $INSTALL -eq 1 ]]; then
   echo "==> Installing to /Applications"

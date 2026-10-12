@@ -1,15 +1,33 @@
 # Manifold Mesh Mix
 
-A Mac app that converts 3D-printing meshes (**STL, 3MF, OBJ, PLY**) into **editable STEP files** made of true CAD surfaces: planes, cylinders, cones, spheres, tori and smooth NURBS surfaces. It never writes triangle facets, and every STEP file is opened again and checked after it is saved.
+An app for **macOS, Windows and Linux** that converts 3D-printing meshes (**STL, 3MF, OBJ, PLY**) into **editable STEP files** made of true CAD surfaces: planes, cylinders, cones, spheres, tori and smooth NURBS surfaces. It never writes triangle facets, and every STEP file is opened again and checked after it is saved.
+
+## Download
+
+Get the newest version from the [Releases page](https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix/releases/latest):
+
+| System | File | Notes |
+|---|---|---|
+| **macOS** 14+ (Apple silicon) | `ManifoldMeshMix-<version>-macOS-arm64.zip` | Unzip and drag **Manifold Mesh Mix** into Applications. The app isn't notarized, so the first time, right-click it and choose **Open**. |
+| **Windows** 10/11 (64-bit) | `ManifoldMeshMix-<version>-Windows-x64-Setup.exe` | Installs just for your user account (no administrator password). Windows SmartScreen may warn about an unknown publisher the first time: click **More info → Run anyway**. |
+| **Linux** (x86-64; Ubuntu 22.04, Fedora 36, Debian 12 or newer) | `ManifoldMeshMix-<version>-Linux-x86_64.AppImage` | Make it executable (`chmod +x`, or Properties → Permissions) and double-click it. If it doesn't start, install `libfuse2` (Ubuntu: `sudo apt install libfuse2`). |
+
+### Updates
+
+Every version can update itself. Click the **⬇ button** next to the app name (or **Check for Updates…** in the menu or in Preferences/Settings). The app looks up the newest release on GitHub, downloads the file for your system, checks it against the release's checksums, installs it and opens again. A few seconds after opening, the app also checks once by itself and shows **Version X is available** under the app name; it never installs anything without a click (turn the check off in Preferences/Settings).
+
+- **Windows:** the installer runs silently and the app restarts.
+- **Linux:** the AppImage replaces itself (the folder it is in must be writable) and restarts.
+- **macOS:** the app replaces itself in its folder (normally Applications) and restarts. If macOS asks, allow Manifold Mesh Mix under **System Settings → Privacy & Security → App Management**.
 
 ## Using it
 
-1. Open **Manifold Mesh Mix** (in Applications).
-2. Drop files or whole folders onto the window, or click the drop area to browse. You can also right-click a file in Finder and choose **Open With → Manifold Mesh Mix**.
+1. Open **Manifold Mesh Mix** (Applications on the Mac, the Start menu on Windows, the AppImage on Linux).
+2. Drop files or whole folders onto the window, or click the drop area to browse. You can also right-click a file and choose **Open With → Manifold Mesh Mix** (Finder on the Mac, Explorer on Windows).
 3. Pick a **preset** (Auto is fine for almost everything) and set the **Speed ↔ Quality** slider.
-4. Press **Convert** (⌘↩). The STEP files stay inside the app until you export them; nothing is saved into your folders yet.
+4. Press **Convert** (⌘↩ on the Mac, Ctrl+Enter on Windows/Linux). The STEP files stay inside the app until you export them; nothing is saved into your folders yet.
 5. Click a file in the queue to compare the **Mesh** and **STEP** views. The STEP view shows the body the way a CAD program does; the palette button gives every face its own color, so you can see how the surfaces were split up.
-6. Press **Export…** (⌘E, or **Export All** ⇧⌘E). The export window shows the file names, where they go (by default a **STEP Files** folder next to each original) and whether existing files are replaced. If replace is off and a file with the same name is already there, the app asks whether to replace it or save under a new name.
+6. Press **Export…** (⌘E / Ctrl+E, or **Export All** ⇧⌘E / Ctrl+Shift+E). The export window shows the file names, where they go (by default a **STEP Files** folder next to each original) and whether existing files are replaced. If replace is off and a file with the same name is already there, the app asks whether to replace it or save under a new name.
 7. A green **File checked** badge means the saved STEP file was read back and is a valid solid that matches the mesh. Otherwise the app lists each problem it found in plain words (for example gaps in the surface, a part that isn't a closed solid, or a volume that doesn't match the mesh).
 
 ### Presets
@@ -35,6 +53,10 @@ Higher quality tightens the fitting tolerance and adds surface detail, but takes
 
 ## Building from source
 
+All three versions share the conversion engine in `engine/`. The version number lives in `VERSION`.
+
+### macOS
+
 Needs macOS 14 or newer on Apple silicon, the Xcode command line tools and Python 3.12.
 
 ```
@@ -42,10 +64,30 @@ python3.12 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ./build.sh            # builds dist/Manifold Mesh Mix.app (Swift app + bundled engine)
 ./build.sh --install  # also copies it to /Applications
+./build.sh --zip      # also makes the release download
 ```
 
+### Windows and Linux
+
+One Qt (PySide6) app in `desktop/` builds both. Needs Python 3.12; Windows also needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) for the installer.
+
+```
+python3.12 -m venv .venv                       # Windows: py -3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r desktop/requirements.txt
+.venv/bin/python desktop/build.py               # Windows: .venv\Scripts\python desktop\build.py
+```
+
+This builds `dist-desktop/ManifoldMeshMix/` (the app with its engine) and the installer (Windows) or AppImage (Linux). To run the app straight from the source code: `.venv/bin/python -m mmm_app` inside `desktop/`.
+
+### Releases
+
+Pushing a tag such as `v1.0.1` (matching `VERSION`) makes GitHub Actions build and test all three versions and publish a release with their downloads and `SHA256SUMS.txt`, which the apps' updaters use. Every push runs the same builds and tests (`.github/workflows/build.yml`).
+
+### Where things are
+
 - `engine/mmm/`: the Python conversion engine (OpenCASCADE via OCP). Run it directly with `.venv/bin/python engine/mmm_engine.py convert part.stl --preset auto`.
-- `app/Sources/`: the SwiftUI app.
+- `app/Sources/`: the SwiftUI Mac app. `app/Tests/update_test.py` tests its self-update.
+- `desktop/mmm_app/`: the Windows/Linux app; `desktop/packaging/`: its installer and AppImage files; `desktop/tests/`: unit tests, the scripted self-test checker and update tests.
 - `tests/`: test-model generator (`make_models.py`, creates `tests/models/`), test suite (`run_suite.py`) and debugging tools.
 
 ### How the engine works (short version)
