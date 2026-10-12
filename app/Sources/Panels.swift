@@ -307,15 +307,24 @@ struct JobPreview: View {
         return Theme.textDim
     }
 
+    /// First line of the check tooltip when a repair was tried but problems remain.
+    func repairNote(_ r: ConversionResult) -> String {
+        r.repaired.isEmpty ? "" : "The app repaired what it could automatically; this is left:\n"
+    }
+
     @ViewBuilder func checkBadge(_ r: ConversionResult) -> some View {
         if r.hasErrors {
             Pill(text: "Problem found", color: Theme.bad, icon: "xmark")
                 .fixedSize()
-                .help(r.checks.map(\.message).joined(separator: "\n"))
+                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n"))
         } else if !r.checks.isEmpty {
             Pill(text: r.checks.count == 1 ? "1 thing to check" : "\(r.checks.count) things to check", color: Theme.warn, icon: "exclamationmark")
                 .fixedSize()
-                .help(r.checks.map(\.message).joined(separator: "\n"))
+                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n"))
+        } else if r.checked && !r.repaired.isEmpty {
+            Pill(text: "Repaired automatically", color: Theme.good, icon: "checkmark")
+                .fixedSize()
+                .help("Reading the STEP file back found small errors, so the app repaired them automatically, the way CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a valid solid and matches the mesh.")
         } else if r.checked {
             Pill(text: "File checked", color: Theme.good, icon: "checkmark")
                 .fixedSize()

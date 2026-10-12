@@ -182,6 +182,30 @@ def test_preview_switches_to_step_view(window, meshes):
     assert jp.mode == "result" and jp.export_btn.isVisible() and jp.check_pill.isVisible()
 
 
+def test_repaired_badge(window, meshes):
+    """A file the engine had to repair says so; one it couldn't fully repair
+    lists what's left."""
+    from mmm_app.preview import REPAIRED_TIP
+
+    m = window.model
+    m.add([meshes["was_repaired.stl"], meshes["repaired_issues.stl"], meshes["one.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    m.convert_all()
+    assert wait_until(lambda: m.is_idle)
+    jp = window.preview.preview
+    by_name = {j.file_name: j for j in m.jobs}
+    assert by_name["was_repaired.stl"].result.repaired == ["read back and saved again"]
+    assert by_name["one.stl"].result.repaired == []
+    m.select(by_name["was_repaired.stl"].id)
+    assert wait_until(lambda: jp.check_pill._text == "Repaired automatically")
+    assert jp.check_pill.toolTip() == REPAIRED_TIP
+    m.select(by_name["repaired_issues.stl"].id)
+    assert wait_until(lambda: jp.check_pill._text == "1 thing to check")
+    assert jp.check_pill.toolTip().startswith("The app repaired what it could")
+    m.select(by_name["one.stl"].id)
+    assert wait_until(lambda: jp.check_pill._text == "File checked")
+
+
 def test_fine_detail_estimate_matches_engine():
     import sys
 

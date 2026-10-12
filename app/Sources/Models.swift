@@ -203,6 +203,8 @@ struct ConversionResult {
     /// The saved STEP file was opened again and checked
     var checked = false
     var checks: [CheckIssue] = []
+    /// Repair steps the engine took because the first check found problems
+    var repaired: [String] = []
 
     var hasErrors: Bool { checks.contains { $0.isError } }
     var hasIssues: Bool { !checks.isEmpty || valid == false }
@@ -231,6 +233,7 @@ extension ConversionResult {
             tolerance: ev["tolerance"] as? Double ?? 0
         )
         checked = ev["checked"] as? Bool ?? false
+        repaired = ev["repaired"] as? [String] ?? []
         checks = (ev["checks"] as? [[String: Any]] ?? []).map {
             CheckIssue(code: $0["code"] as? String ?? "", level: $0["level"] as? String ?? "warning",
                        message: $0["message"] as? String ?? "")

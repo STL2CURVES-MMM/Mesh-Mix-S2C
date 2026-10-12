@@ -146,6 +146,55 @@ def write_step_named(items, path, product_name="Part", unit="mm"):
     os.replace(tmp, path)
 
 
+def read_step_named(path):
+    """Read a STEP file the way write_step_named writes it: [(shape, part
+    name)], one entry per part of an assembly (placed where it sits)."""
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDF import TDF_Label
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFApp import XCAFApp_Application
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
+    from OCP.collections import Sequence_TDF_Label
+
+    app = XCAFApp_Application.GetApplication_s()
+    doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    app.InitDocument(doc)
+    r = STEPCAFControl_Reader()
+    r.SetNameMode(True)
+    r.SetColorMode(False)
+    r.SetLayerMode(False)
+    if r.ReadFile(path) != IFSelect_RetDone or not r.Transfer(doc):
+        raise RuntimeError("STEP read failed")
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+
+    def name_of(lab):
+        attr = TDataStd_Name()
+        if lab.FindAttribute(TDataStd_Name.GetID_s(), attr):
+            return attr.Get().ToExtString()
+        return None
+
+    items = []
+    free = Sequence_TDF_Label()
+    tool.GetFreeShapes(free)
+    for i in range(1, free.Length() + 1):
+        lab = free.Value(i)
+        if XCAFDoc_ShapeTool.IsAssembly_s(lab):
+            comps = Sequence_TDF_Label()
+            XCAFDoc_ShapeTool.GetComponents_s(lab, comps, False)
+            for j in range(1, comps.Length() + 1):
+                comp = comps.Value(j)
+                ref = TDF_Label()
+                XCAFDoc_ShapeTool.GetReferredShape_s(comp, ref)
+                items.append((XCAFDoc_ShapeTool.GetShape_s(comp), name_of(ref) or name_of(comp)))
+        else:
+            items.append((XCAFDoc_ShapeTool.GetShape_s(lab), name_of(lab)))
+    if not items:
+        raise RuntimeError("the STEP file has no shapes")
+    return items
+
+
 def _clean_name(s):
     s = str(s).strip() or "Part"
     return "".join(ch for ch in s if ch.isprintable())[:120]
@@ -253,11 +302,13 @@ def verify_step(path, expected_solids=1, mesh_volume=0.0, open_parts=0):
         if not BRepCheck_Analyzer(exp.Current()).IsValid():
             bad += 1
         exp.Next()
+    out["bad_faces"] = bad
+    out["valid"] = not bad and is_valid(shape)
     if bad:
         issues.append(_issue("bad_faces", "warning",
                              f"{bad} face{'s have' if bad > 1 else ' has'} small geometry errors. "
                              "Fusion and most CAD programs repair these automatically when importing."))
-    elif not is_valid(shape):
+    elif not out["valid"]:
         issues.append(_issue("invalid", "warning",
                              "The solid's structure has a problem (for example faces that cross or don't line up). "
                              "Most CAD programs repair this when importing."))
@@ -267,6 +318,7 @@ def verify_step(path, expected_solids=1, mesh_volume=0.0, open_parts=0):
             n_open = count(fb.GetClosedWires(), TopAbs_EDGE) + count(fb.GetOpenWires(), TopAbs_EDGE)
         except Exception:
             n_open = 0
+        out["open_edges"] = n_open
         if n_open and st["solids"]:
             issues.append(_issue("gaps", "warning",
                                  f"There {'are' if n_open > 1 else 'is'} {n_open} open edge{'s' if n_open > 1 else ''} "

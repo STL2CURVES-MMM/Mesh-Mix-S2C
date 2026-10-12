@@ -94,6 +94,8 @@ class ConversionResult:
     # The saved STEP file was opened again and checked
     checked: bool = False
     checks: list = field(default_factory=list)
+    # repair steps the engine took because the first check found problems
+    repaired: list = field(default_factory=list)
 
     @classmethod
     def from_event(cls, ev):
@@ -111,6 +113,7 @@ class ConversionResult:
             tolerance=_float(ev.get("tolerance")),
         )
         r.checked = ev.get("checked") is True
+        r.repaired = [str(x) for x in ev.get("repaired") or [] if isinstance(x, str)]
         for c in ev.get("checks") or []:
             if isinstance(c, dict):
                 r.checks.append(CheckIssue(str(c.get("code", "")), str(c.get("level", "warning")),

@@ -130,6 +130,139 @@ def shells_to_solid(shape):
     return out
 
 
+def _volume_ratio(shape, body):
+    """Solid volume / mesh volume (None when the mesh isn't closed)."""
+    mesh_vol = sum(sh.volume for sh in body if sh.closed)
+    if not mesh_vol or not all(sh.closed for sh in body):
+        return None
+    try:
+        return abs(stepio.volume(shape)) / abs(mesh_vol)
+    except Exception:
+        return None
+
+
+def _smooth_ok(shape, body, tol):
+    """A smooth result is usable when it is a valid solid (or general
+    healing makes it one) and holds the mesh's volume."""
+    r = _volume_ratio(shape, body)
+    if r is not None and abs(r - 1.0) > 0.03:
+        return False
+    return stepio.is_valid(shape) or stepio.is_valid(fix_shape(shape, tol))
+
+
+RECONVERTED = "part converted again with the other method"
+
+
+def _broken(check):
+    """The saved file has problems that need fixing (a wrong volume means
+    the shape itself is off, which no repair can fix)."""
+    from .repair import needs_repair
+
+    return needs_repair(check) or any(i["code"] == "volume" for i in check["issues"])
+
+
+def _check_shape(shape, body, report):
+    """The read-back check of one body's shape on its own."""
+    import tempfile
+
+    closed = bool(body) and all(sh.closed for sh in body)
+    fd, p = tempfile.mkstemp(suffix=".step", prefix="mmm-part-")
+    os.close(fd)
+    try:
+        stepio.write_step(shape, p)
+        return stepio.verify_step(p, expected_solids=1 if closed else 0,
+                                  mesh_volume=sum(sh.volume for sh in body if sh.closed), open_parts=0 if closed else 1)
+    finally:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _fix_broken_parts(items, item_bodies, item_presets, bodies, path, check, write, verify, convert_alt, tol, report, stage):
+    """Last resort, when the saved file still has problems after repairing:
+    convert the broken parts again with the other method (smooth surfaces
+    instead of CAD faces, or the other way round) and keep a part's new
+    version only if it checks out clean on its own.
+    Returns (items, presets, check, steps taken)."""
+    if not _broken(check) or len(items) != len(item_bodies):
+        return items, item_presets, check, []
+    report.log("The STEP file still has problems, so the parts with errors are converted again with the other method.")
+    new_items, new_presets, changed = list(items), list(item_presets), False
+    for k, ((shape, name), bi, pr) in enumerate(zip(items, item_bodies, item_presets)):
+        body = bodies[bi]
+        if len(items) > 1 and not _broken(_check_shape(shape, body, report)):
+            continue
+        alt, alt_preset = convert_alt(bi, pr)
+        if alt is None:
+            continue
+        if _broken(_check_shape(alt, body, report)):
+            report.log("The other method had problems too, so the first version was kept.")
+            continue
+        new_items[k] = (alt, name)
+        new_presets[k] = alt_preset
+        changed = True
+        first, other = ("smooth surfaces", "CAD faces") if alt_preset == "smooth" else ("CAD faces", "smooth surfaces")
+        report.warn(f"One part was saved with {first} instead of {other}, because its first version had errors "
+                    "that couldn't be repaired.")
+    if not changed:
+        return items, item_presets, check, []
+    new_items, check, done = _save_checked(new_items, path, write, verify, tol, report, stage)
+    return new_items, new_presets, check, [RECONVERTED] + done
+
+
+def repair_steps(results):
+    """The repair steps any of the parts needed, in order, once each."""
+    out = []
+    for r in results:
+        for step in r.get("repaired") or []:
+            if step not in out:
+                out.append(step)
+    return out
+
+
+def _step_writer(name, unit, report):
+    """write(items, path) for a list of (shape, part name): one named part
+    each (several make an assembly), or a single unnamed shape."""
+
+    def write(items, path):
+        if len(items) > 1:
+            try:
+                stepio.write_step_named(items, path, product_name=name, unit=unit)
+                return
+            except Exception as e:
+                report.log(f"Couldn't store part names in the STEP file ({e}); it was saved without them.")
+            stepio.write_step(make_compound([sh for sh, _ in items]), path, product_name=name, unit=unit)
+        elif items[0][1] is not None:
+            stepio.write_step_named(items, path, product_name=name, unit=unit)
+        else:
+            stepio.write_step(items[0][0], path, product_name=name, unit=unit)
+
+    return write
+
+
+def _save_checked(items, path, write, verify, tol, report, stage):
+    """Write the STEP file, read it back to check it and, only when that
+    finds problems, repair it the way CAD programs do on import.
+    Returns (items, check, repair steps taken)."""
+    from .repair import needs_repair, repair
+
+    write(items, path)
+    report.stage(*stage[0])
+    check = verify(path)
+    done = []
+    if needs_repair(check):
+        report.stage(*stage[1])
+        report.log("Reading the STEP file back found problems, so it is being repaired "
+                   "(the way CAD programs repair files when they import them).")
+        items, check, done = repair(items, path, check, write, verify, tol, report)
+        if done and not needs_repair(check):
+            report.log("The STEP file was repaired and now reads back without problems.")
+        elif needs_repair(check):
+            report.log("Some problems couldn't be repaired automatically.")
+    return items, check, done
+
+
 # ----------------------------------------------------------------------------
 # Main entry point
 # ----------------------------------------------------------------------------
@@ -171,6 +304,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
     B = BRep_Builder()
     shapes = []
     shape_names = []
+    shape_bodies = []
     used_presets = []
     stats_extra = {}
     body_names = info.body_names or [None] * len(bodies)
@@ -224,18 +358,55 @@ def convert(input_path, output_path, opts=None, report=NULL):
                     preset = "smooth"
                     report.warn("One part was saved with smooth surfaces instead of CAD faces, because its CAD model had errors.")
                 else:
-                    report.warn("One part's CAD model has small errors. Fusion and most CAD programs repair these automatically when importing.")
+                    report.log("Smooth surfaces weren't better, so the CAD model was kept (the saved file is checked and repaired if needed).")
         elif preset == "smooth":
             from .smooth import convert_body_smooth
 
             report.stage("Fitting smooth surfaces" + label, lo, hi)
             shape = convert_body_smooth(B, body, btol, body_opts, report)
+            if shape is not None and opts.validate and not _smooth_ok(shape, body, btol):
+                # Only when the smooth surfaces came out broken (mechanical
+                # parts with thin walls and sharp holes can do that): CAD
+                # faces for this part instead, if they are valid *and*
+                # accurate. Otherwise the smooth result stays.
+                from .cad import convert_body_cad
+
+                report.log("The smooth surfaces of this part have errors; trying CAD faces as an alternative")
+                report.stage("Recognising CAD features" + label, lo, hi)
+                try:
+                    alt = convert_body_cad(B, body, body_tol(body, "cad"), body_opts, report)
+                except Exception as e:
+                    alt = None
+                    report.log(f"CAD faces didn't work either ({e})")
+                if alt is not None and stepio.is_valid(alt) and _volume_ratio(alt, body) is not None \
+                        and abs(_volume_ratio(alt, body) - 1.0) <= 0.02:
+                    shape, preset = alt, "cad"
+                    report.warn("One part was saved with CAD faces instead of smooth surfaces, because its smooth surfaces had errors.")
         else:
             raise ValueError(f"unknown preset {preset}")
         return shape, preset
 
+    def convert_alt(bi, preset):
+        """One body with the other method: smooth surfaces instead of CAD
+        faces, or CAD faces instead of smooth surfaces."""
+        body = bodies[bi]
+        alt = "smooth" if preset in ("cad", "precise") else "cad"
+        report.log(f"Converting {body_names[bi] or 'the part'} again with "
+                   + ("smooth surfaces" if alt == "smooth" else "CAD faces"))
+        try:
+            if alt == "smooth":
+                from .smooth import convert_body_smooth
+
+                return convert_body_smooth(B, body, body_tol(body, alt), opts, report), alt
+            from .cad import convert_body_cad
+
+            return convert_body_cad(B, body, body_tol(body, alt), opts, report), alt
+        except Exception as e:
+            report.log(f"That didn't work either ({e})")
+            return None, alt
+
     if opts.split and info.parts > 1 and len(info.body_part) == n_bodies:
-        return _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one)
+        return _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt)
 
     for bi, body in enumerate(bodies):
         lo = 0.1 + 0.75 * bi / n_bodies
@@ -245,6 +416,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
         if shape is not None:
             shapes.append(shape)
             shape_names.append(body_names[bi] if bi < len(body_names) else None)
+            shape_bodies.append(bi)
             used_presets.append(preset)
     preset = used_presets[0] if used_presets and all(p == used_presets[0] for p in used_presets) else "mixed"
 
@@ -254,31 +426,41 @@ def convert(input_path, output_path, opts=None, report=NULL):
 
     report.stage("Checking result", 0.85, 0.9)
     valid = stepio.is_valid(result) if opts.validate else None
+    # one named part per body (the parts' names show in CAD browsers)
+    items = list(zip(shapes, shape_names)) if len(shapes) > 1 else [(result, None)]
     if valid is False:
         report.log("The result had errors, so automatic repair was run on it.")
         fixed = fix_shape(result, tol)
         if stepio.is_valid(fixed):
             result = fixed
             valid = True
-    st = stepio.shape_stats(result)
-    vol = stepio.volume(result) if st["solids"] else 0.0
+            items = [(result, None)]
     mesh_vol = sum(s.volume for b in bodies for s in b if s.closed)
 
-    report.stage("Writing STEP", 0.9, 0.97)
+    report.stage("Writing STEP", 0.9, 0.93)
     name = opts.product_name or os.path.splitext(os.path.basename(input_path))[0]
-    if len(shapes) > 1 and valid is not False:
-        try:
-            stepio.write_step_named(list(zip(shapes, shape_names)), output_path, product_name=name, unit=opts.unit)
-        except Exception as e:
-            report.log(f"Couldn't store part names in the STEP file ({e}); it was saved without them.")
-            stepio.write_step(result, output_path, product_name=name, unit=opts.unit)
-    else:
-        stepio.write_step(result, output_path, product_name=name, unit=opts.unit)
-
-    report.stage("Checking the STEP file", 0.93, 0.97)
     expected = sum(1 for b in bodies if b and all(sh.closed for sh in b))
-    check = stepio.verify_step(output_path, expected_solids=expected, mesh_volume=mesh_vol,
-                               open_parts=len(bodies) - expected)
+
+    def verify(path):
+        return stepio.verify_step(path, expected_solids=expected, mesh_volume=mesh_vol, open_parts=len(bodies) - expected)
+
+    write = _step_writer(name, opts.unit, report)
+    stages = (("Checking the STEP file", 0.93, 0.95), ("Repairing the STEP file", 0.95, 0.97))
+    items, check, repaired = _save_checked(items, output_path, write, verify, tol, report, stages)
+    if opts.validate:
+        n_items = len(items)
+        items, item_presets, check, more = _fix_broken_parts(
+            items, shape_bodies if n_items == len(shapes) else [], used_presets, bodies, output_path, check,
+            write, verify, convert_alt, tol, report, stages)
+        if more:
+            repaired = more + [st_ for st_ in repaired if st_ not in more]
+            preset = item_presets[0] if all(x == item_presets[0] for x in item_presets) else "mixed"
+    if repaired:
+        result = items[0][0] if len(items) == 1 else make_compound([sh for sh, _ in items])
+    if opts.validate and "valid" in check:
+        valid = check["valid"]  # what CAD programs will find in the saved file
+    st = stepio.shape_stats(result)
+    vol = check["volume"] if "volume" in check else (stepio.volume(result) if st["solids"] else 0.0)
 
     if opts.preview:
         report.stage("Generating preview", 0.97, 1.0)
@@ -304,6 +486,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
         "checked": check["checked"],
         "check_ok": check["ok"],
         "checks": check["issues"],
+        "repaired": repaired,
     }
     res.update(stats_extra)
     report.result(res)
@@ -329,7 +512,7 @@ def _part_output_path(output_path, name, used):
     return path
 
 
-def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one):
+def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt):
     """3MF "split to parts": every slicer part becomes its own STEP file
     (parts made of several separate solids keep them together)."""
     groups = {}
@@ -344,7 +527,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
     for k, p in enumerate(order):
         name = info.part_names[p] if p < len(info.part_names) else f"Part {p + 1}"
         t_part = time.time()
-        shapes, names, presets = [], [], []
+        shapes, names, presets, part_bodies = [], [], [], []
         for bi in groups[p]:
             lo = 0.08 + 0.87 * done / total
             hi = 0.08 + 0.87 * (done + 1) / total
@@ -354,22 +537,39 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
                 shapes.append(shape)
                 names.append(info.body_names[bi] if bi < len(info.body_names) else name)
                 presets.append(preset)
+                part_bodies.append(bi)
         if not shapes:
             report.warn(f"The part “{name}” couldn't be converted and was left out.")
             continue
         shape = shapes[0] if len(shapes) == 1 else make_compound(shapes)
         valid = stepio.is_valid(shape) if opts.validate else None
+        items = [(shape, name)] if len(shapes) == 1 else list(zip(shapes, names))
         if valid is False:
             fixed = fix_shape(shape, tol)
             if stepio.is_valid(fixed):
                 shape, valid = fixed, True
+                items = [(shape, name)]
         out = opts.part_outputs[p] if p < len(opts.part_outputs) and opts.part_outputs[p] else _part_output_path(output_path, name, used)
-        try:
-            items = [(shape, name)] if len(shapes) == 1 else list(zip(shapes, names))
-            stepio.write_step_named(items, out, product_name=name, unit=opts.unit)
-        except Exception as e:
-            report.log(f"Couldn't store part names in the STEP file ({e}); it was saved without them.")
-            stepio.write_step(shape, out, product_name=name, unit=opts.unit)
+        part_mesh_vol = sum(s.volume for bi in groups[p] for s in bodies[bi] if s.closed)
+        expected = sum(1 for bi in groups[p] if all(sh.closed for sh in bodies[bi]))
+
+        def verify(path, expected=expected, part_mesh_vol=part_mesh_vol, n=len(groups[p])):
+            return stepio.verify_step(path, expected_solids=expected, mesh_volume=part_mesh_vol, open_parts=n - expected)
+
+        at = 0.08 + 0.87 * done / total
+        write = _step_writer(name, opts.unit, report)
+        stages = ((f"Checking {name}.step", at, at), (f"Repairing {name}.step", at, at))
+        items, check, repaired = _save_checked(items, out, write, verify, tol, report, stages)
+        if opts.validate:
+            items, presets, check, more = _fix_broken_parts(
+                items, part_bodies if len(items) == len(shapes) else [], presets, bodies, out, check,
+                write, verify, convert_alt, tol, report, stages)
+            if more:
+                repaired = more + [st_ for st_ in repaired if st_ not in more]
+        if repaired:
+            shape = items[0][0] if len(items) == 1 else make_compound([sh for sh, _ in items])
+        if opts.validate and "valid" in check:
+            valid = check["valid"]
         prev = opts.part_previews[p] if p < len(opts.part_previews) and opts.part_previews[p] else None
         if prev:
             try:
@@ -378,11 +578,6 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
             except Exception as e:
                 report.warn(f"The 3D preview couldn't be made ({e}); the STEP file itself is fine.")
                 prev = None
-        part_mesh_vol = sum(s.volume for bi in groups[p] for s in bodies[bi] if s.closed)
-        report.stage(f"Checking {name}.step", 0.08 + 0.87 * done / total, 0.08 + 0.87 * done / total)
-        expected = sum(1 for bi in groups[p] if all(sh.closed for sh in bodies[bi]))
-        check = stepio.verify_step(out, expected_solids=expected, mesh_volume=part_mesh_vol,
-                                   open_parts=len(groups[p]) - expected)
         st = stepio.shape_stats(shape)
         r = {
             "index": k,
@@ -404,6 +599,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
             "checked": check["checked"],
             "check_ok": check["ok"],
             "checks": check["issues"],
+            "repaired": repaired,
         }
         report.part(r)
         results.append(r)
@@ -430,6 +626,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
         "checked": all(r["checked"] for r in results),
         "check_ok": all(r["check_ok"] for r in results),
         "checks": [{**i, "message": f"{r['name']}: {i['message']}"} for r in results for i in r["checks"]],
+        "repaired": repair_steps(results),
     }
     report.result(res)
     return res

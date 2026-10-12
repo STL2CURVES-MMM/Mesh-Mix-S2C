@@ -19,6 +19,15 @@ from .widgets import (AccentButton, Card, ElidedLabel, FeatureChip, FileTab, Gho
 MESH_TINT = (0.62, 0.66, 0.72)
 STEP_TINT = (0.78, 0.78, 0.78)
 
+REPAIRED_TIP = ("Reading the STEP file back found small errors, so the app repaired them automatically, the way "
+                "CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a "
+                "valid solid and matches the mesh.")
+
+
+def repair_note(r):
+    """First line of the check tooltip when a repair was tried but problems remain."""
+    return "The app repaired what it could automatically; this is left:\n" if r.repaired else ""
+
 
 class MeshCache(QObject):
     """Loads preview files in the background and keeps the last few."""
@@ -415,12 +424,16 @@ class JobPreview(QWidget):
             pill.hide()
         elif r.has_errors:
             pill.set("Problem found", theme.BAD, "x")
-            pill.setToolTip("\n".join(c.message for c in r.checks))
+            pill.setToolTip(repair_note(r) + "\n".join(c.message for c in r.checks))
             pill.show()
         elif r.checks:
             n = len(r.checks)
             pill.set("1 thing to check" if n == 1 else f"{n} things to check", theme.WARN, "exclamation")
-            pill.setToolTip("\n".join(c.message for c in r.checks))
+            pill.setToolTip(repair_note(r) + "\n".join(c.message for c in r.checks))
+            pill.show()
+        elif r.checked and r.repaired:
+            pill.set("Repaired automatically", theme.GOOD, "check")
+            pill.setToolTip(REPAIRED_TIP)
             pill.show()
         elif r.checked:
             pill.set("File checked", theme.GOOD, "check")

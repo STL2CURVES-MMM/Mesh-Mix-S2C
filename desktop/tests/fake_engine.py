@@ -95,6 +95,8 @@ def main():
     checks = [{"code": "gaps", "level": "warning", "message": "There is 1 open edge."}] if "issues" in name else []
     base = {"preset": "cad", "valid": True, "solids": 1, "shells": 1, "faces": 69, "seconds": 1.5,
             "volume": 100.0, "mesh_volume": 100.0, "tolerance": 0.05, "checked": True, "checks": checks}
+    if "repaired" in name:
+        base["repaired"] = ["read back and saved again"]
     if args.split:
         for k, out in enumerate(args.part_output):
             with open(out, "w", encoding="utf-8") as fh:
