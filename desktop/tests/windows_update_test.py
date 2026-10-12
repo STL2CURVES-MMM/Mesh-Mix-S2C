@@ -80,8 +80,12 @@ def main():
                    "assets": [{"name": name, "browser_download_url": f"{base}/{name}", "size": os.path.getsize(setup)},
                               {"name": "SHA256SUMS.txt", "browser_download_url": f"{base}/SHA256SUMS.txt"}]}, fh)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    marker = os.path.join(APP, "_internal", "base_library.zip")
-    before = os.path.getmtime(marker)
+    # the update replaces the program's library folder completely, so a file
+    # put there now must be gone afterwards (file dates can't tell: Inno
+    # Setup keeps each file's build date)
+    marker = os.path.join(APP, "_internal", "update-test-marker.txt")
+    with open(marker, "w") as fh:
+        fh.write("old version")
     report_dir = os.path.join(work, "selftest")
     update_log = os.path.join(work, "update.log")
     env = dict(os.environ, MMM_SELFTEST=report_dir, MMM_SELFTEST_CONVERT_ONLY="1", MMM_SELFTEST_FILES="",
@@ -121,8 +125,12 @@ def main():
             print("the update installer finished")
     else:
         problems.append("the update installer never ran (no log)")
-    if os.path.getmtime(marker) <= before:
+    if os.path.exists(marker):
         problems.append("the program files weren't replaced")
+    elif not os.path.exists(os.path.join(APP, "_internal", "base_library.zip")):
+        problems.append("the program files are missing after the update")
+    else:
+        print("the program files were replaced")
     if relaunched:
         print("the app started again after the update (pid", relaunched[0], ")")
     else:
