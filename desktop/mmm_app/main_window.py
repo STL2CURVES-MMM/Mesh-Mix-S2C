@@ -6,7 +6,7 @@ from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
                                QAbstractSpinBox, QWidget)
 
-from . import APP_NAME, REPO_URL, __version__, system, theme
+from . import APP_NAME, REPO_URL, __version__, desktop_entry, system, theme
 from .export_dialog import ExportDialog
 from .model import ACCEPTED_EXTENSIONS, ENGINE_MISSING_MESSAGE, AppModel, JobStatus
 from .preferences import PreferencesDialog
@@ -81,6 +81,11 @@ class MainWindow(QMainWindow):
         self._action(m, "Add Files…", self.open_files, QKeySequence.StandardKey.Open)
         self._action(m, "Add Folder…", self.open_folder)
         m.addSeparator()
+        if desktop_entry.available():
+            # Linux AppImage: the applications menu and "Open With"
+            self.menu_entry = self._action(m, "Add to Applications Menu", self._toggle_menu_entry)
+            m.aboutToShow.connect(self._refresh_menu_entry)
+            self._refresh_menu_entry()
         self._action(m, "Preferences…", self.show_preferences, "Ctrl+,")
         m.addSeparator()
         self._action(m, "Quit", self.close, QKeySequence.StandardKey.Quit)
@@ -132,6 +137,21 @@ class MainWindow(QMainWindow):
         a = self.preset_actions.get(self.settings.preset)
         if a:
             a.setChecked(True)
+
+    def _refresh_menu_entry(self):
+        self.menu_entry.setText("Remove from Applications Menu" if desktop_entry.is_installed()
+                                else "Add to Applications Menu")
+
+    def _toggle_menu_entry(self):
+        if desktop_entry.is_installed():
+            desktop_entry.uninstall()
+            return
+        err = desktop_entry.install()
+        if err:
+            QMessageBox.warning(self, APP_NAME, err)
+        else:
+            QMessageBox.information(self, APP_NAME, "Manifold Mesh Mix is now in your applications menu, and in "
+                                    "“Open With” for STL, 3MF, OBJ and PLY files. If you move the AppImage, add it again.")
 
     def _export_selected(self):
         j = self.model.selected_job
