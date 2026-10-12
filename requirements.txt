@@ -1,0 +1,15 @@
+# Conversion engine (Python 3.12)
+cadquery-ocp==8.0.1.1.0
+numpy==2.5.4
+scipy==1.18.1
+trimesh==5.1.1
+manifold3d==3.5.4
+fast_simplification==0.2.0
+pymeshfix==0.18.1
+pynanoinstantmeshes==0.0.3
+rtree==1.4.1
+# Packaging the engine into the app
+pyinstaller==6.22.3
+# Test-model generator and app icon
+scikit-image==0.26.0
+pillow==12.3.0

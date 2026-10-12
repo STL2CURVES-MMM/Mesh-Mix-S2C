@@ -1,0 +1,136 @@
+import AppKit
+import SwiftUI
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var model: AppModel?
+    var pendingURLs: [URL] = []
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if let model {
+            model.add(urls: urls)
+        } else {
+            pendingURLs.append(contentsOf: urls)
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let model, !SelfTest.isActive {
+            let n = model.unexportedJobs.count
+            if n > 0 {
+                let a = NSAlert()
+                a.messageText = n == 1 ? "Quit without exporting?" : "Quit without exporting \(n) files?"
+                a.informativeText = "\(n == 1 ? "A converted file hasn't" : "\(n) converted files haven't") been exported yet. If you quit now, you'll have to convert \(n == 1 ? "it" : "them") again."
+                a.addButton(withTitle: "Cancel")
+                a.addButton(withTitle: "Quit Anyway")
+                if a.runModal() != .alertSecondButtonReturn { return .terminateCancel }
+            }
+        }
+        model?.cancelAll()
+        model?.cleanUpPreviews()
+        return .terminateNow
+    }
+}
+
+@main
+struct ManifoldMeshMixApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    @StateObject private var settings: Settings
+    @StateObject private var model: AppModel
+
+    init() {
+        let s = Settings()
+        _settings = StateObject(wrappedValue: s)
+        _model = StateObject(wrappedValue: AppModel(settings: s))
+    }
+
+    var body: some Scene {
+        WindowGroup("Manifold Mesh Mix") {
+            ContentView()
+                .environmentObject(model)
+                .environmentObject(settings)
+                .frame(minWidth: 1080, minHeight: 640)
+                .onAppear {
+                    delegate.model = model
+                    if !delegate.pendingURLs.isEmpty {
+                        model.add(urls: delegate.pendingURLs)
+                        delegate.pendingURLs.removeAll()
+                    }
+                    let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+                    let urls = args.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
+                    if !urls.isEmpty { model.add(urls: urls) }
+                    if SelfTest.isActive { SelfTest.run(model: model, settings: settings) }
+                }
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1280, height: 780)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("Add Files…") { model.openPanel() }
+                    .keyboardShortcut("o", modifiers: .command)
+            }
+            CommandMenu("Convert") {
+                Button("Convert All") { model.convertAll() }
+                    .keyboardShortcut("r", modifiers: .command)
+                Button("Export Selected File…") {
+                    if let j = model.selectedJob { model.requestExport([j]) }
+                }
+                .keyboardShortcut("e", modifiers: .command)
+                .disabled(!(model.selectedJob.map { $0.status == .done && !$0.resultFiles.isEmpty } ?? false))
+                Button("Export All…") { model.requestExport(model.unexportedJobs.isEmpty ? model.exportableJobs : model.unexportedJobs) }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(model.exportableJobs.isEmpty)
+                Button("Stop All") { model.cancelAll() }
+                    .keyboardShortcut(".", modifiers: .command)
+                Divider()
+                Button("Clear Finished") { model.clearFinished() }
+                Divider()
+                Picker("Preset", selection: $settings.preset) {
+                    ForEach(Preset.allCases) { p in Text(p.title).tag(p) }
+                }
+            }
+        }
+
+        SwiftUI.Settings {
+            PreferencesView()
+                .environmentObject(settings)
+                .frame(width: 420)
+                .preferredColorScheme(.dark)
+        }
+    }
+}
+
+struct PreferencesView: View {
+    @EnvironmentObject var settings: Settings
+
+    var body: some View {
+        Form {
+            Section("Appearance") {
+                Picker("Accent color", selection: $settings.accent) {
+                    ForEach(AccentChoice.allCases) { a in
+                        HStack {
+                            Circle().fill(a.color).frame(width: 10, height: 10)
+                            Text(a.title)
+                        }
+                        .tag(a)
+                    }
+                }
+            }
+            Section("Conversion") {
+                Picker("Default preset", selection: $settings.preset) {
+                    ForEach(Preset.allCases) { p in Text(p.title).tag(p) }
+                }
+                Stepper("Files at once: \(settings.parallelJobs)", value: $settings.parallelJobs, in: 1...6)
+                Toggle("Convert as soon as files are added", isOn: $settings.convertOnDrop)
+            }
+            Section("Export") {
+                Toggle("Replace existing files without asking", isOn: $settings.replaceExisting)
+                Toggle("Show in Finder after exporting", isOn: $settings.revealWhenDone)
+                Toggle("Split 3MF projects into parts", isOn: $settings.splitParts)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+}

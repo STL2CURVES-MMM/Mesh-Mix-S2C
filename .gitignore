@@ -1,0 +1,18 @@
+# Python environment and local tools
+.venv/
+.tools/
+__pycache__/
+*.pyc
+
+# Build output
+dist/
+dist-dev/
+app/build/
+engine/build/
+
+# Test models and results (recreate with tests/make_models.py and tests/run_suite.py)
+tests/models/
+tests/out/
+
+# macOS
+.DS_Store
