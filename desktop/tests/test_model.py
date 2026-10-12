@@ -69,7 +69,10 @@ def test_conversion_result_from_event():
 def test_export_failure_messages(monkeypatch):
     item = ExportItem(job=None, part=None, source="s", name="n")
     dest = os.path.join("some", "Folder", "n.step")
+    monkeypatch.setattr(M.system, "IS_WINDOWS", False)
     assert "permission" in ExportFailure(item, dest, PermissionError(errno.EACCES, "no")).message
+    # a replace that fails is only "open in another program" on Windows
+    assert "permission" in ExportFailure(item, dest, ReplaceError(errno.EACCES, "denied", dest)).message
     assert "disk is full" in ExportFailure(item, dest, OSError(errno.ENOSPC, "full")).message
     assert "can't be written" in ExportFailure(item, dest, OSError(errno.EROFS, "ro")).message
     assert "couldn't be saved (boom)" in ExportFailure(item, dest, OSError(errno.EIO, "boom")).message
