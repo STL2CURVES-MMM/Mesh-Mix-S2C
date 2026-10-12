@@ -79,7 +79,7 @@ def meshes(tmp_path):
     d.mkdir()
     out = {}
     for name in ("one.stl", "my_parts.3mf", "will_crash.stl", "has_error.stl", "very_slow.stl", "broken.stl",
-                 "with_issues.stl", "Part.stl", "Part.3mf"):
+                 "with_issues.stl", "Part.stl", "Part.3mf", "dense_sculpt.stl"):
         p = d / name
         p.write_text("solid x\nendsolid x\n")
         out[name] = str(p)

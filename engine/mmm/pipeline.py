@@ -48,6 +48,9 @@ class Options:
         # 0 = fastest, 1 = best quality (also controls surface density)
         self.quality = float(kw.get("quality", kw.get("detail", 0.7)))
         self.detail = self.quality
+        # the quality the user picked (Precise raises ``quality`` for organic
+        # parts); its top end also keeps the fine detail of dense meshes
+        self.fine_quality = float(kw.get("fine_quality", self.quality))
         self.layout = kw.get("layout", "parts")  # 3MF: "parts" or "plate"
         self.max_faces = int(kw.get("max_faces", 0))  # 0 = unlimited (exact)
         self.preview = kw.get("preview", None)  # path for preview file

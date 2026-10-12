@@ -12,6 +12,31 @@ import traceback
 from .report import Reporter
 
 
+PREVIEW_TRIS = 1_500_000
+
+
+def _preview_mesh(V, F):
+    """A lighter copy of a very dense mesh for the preview: simplified
+    evenly, so the surface stays closed (dropping random triangles would
+    leave it full of holes)."""
+    import numpy as np
+
+    try:
+        import fast_simplification
+
+        V2, F2 = fast_simplification.simplify(
+            np.ascontiguousarray(V, dtype=np.float32),
+            np.ascontiguousarray(F, dtype=np.int32),
+            target_reduction=1.0 - PREVIEW_TRIS / len(F),
+        )
+        if 0 < len(F2) <= 1.2 * PREVIEW_TRIS:
+            return np.asarray(V2, dtype=np.float64), np.asarray(F2, dtype=np.int64)
+    except Exception:
+        pass
+    sel = np.random.default_rng(0).choice(len(F), PREVIEW_TRIS, replace=False)
+    return V, F[np.sort(sel)]
+
+
 def _inspect(args, rep):
     import numpy as np
 
@@ -50,9 +75,8 @@ def _inspect(args, rep):
                 off += len(s.V)
         V = np.vstack(Vs)
         F = np.vstack(Fs)
-        if len(F) > 1_500_000:
-            sel = np.random.default_rng(0).choice(len(F), 1_500_000, replace=False)
-            F = F[np.sort(sel)]
+        if len(F) > PREVIEW_TRIS:
+            V, F = _preview_mesh(V, F)
         stepio.export_mesh_preview(V, F, args.preview)
     rep.result(d)
 

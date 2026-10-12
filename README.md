@@ -51,6 +51,8 @@ The app reads the actual parts from slicer project files:
 
 Higher quality tightens the fitting tolerance and adds surface detail, but takes longer. The default (70%) leans toward quality. Very large sculpts (millions of triangles) take a minute or two.
 
+**Best quality keeps fine detail.** In the *Best quality* part of the slider (85% and up), organic shapes get more surfaces the denser the mesh is, so sculpted texture like cracks, scales and tool marks survives. At the far right the surfaces stay within a few hundredths of a millimeter of a typical sculpt. Dense meshes then make much bigger STEP files and take a lot longer: a 2-million-triangle bust took about 18 minutes and made a 130 MB file, instead of about 8 minutes and 25 MB. When that's about to happen, a warning under the slider gives the expected file size. It needs a few GB of memory. A **Smooth surface limit** (Advanced) turns it off.
+
 ## Building from source
 
 All three versions share the conversion engine in `engine/`. The version number lives in `VERSION`.

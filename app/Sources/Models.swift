@@ -254,6 +254,57 @@ struct JobPart: Identifiable {
     var id: Int { index }
 }
 
+/// The heads-up for very detailed conversions. At the top of the quality
+/// slider the engine keeps the fine detail of dense meshes
+/// (engine/mmm/smooth.py, fine_cage_budget): the number of surfaces grows
+/// with the mesh, which makes much bigger STEP files and longer conversions.
+/// The numbers mirror the engine's (and desktop/mmm_app/detail.py).
+enum FineDetail {
+    static let start = 0.85
+    static let trianglesPerCageVertex = 43.0
+    static let maxCage = 60000.0
+    static let kbPerPatch = 0.65        // STEP file size per surface patch (measured)
+    static let normalPatches = 16000    // about the most one piece gets without fine detail
+    static let warnRatio = 3
+
+    /// Surface patches for one piece of this many triangles (0 = fine detail off).
+    static func patches(triangles: Int, quality: Double) -> Int {
+        let q = min(max(quality, 0), 1)
+        guard q > start, triangles > 0 else { return 0 }
+        let c = pow(10.0, (q - 1) / (1 - start)) / trianglesPerCageVertex
+        return 4 * Int(min(maxCage, Double(triangles) * c))
+    }
+
+    /// Megabytes when this file will be far bigger and slower than usual (an
+    /// upper bound: CAD-like parts and small pieces don't use fine detail).
+    static func estimateMB(triangles: Int?, quality: Double, preset: Preset, maxFaces: Int) -> Double? {
+        guard let t = triangles, preset != .cad, maxFaces == 0 else { return nil }
+        let n = patches(triangles: t, quality: quality)
+        guard n >= warnRatio * normalPatches else { return nil }
+        return Double(n) * kbPerPatch / 1000
+    }
+
+    static func warning(jobs: [Job], quality: Double, preset: Preset, maxFaces: Int) -> String? {
+        var hits: [(mb: Double, job: Job)] = []
+        for j in jobs {
+            if let mb = estimateMB(triangles: j.triangles, quality: quality, preset: preset, maxFaces: maxFaces) {
+                hits.append((mb: mb, job: j))
+            }
+        }
+        hits.sort { $0.mb > $1.mb }
+        guard let top = hits.first, let t = top.job.triangles else { return nil }
+        let mb = top.mb, job = top.job
+        let millions = Double(t) / 1e6
+        let tris = millions >= 1 ? "\(millions.formatted(.number.precision(.fractionLength(1)))) million" : t.formatted()
+        let size = Int(mb.rounded()).formatted()
+        var text = "Best quality keeps the fine surface detail of dense meshes. “\(job.fileName)” has \(tris) triangles, "
+        text += "so its STEP file can grow to about \(size) MB, several times the usual size, and converting it takes a lot longer."
+        let others = hits.count - 1
+        if others > 0 { text += " \(others) more file\(others == 1 ? " is" : "s are") very dense too." }
+        return text + " Move the slider a little to the left for a smaller, faster file."
+    }
+}
+
 final class Job: ObservableObject, Identifiable {
     let id = UUID()
     let url: URL

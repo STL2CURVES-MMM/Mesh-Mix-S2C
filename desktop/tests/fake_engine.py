@@ -68,7 +68,8 @@ def main():
             emit({"event": "error", "message": "MeshError: This file isn't a mesh the app can read."})
             return 1
         preview(args.preview)
-        ev = {"event": "result", "triangles": 1234, "bodies": 2 if parts else 1, "open_shells": 0,
+        ev = {"event": "result", "triangles": 2_060_000 if "dense" in name else 1234, "bodies": 2 if parts else 1,
+              "open_shells": 0,
               "parts": 2 if parts else 1, "bbox": [[0, 0, 0], [40, 30, 20.5]], "part_list": []}
         if parts:
             for k, nm in enumerate(["Left", "Right"]):

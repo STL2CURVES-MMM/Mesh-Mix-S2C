@@ -264,25 +264,6 @@ class QuadCage:
         perm = (k[None, :] * nq + f[:, None]).reshape(-1)
         return stacked[perm]
 
-    def sample_matrix(self, n=4, inner=True, deriv=None):
-        """Rows evaluate the surface at an n x n grid of (u, v) per patch
-        (deriv "u" or "v": the partial derivative there instead)."""
-        if inner:
-            t = (np.arange(n) + 0.5) / n
-        else:
-            t = np.linspace(0, 1, n)
-        B = np.stack([(1 - t) ** 3, 3 * t * (1 - t) ** 2, 3 * t ** 2 * (1 - t), t ** 3], axis=1)  # (n,4)
-        D = np.stack([-3 * (1 - t) ** 2, 3 * (1 - t) ** 2 - 6 * t * (1 - t), 6 * t * (1 - t) - 3 * t ** 2, 3 * t ** 2], axis=1)
-        Bu, Bv = (D, B) if deriv == "u" else (B, D) if deriv == "v" else (B, B)
-        W = np.einsum("ai,bj->abij", Bu, Bv).reshape(n * n, 16)  # sample, (i,j)
-        nq = self.nq
-        ns = n * n
-        rows = np.repeat(np.arange(nq * ns), 16)
-        cols = (np.arange(nq)[:, None, None] * 16 + np.arange(16)[None, None, :]).repeat(ns, axis=1).reshape(-1)
-        vals = np.tile(W.reshape(-1), nq)
-        Wm = sparse.csr_matrix((vals, (rows, cols)), shape=(nq * ns, 16 * nq))
-        return (Wm @ self.bezier).tocsr(), ns
-
     def laplacian(self):
         e = np.stack([self.a, self.b], axis=1)
         e = np.unique(np.sort(e, axis=1), axis=0)
@@ -300,13 +281,21 @@ class QuadCage:
 
 def _vertex_normals(V, F):
     fn, fa = face_normals_areas(V, F)
-    N = np.zeros_like(V)
-    w = fn * fa[:, None]
-    for k in range(3):
-        np.add.at(N, F[:, k], w)
+    N = _scatter_add(F, fn * fa[:, None], len(V))
     ln = np.linalg.norm(N, axis=1)
     ln[ln == 0] = 1
     return N / ln[:, None]
+
+
+def _scatter_add(idx, vals, n):
+    """out[i] = sum of vals rows whose idx is i (idx may be (m,) or (m, k):
+    every column of idx gets the same vals row). Much faster than np.add.at."""
+    idx = idx.reshape(len(vals), -1)
+    out = np.zeros((n, vals.shape[1]))
+    for c in range(idx.shape[1]):
+        for d in range(vals.shape[1]):
+            out[:, d] += np.bincount(idx[:, c], weights=vals[:, d], minlength=n)
+    return out
 
 
 def _unit_rows(A):
@@ -318,49 +307,114 @@ def _same_side_nearest(tree, Q, NQ, NT, k=8, min_cos=0.2):
     """For each query point, the nearest tree point whose normal agrees
     with the query's normal (falls back to the plain nearest one)."""
     k = min(k, tree.n)
-    _, idx = tree.query(Q, k=k)
-    if k == 1:
-        return idx
-    ok = np.einsum("mkd,md->mk", NT[idx], NQ) > min_cos
-    first = np.argmax(ok, axis=1)
-    first[~ok.any(1)] = 0
-    return idx[np.arange(len(Q)), first]
+    out = np.empty(len(Q), dtype=np.int64)
+    step = 1_000_000  # bounds the memory of the k-neighbour arrays
+    for a in range(0, len(Q), step):
+        q = Q[a:a + step]
+        _, idx = tree.query(q, k=k, workers=-1)
+        if k == 1:
+            out[a:a + step] = idx
+            continue
+        ok = np.einsum("mkd,md->mk", NT[idx], NQ[a:a + step]) > min_cos
+        first = np.argmax(ok, axis=1)
+        first[~ok.any(1)] = 0
+        out[a:a + step] = idx[np.arange(len(q)), first]
+    return out
+
+
+def _patch_weights(n, inner=True, deriv=None):
+    """(n*n, 16): weights of a patch's 16 Bezier points at an n x n grid of
+    (u, v) (deriv "u" or "v": the partial derivative there instead)."""
+    if inner:
+        t = (np.arange(n) + 0.5) / n
+    else:
+        t = np.linspace(0, 1, n)
+    B = np.stack([(1 - t) ** 3, 3 * t * (1 - t) ** 2, 3 * t ** 2 * (1 - t), t ** 3], axis=1)  # (n,4)
+    D = np.stack([-3 * (1 - t) ** 2, 3 * (1 - t) ** 2 - 6 * t * (1 - t), 6 * t * (1 - t) - 3 * t ** 2, 3 * t ** 2], axis=1)
+    Bu, Bv = (D, B) if deriv == "u" else (B, D) if deriv == "v" else (B, B)
+    return np.einsum("ai,bj->abij", Bu, Bv).reshape(n * n, 16)
+
+
+# cages with more vertices than this are solved iteratively (a direct
+# factorization of very fine cages needs a lot of memory and time)
+DIRECT_SOLVE_MAX = 40000
+
+
+def _solve(A, rhs, X0):
+    if A.shape[0] <= DIRECT_SOLVE_MAX:
+        solve = factorized(A.tocsc())
+        return np.column_stack([solve(np.ascontiguousarray(rhs[:, k])) for k in range(3)])
+    from scipy.sparse.linalg import LinearOperator, cg
+
+    A = A.tocsr()
+    d = A.diagonal()
+    M = LinearOperator(A.shape, matvec=lambda x: x / d, dtype=np.float64)
+    out = []
+    for k in range(3):
+        x, _ = cg(A, rhs[:, k], x0=X0[:, k], rtol=1e-9, maxiter=2000, M=M)
+        out.append(x)
+    return np.column_stack(out)
 
 
 def fit_cage(cage, V, F, iters=5, report=NULL, max_ref_pts=150000):
-    """Move cage vertices so the limit surface fits the original mesh."""
+    """Move cage vertices so the limit surface fits the original mesh.
+
+    Surface samples are evaluated patch by patch from the Bezier points
+    (dense weights shared by all patches), and the least-squares system is
+    assembled from 16 x 16 blocks per patch, so memory grows gently with
+    the number of patches."""
     ext = float(np.linalg.norm(V.max(0) - V.min(0)))
-    S, ns = cage.sample_matrix(4)
-    Sd, nsd = cage.sample_matrix(7, inner=False)
+    nq = cage.nq
+    Bm = cage.bezier  # (16 nq, nv)
+    W, Wu, Wv = (_patch_weights(4, True, d) for d in (None, "u", "v"))
+    Wd, Wdu, Wdv = (_patch_weights(7, False, d) for d in (None, "u", "v"))
+    ns, nsd = len(W), len(Wd)
+    G = W.T @ W
     L = cage.laplacian()
     VN = _vertex_normals(V, F)
     # reference points: original vertices plus face centroids for coarse meshes
     ref = V
     refn = VN
-    if len(V) < 20 * cage.nq:
+    if len(V) < 20 * nq:
         fn, _ = face_normals_areas(V, F)
         ref = np.vstack([V, V[F].mean(1)])
         refn = np.vstack([VN, fn])
+    # fine cages need the mesh's own detail, so they keep more points
+    max_ref_pts = max(max_ref_pts, min(8 * nq, 4_000_000))
     if len(ref) > max_ref_pts:
         sel = np.random.default_rng(0).choice(len(ref), max_ref_pts, replace=False)
         ref, refn = ref[sel], refn[sel]
     tree = cKDTree(ref)
     X = cage.V.copy()
     lam0 = 0.05
-    StS = (S.T @ S).tocsc()
     LtL = (L.T @ L).tocsc()
-    n_s = S.shape[0]
-    Su, _ = cage.sample_matrix(4, deriv="u")
-    Sv, _ = cage.sample_matrix(4, deriv="v")
-    Sdu, _ = cage.sample_matrix(7, inner=False, deriv="u")
-    Sdv, _ = cage.sample_matrix(7, inner=False, deriv="v")
+    n_s = nq * ns
+    chunk = 20000  # patches per slice when assembling the system
+
+    def block_diag(Kc):
+        """CSR matrix with one 16 x 16 block per patch, from (m, 256) rows."""
+        m = len(Kc)
+        cols = np.repeat(np.arange(16 * m, dtype=np.int64).reshape(m, 1, 16), 16, axis=1).reshape(-1)
+        return sparse.csr_matrix((Kc.reshape(-1), cols, np.arange(0, 256 * m + 1, 16)), shape=(16 * m, 16 * m))
+
+    def at(Wt, Bz):
+        # (nq, 16, 3) Bezier points -> (nq * len(Wt), 3) surface samples
+        return np.ascontiguousarray(np.tensordot(Wt, Bz, axes=([1], [1])).transpose(1, 0, 2)).reshape(-1, 3)
+
+    def back(Wt, P):
+        # transpose of at(): (nq * len(Wt), 3) -> (nq, 16, 3)
+        return np.tensordot(P.reshape(nq, len(Wt), 3), Wt, axes=([1], [0])).transpose(0, 2, 1)
+
+    Wd2 = (Wd[:, :, None] * Wd[:, None, :]).reshape(nsd, 256)
+
     sign = None
     for it in range(iters):
         report.progress(0.2 + 0.6 * it / iters)
-        Y = S @ X
-        NY = _unit_rows(np.cross(Su @ X, Sv @ X))
+        Bz = (Bm @ X).reshape(nq, 16, 3)
+        Y = at(W, Bz)
+        NY = _unit_rows(np.cross(at(Wu, Bz), at(Wv, Bz)))
         if sign is None:
-            _, i0 = tree.query(Y)
+            _, i0 = tree.query(Y, workers=-1)
             sign = 1.0 if np.nanmean((NY * refn[i0]).sum(1)) >= 0 else -1.0
         NY *= sign
         # Nearest mesh point on the same side: on thin walls and in deep
@@ -371,30 +425,41 @@ def fit_cage(cage, V, F, iters=5, report=NULL, max_ref_pts=150000):
         nrm = refn[idx]
         # point-to-plane projection onto the original surface
         T = Y - ((Y - p) * nrm).sum(1)[:, None] * nrm
+        del Y, NY, p, nrm
         # reverse term: every reference point pulls its nearest dense sample
         # (again one facing the same way)
-        Yd = Sd @ X
-        NYd = sign * _unit_rows(np.cross(Sdu @ X, Sdv @ X))
+        Yd = at(Wd, Bz)
+        NYd = sign * _unit_rows(np.cross(at(Wdu, Bz), at(Wdv, Bz)))
         dtree = cKDTree(Yd)
         j = _same_side_nearest(dtree, ref, refn, NYd)
-        cnt = np.bincount(j, minlength=Sd.shape[0]).astype(np.float64)
-        sums = np.zeros((Sd.shape[0], 3))
-        np.add.at(sums, j, ref)
+        del dtree, Yd, NYd
+        cnt = np.bincount(j, minlength=nq * nsd).astype(np.float64).reshape(nq, nsd)
+        sums = _scatter_add(j, ref, nq * nsd)
         wr = n_s / max(len(ref), 1)
         lam = lam0 * (0.35 ** it)
-        A = StS + wr * (Sd.T @ sparse.diags(cnt) @ Sd) + lam * LtL
-        rhs = S.T @ T + wr * (Sd.T @ sums) + lam * (LtL @ X)
+        # per patch: W^T W + wr * Wd^T diag(cnt) Wd, and the matching right side
+        K = G.reshape(1, 256) + wr * (cnt @ Wd2)  # (nq, 256)
+        r = back(W, T) + wr * back(Wd, sums)
+        del T, cnt, sums
+        A = lam * LtL
+        # assembled a slice of patches at a time (bounds the memory)
+        for a in range(0, nq, chunk):
+            Bs = Bm[16 * a:16 * min(nq, a + chunk)]
+            A = A + Bs.T @ (block_diag(K[a:a + chunk]) @ Bs)
+        del K, Bs
+        rhs = Bm.T @ r.reshape(-1, 3) + lam * (LtL @ X)
         # (the Laplacian term keeps the cage close to its current fairness)
-        solve = factorized(A.tocsc())
-        Xn = np.column_stack([solve(np.ascontiguousarray(rhs[:, k])) for k in range(3)])
+        Xn = _solve(A, rhs, X)
+        del A
         if not np.isfinite(Xn).all():
             break
         X = Xn
     cage.V = X
     # final deviation estimate (both directions)
-    Yd = Sd @ X
+    Yd = at(Wd, (Bm @ X).reshape(nq, 16, 3))
     dtree = cKDTree(Yd)
-    d1, _ = dtree.query(V if len(V) <= max_ref_pts else V[np.random.default_rng(1).choice(len(V), max_ref_pts, replace=False)])
+    d1, _ = dtree.query(V if len(V) <= max_ref_pts else V[np.random.default_rng(1).choice(len(V), max_ref_pts, replace=False)],
+                        workers=-1)
     return X, float(np.percentile(d1, 99)), float(d1.max()), ext
 
 
@@ -507,6 +572,27 @@ def total_cage_budget(detail, max_faces=0):
     if max_faces:
         tv = min(tv, max(40, max_faces // 4))
     return tv
+
+
+# Fine detail: at the top of the quality slider the cage also grows with the
+# mesh's own density, so dense sculpts and scans keep their fine texture
+# (cracks, scales, tool marks). At best quality there is one surface patch
+# per ~11 mesh triangles, which keeps the surface within a few hundredths of
+# a millimetre of a typical sculpt. Slower and much bigger files, so the apps
+# warn before converting.
+FINE_START = 0.85  # where "Best quality" starts on the slider
+FINE_TRIS_PER_CAGE_VERT = 43
+FINE_MAX_CAGE = 60000  # per piece (~240k patches, a few GB of memory)
+
+
+def fine_cage_budget(n_tris, quality):
+    """Cage vertex budget for one piece from its triangle count (0 = off)."""
+    q = float(np.clip(quality, 0.0, 1.0))
+    if q <= FINE_START:
+        return 0
+    # x10 from the start of "Best quality" to the end of the slider
+    c = 10.0 ** ((q - 1.0) / (1.0 - FINE_START)) / FINE_TRIS_PER_CAGE_VERT
+    return int(min(FINE_MAX_CAGE, n_tris * c))
 
 
 def _manifold_clean(V, F):
@@ -714,6 +800,11 @@ def convert_body_smooth(B, body, tol, opts, report=NULL):
             except Exception:
                 pass
         share = int(budget * a / tot)
+        retry = 3 * share
+        fine = 0 if opts.max_faces else fine_cage_budget(len(shell.F), getattr(opts, "fine_quality", opts.quality))
+        if fine > share:
+            report.log(f"Keeping fine detail: about {4 * fine} surface patches for this piece")
+            share = fine
         sh = None
         ext = float(np.linalg.norm(shell.V.max(0) - shell.V.min(0)))
 
@@ -738,7 +829,7 @@ def convert_body_smooth(B, body, tol, opts, report=NULL):
             if not good(sh, info):
                 sh = None
                 # a denser cage often fixes tiny or awkward pieces
-                sh2, info2 = smooth_shell(shell, tol, max(48, 3 * share), report)
+                sh2, info2 = smooth_shell(shell, tol, max(48, retry), report)
                 if good(sh2, info2):
                     sh = sh2
         except SmoothError as e:

@@ -550,6 +550,18 @@ struct SettingsPanel: View {
                             .font(.system(size: 10.5))
                             .foregroundStyle(Theme.textDim)
                             .fixedSize(horizontal: false, vertical: true)
+                        if let warning = FineDetail.warning(jobs: model.jobs, quality: settings.quality,
+                                                            preset: settings.preset, maxFaces: settings.maxFaces) {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12))
+                                Text(warning)
+                                    .font(.system(size: 10.5))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .foregroundStyle(Theme.warn)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("Large file warning: \(warning)")
+                        }
                     }
                     .card()
 

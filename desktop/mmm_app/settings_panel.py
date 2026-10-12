@@ -5,7 +5,7 @@ from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit, QRadioButton, QScrollArea,
                                QSlider, QSpinBox, QVBoxLayout, QWidget)
 
-from . import system, theme
+from . import detail, system, theme
 from .model import JobStatus
 from .settings import MAX_FACES, OUTPUT_MODES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice
 from .theme import SEMIBOLD
@@ -140,6 +140,16 @@ class SettingsPanel(QWidget):
         quality.lay.addWidget(self.slider)
         quality.lay.addLayout(ends)
         quality.lay.addWidget(self.quality_hint)
+        # heads-up when best quality will make a huge file of a dense mesh
+        self.detail_text = Label("", 10.5, color=theme.WARN, wrap=True)
+        self.detail_text.setAccessibleName("Large file warning")
+        self.detail_warning = QWidget()
+        dl = hbox(IconLabel("warning", theme.WARN, 14), self.detail_text, spacing=8)
+        dl.setAlignment(dl.itemAt(0).widget(), Qt.AlignmentFlag.AlignTop)
+        dl.setStretch(1, 1)
+        self.detail_warning.setLayout(dl)
+        self.detail_warning.hide()
+        quality.lay.addWidget(self.detail_warning)
 
         # export
         export = Card(spacing=10)
@@ -265,6 +275,8 @@ class SettingsPanel(QWidget):
         model.state_changed.connect(self.refresh_buttons)
         model.selection_changed.connect(self.refresh_buttons)
         model.jobs_changed.connect(self.refresh_buttons)
+        model.state_changed.connect(self.refresh_detail_warning)
+        model.jobs_changed.connect(self.refresh_detail_warning)
         self.refresh()
 
     def paintEvent(self, _):
@@ -291,6 +303,7 @@ class SettingsPanel(QWidget):
         self.quality_word.setText(quality_word(s.quality))
         self.quality_word.set_color(theme.accent())
         self.quality_hint.setText(choice(PRESETS, s.preset).hint)
+        self.refresh_detail_warning()
         set_combo(self.unit, s.unit)
         set_checked(self.replace, s.replaceExisting)
         set_checked(self.split, s.splitParts)
@@ -314,6 +327,13 @@ class SettingsPanel(QWidget):
         set_checked(self.on_drop, s.convertOnDrop)
         set_checked(self.reveal, s.revealWhenDone)
         self.refresh_buttons()
+
+    def refresh_detail_warning(self):
+        s = self.settings
+        text = detail.warning_text(self.model.jobs, s.quality, s.preset, s.maxFaces)
+        self.detail_warning.setVisible(bool(text))
+        if text and self.detail_text.text() != text:
+            self.detail_text.setText(text)
 
     def refresh_buttons(self):
         m = self.model

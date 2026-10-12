@@ -180,3 +180,72 @@ def test_preview_switches_to_step_view(window, meshes):
     m.convert_all()
     assert wait_until(lambda: m.is_idle)
     assert jp.mode == "result" and jp.export_btn.isVisible() and jp.check_pill.isVisible()
+
+
+def test_fine_detail_estimate_matches_engine():
+    import sys
+
+    sys.path.insert(0, os.path.join(ROOT, "engine"))
+    smooth = pytest.importorskip("mmm.smooth")
+    from mmm_app import detail
+
+    assert (detail.FINE_START, detail.FINE_TRIS_PER_CAGE_VERT, detail.FINE_MAX_CAGE) == (
+        smooth.FINE_START, smooth.FINE_TRIS_PER_CAGE_VERT, smooth.FINE_MAX_CAGE)
+    for n in (10_000, 600_000, 2_060_000, 20_000_000):
+        for q in (0.0, 0.7, 0.85, 0.9, 0.97, 1.0):
+            assert detail.fine_patches(n, q) == 4 * smooth.fine_cage_budget(n, q)
+
+
+def test_fine_detail_mac_app_matches():
+    """The Mac app has its own copy of the numbers (app/Sources/Models.swift)."""
+    import re
+
+    from mmm_app import detail
+
+    with open(os.path.join(ROOT, "app", "Sources", "Models.swift"), encoding="utf-8") as fh:
+        swift = fh.read()
+
+    def const(name):
+        return float(re.search(rf"static let {name} = ([0-9.]+)", swift).group(1))
+
+    assert const("start") == detail.FINE_START
+    assert const("trianglesPerCageVertex") == detail.FINE_TRIS_PER_CAGE_VERT
+    assert const("maxCage") == detail.FINE_MAX_CAGE
+    assert const("kbPerPatch") == detail.KB_PER_PATCH
+    assert const("normalPatches") == detail.NORMAL_PATCHES
+    assert const("warnRatio") == detail.WARN_RATIO
+
+
+def test_fine_detail_estimate():
+    from mmm_app import detail
+
+    assert detail.estimate(2_060_000, 0.7, "precise") is None  # default quality: no fine detail
+    patches, mb = detail.estimate(2_060_000, 1.0, "precise")
+    assert patches > 150_000 and 80 < mb < 200
+    assert detail.estimate(2_060_000, 1.0, "cad") is None
+    assert detail.estimate(2_060_000, 1.0, "smooth", max_faces=4000) is None
+    assert detail.estimate(100_000, 1.0, "smooth") is None  # small meshes stay normal
+    assert detail.estimate(None, 1.0, "smooth") is None
+
+
+def test_fine_detail_warning_in_panel(window, meshes):
+    m, s, panel = window.model, window.settings, window.settings_panel
+    s.preset = "precise"
+    s.quality = 1.0
+    m.add([meshes["one.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    assert panel.detail_warning.isHidden()
+    m.add([meshes["dense_sculpt.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    assert not panel.detail_warning.isHidden()
+    text = panel.detail_text.text()
+    assert "dense_sculpt.stl" in text and "million triangles" in text and " MB" in text
+    s.quality = 0.7
+    assert panel.detail_warning.isHidden()
+    s.quality = 1.0
+    s.preset = "cad"
+    assert panel.detail_warning.isHidden()
+    s.preset = "smooth"
+    assert not panel.detail_warning.isHidden()
+    m.remove(next(j for j in m.jobs if "dense" in j.path))
+    assert wait_until(lambda: panel.detail_warning.isHidden())
