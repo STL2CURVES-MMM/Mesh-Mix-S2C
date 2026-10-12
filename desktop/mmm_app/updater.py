@@ -210,7 +210,9 @@ def install_target():
 def relaunch_env():
     """Environment for the installer and the restarted app: the user's own,
     without this run's test settings."""
-    env = system.clean_env({"MMM_JUST_UPDATED": "1"})
+    # the new copy waits for this one to quit (instead of handing its files
+    # to it as a second window would)
+    env = system.clean_env({"MMM_JUST_UPDATED": "1", "MMM_WAIT_FOR_PID": str(os.getpid())})
     for k in list(env):
         if k.startswith("MMM_SELFTEST") or k in ("MMM_UPDATE_URL", "MMM_SETTINGS_FILE"):
             env.pop(k)

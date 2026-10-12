@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 
 from PySide6.QtCore import QCoreApplication, QIODevice, Qt
 from PySide6.QtGui import QIcon
@@ -65,6 +66,17 @@ def _listen(window):
     return server
 
 
+def _wait_for_previous_copy():
+    """Started by the updater: let the old version finish quitting first."""
+    try:
+        pid = int(os.environ.pop("MMM_WAIT_FOR_PID", "0"))
+    except ValueError:
+        return
+    end = time.time() + 20
+    while pid > 0 and system.pid_alive(pid) and time.time() < end:
+        time.sleep(0.2)
+
+
 def _file_args(argv):
     return [os.path.abspath(a) for a in argv if not a.startswith("-") and os.path.exists(a)]
 
@@ -74,6 +86,7 @@ def main(argv=None):
     if "--version" in argv:
         print(__version__)
         return 0
+    _wait_for_previous_copy()
     selftest = bool(os.environ.get("MMM_SELFTEST"))
     if os.environ.get("MMM_SOFTWARE_GL"):
         QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL)

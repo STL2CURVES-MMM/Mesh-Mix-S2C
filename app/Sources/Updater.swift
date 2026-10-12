@@ -353,7 +353,7 @@ final class Updater: ObservableObject {
 
 /// A file download with progress reports. Both callbacks run on a
 /// background queue.
-final class Downloader: NSObject, URLSessionDownloadDelegate {
+final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let onProgress: (Double) -> Void
     private let onDone: (Error?) -> Void
     private var destination: URL?

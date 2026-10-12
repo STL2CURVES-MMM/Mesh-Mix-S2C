@@ -348,6 +348,8 @@ class Sidebar(QWidget):
             row = self.rows.get(j.id)
             if row is None:
                 row = self.rows[j.id] = JobRow(self.model, j)
+            else:
+                self.list_lay.removeWidget(row)  # re-inserted below, in queue order
             self.list_lay.insertWidget(i, row)
         n = len(self.model.jobs)
         self.count.setText(f"{n} file{'' if n == 1 else 's'}" if n else "")
