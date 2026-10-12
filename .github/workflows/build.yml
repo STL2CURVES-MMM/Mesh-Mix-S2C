@@ -4,7 +4,9 @@
 # the built engine, the app's scripted self-test (real conversions and
 # exports, with screenshots) and the self-update tests.
 # A tag like v1.2.3 also publishes a GitHub Release with the three
-# downloads and SHA256SUMS.txt; the apps' updaters look for those.
+# downloads and SHA256SUMS.txt; the apps' updaters look for those. So does
+# "Run workflow" on main with "publish" ticked (GitHub then creates the tag
+# for the version in VERSION itself).
 name: Build and test
 
 on:
@@ -13,6 +15,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the version in VERSION as a GitHub release (main only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -189,7 +196,7 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
     needs: [linux, windows, macos]
     runs-on: ubuntu-22.04
     permissions:
@@ -199,9 +206,18 @@ jobs:
       - name: Tag matches VERSION
         run: |
           v="$(tr -d '[:space:]' < VERSION)"
-          if [ "v$v" != "${GITHUB_REF_NAME}" ]; then
-            echo "The tag ${GITHUB_REF_NAME} doesn't match VERSION ($v)"; exit 1
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [ "v$v" != "$tag" ]; then
+              echo "The tag $tag doesn't match VERSION ($v)"; exit 1
+            fi
+          else
+            tag="v$v"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "$tag is already published; raise VERSION first"; exit 1
+            fi
           fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -222,7 +238,7 @@ jobs:
         run: |
           # hand-written notes for this version if there are any (they also
           # show in the apps' update window), else a list of the changes
-          notes=".github/release-notes/${GITHUB_REF_NAME}.md"
+          notes=".github/release-notes/${TAG}.md"
           if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
-          gh release create "${GITHUB_REF_NAME}" release/* \
-            --title "Manifold Mesh Mix ${GITHUB_REF_NAME#v}" "${how[@]}"
+          gh release create "$TAG" release/* --target "$GITHUB_SHA" \
+            --title "Manifold Mesh Mix ${TAG#v}" "${how[@]}"
