@@ -72,6 +72,7 @@ The app reads the actual parts from slicer project files:
 - **Copies on the plate are converted once**, in their original orientation and position (the same coordinates as the STL they came from). Scaling you applied in the slicer is kept.
 - **Split to parts (on by default):** every part becomes its own STEP file, named *Project - Part.step*, like "Split to parts" in the slicer. The preview shows one tab per part, so you can look at each part's mesh and STEP separately. Turn it off (the **Split to parts** button above the preview, or **Split 3MF projects into parts** in the settings) to get one STEP file with all parts as named bodies.
 - To keep the plate arrangement instead, set **Advanced → 3MF projects → Whole build plate** (this keeps all parts in one file).
+- **Parts that touch each other** (a two-color print, a soft liner in a hard mount) are found when the file is read, and the app asks: **Split to Parts** keeps them apart, **Merge Into One** joins them into one solid with an exact union (no leftover walls where they touched). **Merge Touching Parts** in the Mesh view changes it later.
 
 ### Speed ↔ Quality
 
