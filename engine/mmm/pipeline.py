@@ -7,13 +7,13 @@ import numpy as np
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
 from OCP.ShapeFix import ShapeFix_Shape
-from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
+from OCP.TopAbs import TopAbs_SHELL
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS
 
 from . import stepio
 from .brep import BRepAssembler, PlanarSurface, make_compound, make_solid
-from .meshio import EdgeTopology, face_normals_areas, load_and_prepare
+from .meshio import face_normals_areas, load_and_prepare
 from .planar import planar_regions
 from .report import NULL
 from .topology import RegionGraph
@@ -62,6 +62,8 @@ class Options:
         self.part_previews = list(kw.get("part_previews") or [])
         # join overlapping pieces of a part into one solid (mesh check)
         self.merge_overlaps = bool(kw.get("merge_overlaps", False))
+        # 3MF parts that touch each other: "ask" / "split" (keep separate) / "merge"
+        self.touching_parts = kw.get("touching_parts") or "ask"
 
 
 # ----------------------------------------------------------------------------
@@ -116,6 +118,7 @@ def fix_shape(shape, tol):
 
 def shells_to_solid(shape):
     """Wrap closed shells of a sewn shape into solids."""
+    from OCP.BRep import BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
 
     out = []
@@ -123,7 +126,7 @@ def shells_to_solid(shape):
     while exp.More():
         sh = TopoDS.Shell(exp.Current())
         exp.Next()
-        if sh.Closed() or True:
+        if BRep_Tool.IsClosed_s(sh):  # an open shell can't be a solid
             mk = BRepBuilderAPI_MakeSolid(sh)
             if mk.IsDone():
                 out.append(mk.Solid())
@@ -284,15 +287,21 @@ def convert(input_path, output_path, opts=None, report=NULL):
     report.stage("Reading mesh", 0.0, 0.08)
     bodies, info = load_and_prepare(
         input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout,
-        merge=opts.merge_overlaps,
+        merge=opts.merge_overlaps, touching=opts.touching_parts,
     )
     diag = info.diag
+    # 3MF files store their unit, and the reader turns it into millimetres;
+    # other formats have none, so their numbers are in the chosen unit
+    unit = "mm" if input_path.lower().endswith(".3mf") else opts.unit
+    if unit != opts.unit:
+        report.log("3MF files carry their own unit, so the STEP file is in millimetres")
+    stepio.set_model_unit(unit)
     q = opts.quality
     req = opts.preset
     if req == "exact":
         req = "precise"  # faceted output was retired: everything is real surfaces
     tol = opts.tolerance if opts.tolerance else auto_tolerance(diag, req if req != "auto" else "cad", q)
-    report.log(f"Model size {diag:.4g} {opts.unit} (diagonal), quality {int(round(q * 100))}%")
+    report.log(f"Model size {diag:.4g} {unit} (diagonal), quality {int(round(q * 100))}%")
 
     def body_tol(body, preset):
         if opts.tolerance:
@@ -463,7 +472,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
     def verify(path):
         return stepio.verify_step(path, expected_solids=expected, mesh_volume=mesh_vol, open_parts=len(bodies) - expected)
 
-    write = _step_writer(name, opts.unit, report)
+    write = _step_writer(name, unit, report)
     stages = (("Checking the STEP file", 0.93, 0.95), ("Repairing the STEP file", 0.95, 0.97))
     items, check, repaired = _save_checked(items, output_path, write, verify, tol, report, stages)
     if opts.validate:
@@ -535,6 +544,7 @@ def _part_output_path(output_path, name, used):
 def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt):
     """3MF "split to parts": every slicer part becomes its own STEP file
     (parts made of several separate solids keep them together)."""
+    unit = "mm" if input_path.lower().endswith(".3mf") else opts.unit
     groups = {}
     for bi, p in enumerate(info.body_part):
         groups.setdefault(p, []).append(bi)
@@ -577,7 +587,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
             return stepio.verify_step(path, expected_solids=expected, mesh_volume=part_mesh_vol, open_parts=n - expected)
 
         at = 0.08 + 0.87 * done / total
-        write = _step_writer(name, opts.unit, report)
+        write = _step_writer(name, unit, report)
         stages = ((f"Checking {name}.step", at, at), (f"Repairing {name}.step", at, at))
         items, check, repaired = _save_checked(items, out, write, verify, tol, report, stages)
         if opts.validate:
@@ -678,12 +688,8 @@ def choose_preset_body(body, tol, quality, report, big=400_000):
 
     Flat faces are the hallmark of mechanical parts; organic shapes have
     none worth mentioning. Pure analytic shapes without flats (a ball, a
-    ring) are recognised by a few surfaces explaining almost everything.
-    Returns (preset, segmentations); the CAD segmentation computed for the
-    decision is handed on so it isn't done twice."""
-    from .cad import Segmenter
-
-    n = sum(len(s.F) for s in body)
+    ring) are recognised by one primitive fitting each shell. Returns
+    (preset, None)."""
     tot = 0.0
     planar = 0.0
     for s in body:
@@ -726,21 +732,4 @@ def choose_preset_body(body, tol, quality, report, big=400_000):
         if all(kinds):
             report.log("Each shell is a single " + "/".join(sorted(set(kinds))))
             return "cad", None
-    return "smooth", None
-    segs = {}
-    covered = 0.0
-    nreg = 0
-    for s in body:
-        seg = Segmenter(s.V, s.F, s.topo, tol, report)
-        seg.detail = quality
-        regs = seg.run()
-        segs[id(s)] = seg
-        for r in regs:
-            if r.kind != "freeform":
-                covered += seg.fa[r.faces].sum()
-                nreg += 1
-    cov = covered / max(tot, 1e-30)
-    report.log(f"Analytic surfaces cover {cov:.0%} of the area with {nreg} faces")
-    if cov >= 0.9 and nreg <= 60:
-        return "cad", segs
     return "smooth", None

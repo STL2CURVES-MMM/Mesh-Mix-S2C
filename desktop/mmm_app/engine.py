@@ -131,6 +131,8 @@ class EngineTask(QObject):
             self.finished.emit(item[1], item[2])
 
     def cancel(self):
+        if self.proc is not None and self.proc.poll() is not None:
+            return  # it already finished: its result stands
         self.cancelled = True
         if not self.running:
             return

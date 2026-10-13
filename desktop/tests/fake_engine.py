@@ -10,6 +10,8 @@ same JSON events. What it does depends on words in the input file name:
     holes   - the mesh check fixes holes and flipped triangles
     overlap - the mesh check finds overlapping pieces (merged with --merge-overlaps)
     mergefail - merging the overlapping pieces fails
+    touching  - a project whose two parts touch each other (one part after
+                --touching-parts merge)
 """
 import argparse
 import json
@@ -45,9 +47,14 @@ def issue(code, status, problem, result, count=1):
     return {"code": code, "count": count, "status": status, "problem": problem, "result": result}
 
 
-def mesh_check(name, merge):
+def mesh_check(name, merge, touching="ask"):
     """The mesh check report for this test file."""
     issues, status, ready, problems = [], "ok", True, []
+    if "touching" in name:
+        merged = touching == "merge"
+        issues.append(issue("touching_parts", "fixed" if merged else "note" if touching == "split" else "action",
+                            "2 parts touch each other (Left, Right)", "Merged them into one solid." if merged else "Kept.", 2))
+        status = "fixed" if merged else "ok" if touching == "split" else "action"
     if "holes" in name:
         issues += [issue("holes", "fixed", "2 holes in the surface", "Filled them.", 2),
                    issue("flipped", "fixed", "3 triangles facing the wrong way", "Turned them around.", 3)]
@@ -76,6 +83,8 @@ def main():
     i.add_argument("--preview")
     i.add_argument("--part-previews")
     i.add_argument("--merge-overlaps", action="store_true")
+    i.add_argument("--touching-parts", default="ask")
+    i.add_argument("--keep-debris", action="store_true")
     x = sub.add_parser("fix")
     x.add_argument("input")
     x.add_argument("-o", "--output")
@@ -90,6 +99,7 @@ def main():
     c.add_argument("--part-output", action="append", default=[])
     c.add_argument("--part-preview", action="append", default=[])
     c.add_argument("--merge-overlaps", action="store_true")
+    c.add_argument("--touching-parts", default="ask")
     args, rest = ap.parse_known_args()
     name = os.path.basename(args.input).lower()
     if os.environ.get("FAKE_ENGINE_LOG"):
@@ -98,12 +108,14 @@ def main():
     if not os.path.exists(args.input):
         emit({"event": "error", "message": "FileNotFoundError: The file couldn't be found."})
         return 1
-    parts = "parts" in name
+    touching = "touching" in name
+    merged = touching and getattr(args, "touching_parts", "ask") == "merge"
+    parts = ("parts" in name or touching) and not merged
     if args.cmd == "fix":
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write("solid fixed\nendsolid fixed\n")
         emit({"event": "result", "output": args.output, "file_size": os.path.getsize(args.output),
-              "mesh_check": mesh_check(name, args.merge_overlaps)})
+              "mesh_check": mesh_check(name, args.merge_overlaps, getattr(args, "touching_parts", "ask"))})
         return 0
     if args.cmd == "inspect":
         if "mergefail" in name and args.merge_overlaps:
@@ -116,7 +128,9 @@ def main():
         ev = {"event": "result", "triangles": 2_060_000 if "dense" in name else 1234, "bodies": 2 if parts else 1,
               "open_shells": 0,
               "parts": 2 if parts else 1, "bbox": [[0, 0, 0], [40, 30, 20.5]], "part_list": [],
-              "mesh_check": mesh_check(name, args.merge_overlaps)}
+              "mesh_check": mesh_check(name, args.merge_overlaps, getattr(args, "touching_parts", "ask"))}
+        if touching:
+            ev["touching"] = [{"parts": [0, 1], "names": ["Left", "Right"]}]
         if parts:
             for k, nm in enumerate(["Left", "Right"]):
                 p = os.path.join(args.part_previews, f"part-{k}.mmmp")
@@ -158,7 +172,7 @@ def main():
             fh.write("ISO-10303-21; fake\n")
     preview(args.preview)
     emit({"event": "result", "output": args.output, "file_size": os.path.getsize(args.output), **base,
-          "mesh_check": mesh_check(name, args.merge_overlaps)})
+          "mesh_check": mesh_check(name, args.merge_overlaps, getattr(args, "touching_parts", "ask"))})
     return 0
 
 

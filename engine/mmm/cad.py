@@ -1,29 +1,27 @@
 """CAD preset: recognise analytic surfaces and build an editable B-rep."""
 import numpy as np
 
-from OCP.BRep import BRep_Builder, BRep_Tool
+from OCP.BRep import BRep_Tool
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
 from OCP.BRepLib import BRepLib
-from OCP.GC import GC_MakeArcOfCircle, GC_MakeCircle
 from OCP.Geom import (
     Geom_ConicalSurface,
     Geom_CylindricalSurface,
-    Geom_Plane,
     Geom_SphericalSurface,
     Geom_ToroidalSurface,
 )
 from OCP.GeomAbs import GeomAbs_C2
-from OCP.GeomAPI import GeomAPI_PointsToBSpline, GeomAPI_ProjectPointOnCurve
+from OCP.GeomAPI import GeomAPI_PointsToBSpline
 from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_Wire
 from OCP.TopAbs import TopAbs_EDGE
-from OCP.TopExp import TopExp, TopExp_Explorer
+from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Edge, TopoDS_Face, TopoDS_Vertex, TopoDS_Wire
 from OCP.Geom2d import Geom2d_Line
-from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt, gp_Pnt2d
+from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt2d
 from OCP.collections import Array1_gp_Pnt
 
-from .brep import MIN_TOL, BRepAssembler, _pnt, make_compound, make_solid
-from .fitting import CURVED, Cone, Cylinder, Plane, Sphere, Torus, perp_basis, unit
+from .brep import MIN_TOL, BRepAssembler, _pnt, make_compound
+from .fitting import CURVED, Cone, Cylinder, Plane, Sphere, perp_basis, unit
 from .meshio import face_normals_areas
 from .planar import planar_regions
 from .report import NULL

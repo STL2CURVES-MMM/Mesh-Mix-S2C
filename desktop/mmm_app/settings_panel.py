@@ -300,6 +300,8 @@ class SettingsPanel(QWidget):
     def _setting_changed(self, key):
         if key in ("splitParts", "plateLayout"):
             self.model.apply_split_default()
+        if key in ("repair", "removeDebris", "plateLayout"):
+            self.model.recheck()
         self.refresh()
 
     def _slider_moved(self, v):
@@ -337,7 +339,8 @@ class SettingsPanel(QWidget):
         """With Auto selected, marks the preset Auto actually used for the
         selected file (both CAD and Smooth when its parts used different ones)."""
         j = self.model.selected_job
-        used = j.used_preset if (j is not None and j.status == JobStatus.DONE and self.settings.preset == "auto") else None
+        ran_auto = j is not None and (j.run_settings or {}).get("preset") == "auto"
+        used = j.used_preset if (ran_auto and j.status == JobStatus.DONE and self.settings.preset == "auto") else None
         picks = {"cad", "smooth"} if used == "mixed" else ({used} if used else set())
         for card in self.preset_cards:
             v = card.preset.value

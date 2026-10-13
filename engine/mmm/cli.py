@@ -13,6 +13,7 @@ from .report import Reporter
 
 
 PREVIEW_TRIS = 1_500_000
+TOUCHING = ["ask", "split", "merge"]
 
 
 def _preview_mesh(V, F):
@@ -37,12 +38,20 @@ def _preview_mesh(V, F):
     return V, F[np.sort(sel)]
 
 
+def _need_bodies(bodies):
+    from .meshio import MeshError
+
+    if not any(len(s.F) for b in bodies for s in b):
+        raise MeshError("Nothing is left of this mesh after removing its broken triangles, so there's no shape to use.")
+
+
 def _fix(args, rep):
     """Check and fix a mesh, then save the fixed copy (STL or 3MF)."""
     from .meshio import load_and_prepare, write_3mf, write_stl
 
     bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=not args.keep_debris, report=rep,
-                                    layout=args.layout, merge=args.merge_overlaps)
+                                    layout=args.layout, merge=args.merge_overlaps, touching=args.touching_parts)
+    _need_bodies(bodies)
     out = args.output
     if out.lower().endswith(".3mf"):
         parts = []
@@ -61,8 +70,9 @@ def _inspect(args, rep):
     from . import stepio
     from .meshio import load_and_prepare
 
-    bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=True, report=rep,
-                                    merge=args.merge_overlaps)
+    bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=not args.keep_debris, report=rep,
+                                    layout=args.layout, merge=args.merge_overlaps, touching=args.touching_parts)
+    _need_bodies(bodies)
     d = info.as_dict()
     d["closed"] = info.open_shells == 0
     d["parts"] = info.parts
@@ -123,6 +133,9 @@ def main(argv=None):
     c.add_argument("--json", action="store_true", help="JSON-lines progress on stdout")
 
     c.add_argument("--merge-overlaps", action="store_true", help="join overlapping pieces of a part into one solid")
+    c.add_argument("--touching-parts", default="ask", choices=TOUCHING,
+                   help="3MF parts that touch each other: keep them separate and report it (ask), keep them "
+                        "separate (split), or join them into one part (merge)")
 
     x = sub.add_parser("fix", help="check and fix a mesh and save the fixed copy (.stl or .3mf)")
     x.add_argument("input")
@@ -131,12 +144,16 @@ def main(argv=None):
     x.add_argument("--keep-debris", action="store_true")
     x.add_argument("--layout", default="parts", choices=["parts", "plate"])
     x.add_argument("--merge-overlaps", action="store_true")
+    x.add_argument("--touching-parts", default="ask", choices=TOUCHING)
     x.add_argument("--json", action="store_true")
 
     i = sub.add_parser("inspect", help="check a mesh and report what was found and fixed")
     i.add_argument("input")
     i.add_argument("--repair", default="auto", choices=["off", "auto", "aggressive"])
+    i.add_argument("--keep-debris", action="store_true")
     i.add_argument("--merge-overlaps", action="store_true")
+    i.add_argument("--touching-parts", default="ask", choices=TOUCHING)
+    i.add_argument("--layout", default="parts", choices=["parts", "plate"])
     i.add_argument("--preview", default=None)
     i.add_argument("--part-previews", default=None, help="folder for one preview per 3MF part")
     i.add_argument("--json", action="store_true")
@@ -198,6 +215,7 @@ def main(argv=None):
             part_outputs=args.part_output,
             part_previews=args.part_preview,
             merge_overlaps=args.merge_overlaps,
+            touching_parts=args.touching_parts,
         )
         res = convert(args.input, out, opts, rep)
         if not rep.json_mode:
@@ -215,6 +233,9 @@ def main(argv=None):
             reason = "The file itself is the problem, not the app."
         elif isinstance(e, MemoryError):
             msg = "Ran out of memory. Move the slider toward Faster, or convert fewer files at once (Advanced → Files at once)."
+        elif isinstance(e, FileNotFoundError) and os.path.exists(args.input):
+            msg = "The folder to save into couldn't be found. Was it moved or deleted?"
+            reason = "The app saves its files there, and it wasn't there any more."
         elif isinstance(e, FileNotFoundError):
             msg = "The file couldn't be found. Was it moved, renamed or deleted?"
         elif isinstance(e, PermissionError):
@@ -230,7 +251,7 @@ def main(argv=None):
                       "Save a report and send it, so it can be fixed.")
         if isinstance(e, MemoryError):
             reason = "Very big or very detailed meshes need a lot of memory, and this one needed more than was free."
-        elif isinstance(e, FileNotFoundError):
+        elif isinstance(e, FileNotFoundError) and not os.path.exists(args.input):
             reason = "The app reads the file again when it converts it, and it wasn't there any more."
         elif isinstance(e, PermissionError):
             reason = "The system's file permissions blocked the app."

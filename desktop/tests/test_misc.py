@@ -296,3 +296,21 @@ def test_auto_quality_slider(window, meshes):
     s.autoQuality = False
     s.preset = "cad"
     assert panel.auto_q.isHidden() and panel.slider.value() == 250
+
+
+def test_auto_used_mark_only_for_auto_runs(window, meshes):
+    m, s, panel = window.model, window.settings, window.settings_panel
+    s.preset = "cad"
+    m.add([meshes["one.stl"]])
+    assert wait_until(lambda: m.jobs and m.jobs[0].status == JobStatus.READY)
+    m.select(m.jobs[0].id)
+    m.convert_all()
+    assert wait_until(lambda: m.jobs[0].status == JobStatus.DONE)
+    s.preset = "auto"
+    panel.refresh()
+    assert not any(c.auto_picked for c in panel.preset_cards)
+    m.reconvert(m.jobs[0])
+    assert wait_until(lambda: m.jobs[0].status == JobStatus.DONE)
+    panel.refresh()
+    assert [c.preset.value for c in panel.preset_cards if c.auto_picked] == ["cad"]
+

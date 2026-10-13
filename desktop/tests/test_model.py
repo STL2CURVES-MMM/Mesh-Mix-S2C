@@ -476,3 +476,106 @@ def test_auto_quality_per_file(model, settings, meshes, tmp_path, monkeypatch):
     runs = [json.loads(line) for line in log.read_text().splitlines() if line.startswith('["convert"')]
     q = {os.path.basename(r[1]): r[r.index("--quality") + 1] for r in runs}
     assert q == {"one.stl": "0.900", "dense_sculpt.stl": "0.600"}
+
+
+# ---------------------------------------------------------------- touching 3MF parts
+
+def test_touching_parts_ask_and_split(model, settings, meshes):
+    (job,) = add_and_read(model, meshes["touching.3mf"])
+    assert wait_until(lambda: job.touching_choice is not None)
+    assert ("touching", "touching.3mf") in model.ui.asked
+    assert job.touching_choice == "split" and job.is_split and len(job.part_list) == 2
+    issue = next(i for i in job.mesh_check.issues if i.code == "touching_parts")
+    assert issue.status == "note" and job.mesh_check.status != "action"
+
+
+def test_touching_parts_merge(model, settings, meshes, tmp_path, monkeypatch):
+    import json
+
+    log = tmp_path / "args.log"
+    monkeypatch.setenv("FAKE_ENGINE_LOG", str(log))
+    model.ui.touching = "merge"
+    settings.convertOnDrop = True
+    (job,) = add_and_read(model, meshes["touching.3mf"])
+    # merging reads the file again, then converts (convert on drop is on)
+    assert wait_until(lambda: job.status == JobStatus.DONE, 30)
+    assert job.touching_choice == "merge" and job.part_list == [] and not job.is_split
+    assert next(i for i in job.mesh_check.issues if i.code == "touching_parts").status == "fixed"
+    runs = [json.loads(line) for line in log.read_text().splitlines()]
+    assert ["--touching-parts", "merge"] == [x for r in runs if r[0] == "convert" for x in r
+                                             if x in ("--touching-parts", "merge")][:2]
+    # back to separate parts from the Mesh view
+    model.set_touching_choice(job, "split")
+    assert wait_until(lambda: job.status == JobStatus.READY and len(job.part_list) == 2)
+    assert job.touching_choice == "split"
+
+
+def test_touching_parts_asked_once_per_file(model, meshes):
+    (job,) = add_and_read(model, meshes["touching.3mf"])
+    assert wait_until(lambda: job.touching_choice is not None)
+    model.reconvert(job)
+    assert wait_until(lambda: job.status == JobStatus.DONE)
+    assert model.ui.asked.count(("touching", "touching.3mf")) == 1
+
+
+def test_report_scrubs_windows_paths():
+    from mmm_app import bugreport
+
+    text = ("FileNotFoundError: [Errno 2] No such file: 'C:\\\\Users\\\\John Smith\\\\Documents\\\\b.stl' "
+            "and C:\\Users\\Ana Lu\\x.py")
+    out = bugreport.scrub(text, "/somewhere/else/model.stl")
+    assert "John" not in out and "Smith" not in out and "Ana" not in out and "Lu" not in out
+
+
+def test_report_uses_the_runs_settings(model, settings, meshes):
+    from mmm_app import bugreport
+
+    settings.preset = "cad"
+    (job,) = add_and_read(model, meshes["has_error.stl"])
+    model.enqueue(job)
+    assert wait_until(lambda: job.status == JobStatus.FAILED)
+    settings.preset = "smooth"  # changed after the run
+    text = bugreport.build(job, settings)
+    assert "Preset:        CAD" in text and "(of the last conversion)" in text
+
+
+def test_clear_finished_only_removes_what_was_asked(model, meshes):
+    a, b = add_and_read(model, meshes["one.stl"], meshes["Part.stl"])
+    model.enqueue(a)
+    assert wait_until(lambda: a.status == JobStatus.DONE)
+
+    def finish_b_meanwhile(count, action):
+        model.enqueue(b)
+        assert wait_until(lambda: b.status == JobStatus.DONE)
+        return True
+
+    model.ui.confirm_discard = finish_b_meanwhile
+    model.clear_finished()
+    assert model.jobs == [b]
+
+
+def test_save_fixed_mesh_engine_missing(model, meshes, monkeypatch):
+    (job,) = add_and_read(model, meshes["holes.stl"])
+
+    def missing(args):
+        raise M.EngineMissing()
+
+    monkeypatch.setattr(M, "EngineTask", missing)
+    done = []
+    model.save_fixed_mesh(job, "x.stl", done.append)
+    assert done == []  # reported after the call returns, like a real run
+    assert wait_until(lambda: done)
+    assert done == [M.ENGINE_MISSING_MESSAGE]
+
+
+def test_debris_setting_rechecks_files(model, settings, meshes, tmp_path, monkeypatch):
+    import json
+
+    log = tmp_path / "args.log"
+    monkeypatch.setenv("FAKE_ENGINE_LOG", str(log))
+    (job,) = add_and_read(model, meshes["one.stl"])
+    settings.removeDebris = False
+    model.recheck()
+    assert wait_until(lambda: job.status == JobStatus.READY and len(log.read_text().splitlines()) >= 2)
+    last = json.loads(log.read_text().splitlines()[-1])
+    assert last[0] == "inspect" and "--keep-debris" in last

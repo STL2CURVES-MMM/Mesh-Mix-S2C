@@ -24,7 +24,7 @@ from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
 from OCP.gp import gp_Pnt
 from OCP.collections import Array1_double, Array1_int, Array2_gp_Pnt
 
-from .fitting import perp_basis, unit
+from .fitting import perp_basis
 
 
 # ----------------------------------------------------------------------------

@@ -191,6 +191,25 @@ class MainWindow(QMainWindow):
         d = QFileDialog.getExistingDirectory(self.export_dialog or self, "Choose the folder to export STEP files to", start)
         return os.path.abspath(d) if d else None
 
+    def ask_touching(self, job):
+        """Parts of a 3MF that touch each other: keep them as separate parts
+        or merge them into one solid? Returns "split" or "merge"."""
+        groups = "; ".join(", ".join(str(n) for n in g.get("names", [])) for g in job.touching)
+        separate = "one STEP file each" if self.model.split_available else "separate solids in one STEP file"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(APP_NAME)
+        box.setText("Parts that touch")
+        box.setInformativeText(f"In “{job.file_name}”, these parts touch each other: {groups}.\n\n"
+                               f"Keep them as separate parts ({separate}), or merge them into one solid? "
+                               "You can change this later in the Mesh view.")
+        merge = box.addButton("Merge Into One", QMessageBox.ButtonRole.AcceptRole)
+        split = box.addButton("Split to Parts", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(split)
+        box.setEscapeButton(split)
+        box.exec()
+        return "merge" if box.clickedButton() is merge else "split"
+
     def save_fixed_mesh(self, job, done=None):
         """Asks where to save the checked and fixed copy of the mesh, then
         saves it (.stl, or .3mf with one object per part)."""

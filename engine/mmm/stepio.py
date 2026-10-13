@@ -98,6 +98,26 @@ def area(shape, eps=1e-5):
     return float(p.Mass())
 
 
+# metres per unit of the model's numbers
+METRES_PER_UNIT = {"mm": 0.001, "cm": 0.01, "m": 1.0, "in": 0.0254, "ft": 0.3048, "um": 1e-6}
+
+
+_model_unit = "mm"
+
+
+def set_model_unit(unit):
+    """The unit the model's numbers are in. STEP files are written in it
+    (the numbers unchanged, labelled with the unit), and files read back to
+    check them come back in it, so they compare with the mesh."""
+    global _model_unit
+    _model_unit = unit if unit in METRES_PER_UNIT else "mm"
+
+
+def _read_in_model_unit():
+    # set right before reading: creating the first reader resets it
+    Interface_Static.SetCVal_s("xstep.cascade.unit", UNIT_NAMES[_model_unit])
+
+
 def write_step_named(items, path, product_name="Part", unit="mm"):
     """Write [(shape, name)] as named parts (an assembly when there are
     several), so CAD browsers show meaningful part names."""
@@ -115,13 +135,16 @@ def write_step_named(items, path, product_name="Part", unit="mm"):
     app = XCAFApp_Application.GetApplication_s()
     doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
     app.InitDocument(doc)
+    # the document's numbers are in the model's unit (without this they'd
+    # be taken as millimetres and scaled)
+    XCAFDoc_DocumentTool.SetLengthUnit_s(doc, METRES_PER_UNIT.get(unit, 0.001))
     st = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     if len(items) == 1:
         lab = st.AddShape(items[0][0], False)
-        TDataStd_Name.Set_s(lab, TCollection_ExtendedString(_clean_name(items[0][1] or product_name)))
+        TDataStd_Name.Set_s(lab, TCollection_ExtendedString(_clean_name(items[0][1] or product_name), True))
     else:
         asm = st.NewShape()
-        TDataStd_Name.Set_s(asm, TCollection_ExtendedString(_clean_name(product_name)))
+        TDataStd_Name.Set_s(asm, TCollection_ExtendedString(_clean_name(product_name), True))
         used = {}
         for shape, name in items:
             nm = _clean_name(name or "Part")
@@ -129,7 +152,7 @@ def write_step_named(items, path, product_name="Part", unit="mm"):
             if used[nm] > 1:
                 nm = f"{nm} ({used[nm]})"
             lab = st.AddShape(shape, False)
-            TDataStd_Name.Set_s(lab, TCollection_ExtendedString(nm))
+            TDataStd_Name.Set_s(lab, TCollection_ExtendedString(nm, True))
             st.AddComponent(asm, lab, TopLoc_Location())
         st.UpdateAssemblies()
     w = STEPCAFControl_Writer()
@@ -165,6 +188,8 @@ def read_step_named(path):
     r.SetNameMode(True)
     r.SetColorMode(False)
     r.SetLayerMode(False)
+    _read_in_model_unit()
+    XCAFDoc_DocumentTool.SetLengthUnit_s(doc, METRES_PER_UNIT[_model_unit])
     if r.ReadFile(path) != IFSelect_RetDone or not r.Transfer(doc):
         raise RuntimeError("STEP read failed")
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
@@ -246,6 +271,7 @@ def _step_str(s):
 
 def read_step(path):
     r = STEPControl_Reader()
+    _read_in_model_unit()
     st = r.ReadFile(path)
     if st != IFSelect_RetDone:
         raise RuntimeError("STEP read failed")

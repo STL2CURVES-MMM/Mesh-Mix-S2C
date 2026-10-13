@@ -252,11 +252,14 @@ class JobPreview(QWidget):
         self.merge_btn = GhostButton("Merge Overlapping Pieces", "stack", checkable=True)
         self.merge_btn.setFont(theme.font(11.5, MEDIUM))
         self.merge_btn.clicked.connect(self._toggle_merge)
+        self.touch_btn = GhostButton("Merge Touching Parts", "split", checkable=True)
+        self.touch_btn.setFont(theme.font(11.5, MEDIUM))
+        self.touch_btn.clicked.connect(self._toggle_touching)
         self.fixed_btn = GhostButton("Save Fixed Mesh…", "import")
         self.fixed_btn.setFont(theme.font(11.5, MEDIUM))
         self.fixed_btn.setToolTip("Save the checked and fixed mesh as an STL or 3MF file, for example for your slicer")
         self.fixed_btn.clicked.connect(self._save_fixed)
-        self.mesh_buttons = hbox(None, self.merge_btn, self.fixed_btn, spacing=8)
+        self.mesh_buttons = hbox(None, self.touch_btn, self.merge_btn, self.fixed_btn, spacing=8)
         self.mesh_card.lay.addLayout(self.mesh_buttons)
         self._saving_fixed = None  # job whose fixed mesh is being saved
         self.error_card = Card(padding=10, spacing=6)
@@ -543,6 +546,11 @@ class JobPreview(QWidget):
             self.model.set_merge_overlaps(self.job, self.merge_btn.isChecked())
             self.merge_btn.setChecked(self.job.merge_overlaps)
 
+    def _toggle_touching(self):
+        if self.job is not None:
+            self.model.set_touching_choice(self.job, "merge" if self.touch_btn.isChecked() else "split")
+            self.touch_btn.setChecked(self.job.touching_choice == "merge")
+
     def _save_fixed(self):
         j = self.job
         win = self.window()
@@ -554,9 +562,10 @@ class JobPreview(QWidget):
             if not err:
                 j.saved_fixed_mesh = path
             self.refresh()
-        if win.save_fixed_mesh(j, done):
-            self._saving_fixed = j
-            self.refresh()
+        self._saving_fixed = j
+        if not win.save_fixed_mesh(j, done):
+            self._saving_fixed = None
+        self.refresh()
 
     def _save_report(self):
         win = self.window()
@@ -619,8 +628,15 @@ class JobPreview(QWidget):
             if j.merge_overlaps else
             "Join the pieces that overlap each other into one solid (the file is read again). Pieces that "
             "overlap on purpose, like parts of an assembly, are better kept separate.")
+        self.touch_btn.setVisible(bool(j.touching))
+        self.touch_btn.setChecked(j.touching_choice == "merge")
+        self.touch_btn.setEnabled(not busy)
+        self.touch_btn.setToolTip(
+            "The touching parts are merged into one solid. Click to keep them as separate parts again."
+            if j.touching_choice == "merge" else
+            "Merge the parts that touch each other into one solid (the file is read again)")
         saving = self._saving_fixed is j
-        self.fixed_btn.setVisible(mc.fixed_anything or j.merge_overlaps)
+        self.fixed_btn.setVisible(mc.fixed_anything or j.merge_overlaps or j.touching_choice == "merge")
         self.fixed_btn.setEnabled(not saving and j.readable and j.status != JobStatus.INSPECTING)
         self.fixed_btn.setText("Saving…" if saving else ("Saved ✓  Save Again…" if j.saved_fixed_mesh
                                                           else "Save Fixed Mesh…"))

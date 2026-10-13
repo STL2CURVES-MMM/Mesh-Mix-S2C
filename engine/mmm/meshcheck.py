@@ -393,6 +393,87 @@ def overlapping_bodies(bodies, exclude=None):
     return [sorted(g) for g in groups.values()]
 
 
+def touching_parts(parts, frames):
+    """Groups of parts (lists of part indices) whose solids touch or overlap.
+    parts: the bodies of each part; frames: an id per part for its
+    coordinate system. Only parts that share one can touch: the parts of one
+    3MF object, or everything on the build plate (separate objects keep
+    their own coordinates when each part is converted once)."""
+    n = len(parts)
+    boxes = []
+    for b in parts:
+        shells = [s for body in b for s in body]
+        if not shells or not all(s.closed for s in shells):
+            boxes.append(None)
+            continue
+        boxes.append((np.min([s.V.min(0) for s in shells], 0), np.max([s.V.max(0) for s in shells], 0)))
+    mans = {}
+
+    def man(k):
+        if k not in mans:
+            mans[k] = _to_manifold([s for body in parts[k] for s in body])
+        return mans[k]
+
+    edges = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            if boxes[i] is None or boxes[j] is None or frames[i] != frames[j]:
+                continue
+            (li, hi), (lj, hj) = boxes[i], boxes[j]
+            pad = 1e-4 * float(max(np.linalg.norm(hi - li), np.linalg.norm(hj - lj)))
+            if (li - pad > hj).any() or (lj - pad > hi).any():
+                continue
+            mi, mj = man(i), man(j)
+            if mi is None or mj is None:
+                continue
+            try:
+                # touching solids join into one piece in an exact union
+                joined = len((mi + mj).decompose()) < len(mi.decompose()) + len(mj.decompose())
+            except Exception:
+                continue
+            if joined:
+                edges.append((i, j))
+    if not edges:
+        return []
+    g = sparse.coo_matrix((np.ones(len(edges)), ([e[0] for e in edges], [e[1] for e in edges])), shape=(n, n))
+    _, lab = connected_components(g, directed=False)
+    groups = {}
+    for a, b in edges:
+        groups.setdefault(lab[a], set()).update((a, b))
+    return sorted(sorted(g) for g in groups.values())
+
+
+def union_parts(parts, diag, report=NULL):
+    """One set of bodies from several parts: their solids joined into one
+    (None when a part can't be joined, e.g. it has holes)."""
+    mans = [_to_manifold([s for body in b for s in body]) for b in parts]
+    if any(m is None for m in mans):
+        return None
+    u = mans[0]
+    for m in mans[1:]:
+        u = u + m
+    mesh = u.to_mesh()
+    V = np.asarray(mesh.vert_properties)[:, :3].astype(np.float64)
+    F = np.asarray(mesh.tri_verts).astype(np.int64)
+    shells = [sh for sh in split_shells(V, F) if not (sh.closed and _thin(sh.V, sh.F, diag)) and sh.n_faces >= 4]
+    return organise_bodies(shells, report)
+
+
+def touching_issue(groups, names, choice):
+    """The mesh check's report on touching parts (choice: ask/split/merge)."""
+    n = sum(len(g) for g in groups)
+    which = "; ".join(", ".join(names[k] for k in g) for g in groups)
+    problem = f"{_plural(n, 'part')} touch each other ({which})"
+    if choice == "merge":
+        return _issue("touching_parts", n, "fixed", problem, "Merged them into one solid.")
+    if choice == "split":
+        return _issue("touching_parts", n, "note", problem,
+                      "Kept as separate parts, as you chose. Use “Merge Touching Parts” to join them into one solid.")
+    return _issue("touching_parts", n, "action", problem,
+                  "Kept as separate parts for now. Choose “Split to Parts” to save each as its own STEP file, or "
+                  "“Merge Touching Parts” to join them into one solid.")
+
+
 def _to_manifold(body):
     try:
         import manifold3d as m3d

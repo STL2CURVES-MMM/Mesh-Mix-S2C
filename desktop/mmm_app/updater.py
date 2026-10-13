@@ -162,9 +162,11 @@ def download(info, progress=None, cancelled=lambda: False, folder=None):
             expected = parts[0].lower()
     if not expected or not re.fullmatch(r"[0-9a-f]{64}", expected):
         raise UpdateError("The update's checksum is missing, so it can't be installed safely.")
-    folder = folder or os.path.join(tempfile.gettempdir(), "ManifoldMeshMix-update")
+    # a new private folder (only this user can write to it): a shared,
+    # predictable one would let someone else swap the file
+    folder = folder or tempfile.mkdtemp(prefix="ManifoldMeshMix-update-")
     os.makedirs(folder, exist_ok=True)
-    dest = os.path.join(folder, info.asset_name)
+    dest = os.path.join(folder, os.path.basename(info.asset_name))
     part = dest + ".download"
     h = hashlib.sha256()
     got = 0
@@ -192,7 +194,32 @@ def download(info, progress=None, cancelled=lambda: False, folder=None):
         _remove(part)
         raise UpdateError("The downloaded file doesn't match its checksum, so it wasn't installed. Try again.")
     os.replace(part, dest)
+    _verified[os.path.abspath(dest)] = expected
     return dest
+
+
+# checksums of the downloads this run verified (checked again right before
+# installing, in case the file changed since)
+_verified = {}
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _check_again(path):
+    expected = _verified.get(os.path.abspath(path))
+    try:
+        ok = expected is not None and _sha256(path) == expected
+    except OSError:
+        ok = False
+    if not ok:
+        raise UpdateError("The downloaded update changed or disappeared since it was checked, so it wasn't installed. "
+                          "Download it again.")
 
 
 def _remove(p):
@@ -237,6 +264,7 @@ def relaunch_env():
 def install(path):
     """Starts installing the downloaded update. The caller quits the app
     right after; the new version starts by itself."""
+    _check_again(path)
     if system.IS_WINDOWS:
         # The installer waits until this app has quit (it watches the
         # app's mutex), installs silently and starts the app again.
@@ -264,6 +292,10 @@ def install(path):
             _remove(tmp)
             raise UpdateError(f"The AppImage couldn't be replaced ({e.strerror or e}).") from e
         _remove(path)
+        try:
+            os.rmdir(os.path.dirname(path))
+        except OSError:
+            pass
         system.popen_detached([target], cwd=os.path.expanduser("~"), env=relaunch_env())
         return
     raise UpdateError("Updates for this system are installed by the Mac app.")

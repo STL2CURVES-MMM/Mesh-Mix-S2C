@@ -12,8 +12,10 @@ import re
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 
 from . import system
+from .model import RUN_SETTINGS
 from .settings import MAX_FACES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice, preset_title
 from .version import __version__
 
@@ -32,7 +34,10 @@ def _variants(path):
             continue
         out.add(p)
         out.add(p.replace("\\", "/"))
-        out.add(p.replace("/", "\\"))
+        back = p.replace("/", "\\")
+        out.add(back)
+        # as Python prints paths inside error messages (repr): C:\\Users\\...
+        out.add(back.replace("\\", "\\\\"))
     return out
 
 
@@ -48,8 +53,9 @@ def scrub(text, job_path):
     for v, label in pairs:
         text = re.sub(re.escape(v), label.replace("\\", "\\\\"), text, flags=re.IGNORECASE if system.IS_WINDOWS else 0)
     # a user name left in some other path (C:\Users\name\..., /home/name/...)
-    text = re.sub(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\s\"']+", r"\1<user>", text)
-    text = re.sub(r"(/(?:home|Users)/)[^/\s\"']+", r"\1<user>", text)
+    # (names can have spaces: up to the next separator or quote)
+    text = re.sub(r"(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/\"'\r\n]+", r"\1<user>", text)
+    text = re.sub(r"(/(?:home|Users)/)[^/\"'\r\n]+", r"\1<user>", text)
     return text
 
 
@@ -113,20 +119,24 @@ def build(job, settings):
     if job.bbox_size:
         add("  Dimensions: " + " x ".join(f"{v:.4g}" for v in job.bbox_size) + f" {s.unit}")
     add("")
-    add("Settings")
-    add(f"  Preset:        {choice(PRESETS, s.preset).title}")
-    if s.auto_quality_on:
-        add(f"  Quality:       Auto ({round(s.quality_for(job.triangles) * 100)}% for this file)")
-    else:
-        add(f"  Quality:       {round(s.quality * 100)}%")
-    add(f"  Mesh repair:   {choice(REPAIR_LEVELS, s.repair).title}")
-    add(f"  Units:         {choice(UNITS, s.unit).title}")
-    add(f"  3MF projects:  {choice(PLATE_LAYOUTS, s.plateLayout).title}")
-    add(f"  Remove debris: {'yes' if s.removeDebris else 'no'}")
+    # the settings the last conversion used (else the current ones)
+    run = job.run_settings or {}
+    r = SimpleNamespace(**{k: run.get(k, getattr(s, k)) for k in RUN_SETTINGS})
+    add("Settings" + (" (of the last conversion)" if run else " (current)"))
+    add(f"  Preset:        {choice(PRESETS, r.preset).title}")
+    q = run["quality"] if run else s.quality_for(job.triangles)
+    auto = r.preset == "auto" and r.autoQuality
+    add(f"  Quality:       {'Auto, ' if auto else ''}{round(q * 100)}%")
+    add(f"  Mesh repair:   {choice(REPAIR_LEVELS, r.repair).title}")
+    add(f"  Units:         {choice(UNITS, r.unit).title}")
+    add(f"  3MF projects:  {choice(PLATE_LAYOUTS, r.plateLayout).title}")
+    add(f"  Remove debris: {'yes' if r.removeDebris else 'no'}")
     add(f"  Merge overlapping pieces: {'yes' if job.merge_overlaps else 'no'}")
-    add(f"  Tolerance:     {s.customTolerance:g} {s.unit}" if s.useCustomTolerance and s.customTolerance > 0
+    if job.touching:
+        add(f"  Touching parts: {job.touching_choice or 'not asked yet'}")
+    add(f"  Tolerance:     {r.customTolerance:g} {r.unit}" if r.useCustomTolerance and r.customTolerance > 0
         else "  Tolerance:     automatic")
-    add(f"  Max faces:     {choice(MAX_FACES, s.maxFaces).title}")
+    add(f"  Max faces:     {choice(MAX_FACES, r.maxFaces).title}")
     add(f"  Split to parts: {'yes' if job.is_split else 'no'}")
     add("")
     mc = job.mesh_check

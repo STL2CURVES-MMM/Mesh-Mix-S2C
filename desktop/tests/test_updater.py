@@ -154,6 +154,15 @@ def test_appimage_install_replaces_file(tmp_path, monkeypatch):
     assert updater.install_target() == (True, "")
     started = []
     monkeypatch.setattr(updater.system, "popen_detached", lambda args, **kw: started.append((args, kw)))
+    # only a file this run downloaded and checked is installed, and only if it hasn't changed since
+    with pytest.raises(updater.UpdateError):
+        updater.install(str(new))
+    monkeypatch.setitem(updater._verified, os.path.abspath(str(new)), updater._sha256(str(new)))
+    new.write_bytes(b"evil")
+    with pytest.raises(updater.UpdateError):
+        updater.install(str(new))
+    assert old.read_bytes() == b"old" and not started
+    new.write_bytes(b"new")
     updater.install(str(new))
     assert old.read_bytes() == b"new" and os.access(old, os.X_OK)
     assert started[0][0] == [str(old)] and not new.exists()

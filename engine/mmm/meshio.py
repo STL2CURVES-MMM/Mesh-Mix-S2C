@@ -1,4 +1,5 @@
 """Mesh loading, cleaning and repair."""
+import io
 import os
 import re
 import struct
@@ -21,14 +22,24 @@ class MeshError(Exception):
 
 _BIN_DTYPE = np.dtype([("n", "<f4", (3,)), ("v", "<f4", (3, 3)), ("attr", "<u2")])
 _ASCII_VERTEX = re.compile(
-    rb"vertex\s+([-+0-9.eEnNaAiIfF]+)\s+([-+0-9.eEnNaAiIfF]+)\s+([-+0-9.eEnNaAiIfF]+)"
+    rb"(?i)vertex\s+([-+0-9.eEnNaAiIfF]+)\s+([-+0-9.eEnNaAiIfF]+)\s+([-+0-9.eEnNaAiIfF]+)"
 )
+_ASCII_VERTEX_WORD = re.compile(rb"(?i)\bvertex\b")
+
+
+def _is_text(sample):
+    if not sample:
+        return False
+    printable = sum(1 for b in sample if 32 <= b < 127 or b in (9, 10, 13))
+    return printable >= 0.97 * len(sample)
 
 
 def read_stl(path):
     """Return an (n, 3, 3) float64 array of triangle corners."""
     with open(path, "rb") as fh:
         data = fh.read()
+    if data[:3] == b"\xef\xbb\xbf" and _is_text(data[3:4096]):
+        data = data[3:]  # a text file saved with a byte order mark
     size = len(data)
     if size < 15:
         raise MeshError("This file is empty or too small to be an STL.")
@@ -36,38 +47,63 @@ def read_stl(path):
     binary_count = struct.unpack("<I", data[80:84])[0] if size >= 84 else -1
     exact_binary = size >= 84 and 84 + binary_count * 50 == size
     head = data[:1024].lstrip().lower()
-    looks_ascii = head.startswith(b"solid") and (b"facet" in head or b"endsolid" in head)
+    looks_ascii = ((head.startswith(b"solid") and (b"facet" in head or b"endsolid" in head))
+                   or (_is_text(data[:4096]) and _ASCII_VERTEX_WORD.search(data[:4096]) is not None))
 
-    if exact_binary or not looks_ascii:
-        if size < 84:
-            raise MeshError("This doesn't look like a valid STL file (it may be damaged or incomplete).")
-        count = binary_count
-        avail = (size - 84) // 50
-        if count > avail or count == 0:
-            # Header count is wrong (common with some exporters); trust the size.
-            count = avail
-        if count <= 0:
-            if looks_ascii:
-                return _read_ascii(data)
-            raise MeshError("This STL file contains no triangles.")
-        arr = np.frombuffer(data, dtype=_BIN_DTYPE, count=count, offset=84)
-        tris = arr["v"].astype(np.float64)
-    else:
-        tris = _read_ascii(data)
-    return tris
+    if looks_ascii and not exact_binary:
+        try:
+            return _read_ascii(data)
+        except MeshError:
+            # some binary files start their header with "solid"
+            if size < 84 or _is_text(data[84:4096]):
+                raise
+    if size < 84:
+        raise MeshError("This doesn't look like a valid STL file (it may be damaged or incomplete).")
+    count = binary_count
+    avail = (size - 84) // 50
+    if count > avail or count == 0:
+        # Header count is wrong (common with some exporters); trust the size.
+        count = avail
+    if count <= 0:
+        raise MeshError("This STL file contains no triangles.")
+    arr = np.frombuffer(data, dtype=_BIN_DTYPE, count=count, offset=84)
+    return arr["v"].astype(np.float64)
 
 
 def _read_ascii(data):
     vals = _ASCII_VERTEX.findall(data)
     if len(vals) < 3:
         raise MeshError("This text STL file contains no triangles (it may be damaged).")
+    if len(vals) != len(_ASCII_VERTEX_WORD.findall(data)):
+        raise MeshError("Some numbers in this text STL file can't be read (for example commas instead of decimal "
+                        "points), so the triangles would come out wrong. Export it again, as a binary STL if you can.")
     n = (len(vals) // 3) * 3
-    pts = np.array(vals[:n], dtype=np.float64)
+    try:
+        pts = np.array(vals[:n], dtype=np.float64)
+    except ValueError:
+        raise MeshError("Some numbers in this text STL file can't be read, so it can't be converted. Export it again.")
     return pts.reshape(-1, 3, 3)
 
 
 def read_parts(path, report=NULL, layout="parts"):
     """Return [(name, triangles)] — one entry per part in the file."""
+    return [(name, tris) for name, tris, _ in read_parts_framed(path, report, layout)]
+
+
+def read_parts_framed(path, report=NULL, layout="parts"):
+    """Return [(name, triangles, frame)]: parts with the same frame share
+    coordinates, so they can touch (see threemf.Part)."""
+    try:
+        return _read_parts_framed(path, report, layout)
+    except (MeshError, OSError, MemoryError):
+        raise
+    except Exception as e:
+        # broken XML, numbers, indices, zip entries...: the file is damaged
+        raise MeshError(f"This file seems to be damaged, so it couldn't be read ({type(e).__name__}). "
+                        "Try exporting it again.") from e
+
+
+def _read_parts_framed(path, report=NULL, layout="parts"):
     ext = os.path.splitext(path)[1].lower()
     stem = os.path.splitext(os.path.basename(path))[0]
     if ext == ".3mf":
@@ -77,8 +113,8 @@ def read_parts(path, report=NULL, layout="parts"):
             parts = read_3mf(path, layout=layout, report=report)
         except ThreeMFError as e:
             raise MeshError(str(e))
-        return [(p.name, p.tris) for p in parts]
-    return [(stem, read_any(path))]
+        return [(p.name, p.tris, p.frame) for p in parts]
+    return [(stem, read_any(path), 0)]
 
 
 def read_any(path):
@@ -88,7 +124,14 @@ def read_any(path):
         return read_stl(path)
     import trimesh
 
-    m = trimesh.load(path, force="mesh", process=False)
+    if ext in (".obj", ".off"):
+        # text formats: decode here (any bytes that aren't UTF-8, like an
+        # accented comment, would otherwise stop the reader)
+        with open(path, "rb") as fh:
+            text = fh.read().decode("utf-8", "replace")
+        m = trimesh.load(io.StringIO(text), file_type=ext[1:], force="mesh", process=False)
+    else:
+        m = trimesh.load(path, force="mesh", process=False)
     if m is None or len(m.faces) == 0:
         raise MeshError("This file contains no triangles.")
     return np.asarray(m.vertices, dtype=np.float64)[np.asarray(m.faces)]
@@ -599,6 +642,8 @@ class MeshInfo:
         self.body_part = []
         # the mesh check report (meshcheck.summarize)
         self.mesh_check = None
+        # groups of parts that touch each other: [{"parts": [...], "names": [...]}]
+        self.touching = []
 
     def as_dict(self):
         d = dict(self.__dict__)
@@ -607,37 +652,75 @@ class MeshInfo:
         return d
 
 
-def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layout="parts", merge=False):
+def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layout="parts", merge=False,
+                     touching="ask"):
     """Read a mesh file and return (bodies, info).
 
     Every part in the file (3MF projects can hold several) is cleaned and
-    repaired on its own, so touching parts never get fused together.
-    ``info.body_names`` holds a name for every body.
+    repaired on its own, so touching parts never get fused together unless
+    asked to. ``info.body_names`` holds a name for every body.
     repair: "off" | "auto" | "aggressive"
     merge: join pieces of a part that overlap each other into one solid.
-    ``info.mesh_check`` is the check report (see meshcheck.summarize).
+    touching: parts that touch each other: "ask" (keep them separate and
+    report it as a choice), "split" (keep them separate) or "merge" (join
+    each group of touching parts into one part).
+    ``info.mesh_check`` is the check report (see meshcheck.summarize);
+    ``info.touching`` lists the groups of touching parts (by part index
+    before merging).
     """
-    from .meshcheck import summarize, verify_bodies as verify_part
+    from .meshcheck import summarize, touching_issue, touching_parts, union_parts, verify_bodies as verify_part
 
-    parts = read_parts(path, report, layout)
+    parts = read_parts_framed(path, report, layout)
+    recs = []
+    for name, tris, frame in parts:
+        b, pi, issues = _prepare_part(tris, repair, remove_debris, report, merge)
+        recs.append({"name": name, "frame": frame, "bodies": b, "info": pi, "issues": issues})
     info = MeshInfo()
+    for r in recs:
+        info.input_triangles += r["info"].input_triangles
+        info.removed_debris += r["info"].removed_debris
+        info.repaired += r["info"].repaired
+    groups = touching_parts([r["bodies"] for r in recs], [r["frame"] for r in recs]) if len(recs) > 1 else []
+    info.touching = [{"parts": g, "names": [recs[k]["name"] for k in g]} for g in groups]
+    extra = []
+    if groups:
+        names = [r["name"] for r in recs]
+        merged_any = False
+        if touching == "merge":
+            used, out = set(), []
+            for g in groups:
+                lo = np.min([recs[k]["info"].bbox[0] for k in g], 0)
+                hi = np.max([recs[k]["info"].bbox[1] for k in g], 0)
+                joined = union_parts([recs[k]["bodies"] for k in g], float(np.linalg.norm(hi - lo)), report)
+                if not joined:
+                    continue
+                pi = MeshInfo()
+                pi.diag = float(np.linalg.norm(hi - lo))
+                pi.bbox = (lo, hi)
+                out.append((min(g), {"name": " + ".join(names[k] for k in g), "frame": recs[g[0]]["frame"],
+                                     "bodies": joined, "info": pi,
+                                     "issues": [it for k in g for it in recs[k]["issues"]]}))
+                used.update(g)
+                merged_any = True
+            # a merged part takes the place of its first part
+            keep = {k: r for k, r in enumerate(recs) if k not in used}
+            keep.update(dict(out))
+            recs = [keep[k] for k in sorted(keep)]
+        extra.append(touching_issue(groups, names, "merge" if merged_any else ("split" if touching == "split" else "ask")))
     bodies = []
     names = []
     all_issues, unready = [], []
     lo = np.full(3, np.inf)
     hi = np.full(3, -np.inf)
-    for pidx, (name, tris) in enumerate(parts):
-        b, pi, issues = _prepare_part(tris, repair, remove_debris, report, merge)
-        if len(parts) > 1:
+    for pidx, r in enumerate(recs):
+        name, b, pi, issues = r["name"], r["bodies"], r["info"], r["issues"]
+        if len(recs) > 1 or len(parts) > 1:
             for it in issues:
                 it["part"] = name
         all_issues.extend(issues)
         ready, left = verify_part(b, pi.diag, merge)
         if not ready:
-            unready.extend(f"{name}: {p}" if len(parts) > 1 else p for p in left)
-        info.input_triangles += pi.input_triangles
-        info.removed_debris += pi.removed_debris
-        info.repaired += pi.repaired
+            unready.extend(f"{name}: {p}" if len(recs) > 1 else p for p in left)
         lo = np.minimum(lo, pi.bbox[0])
         hi = np.maximum(hi, pi.bbox[1])
         info.part_names.append(name)
@@ -647,9 +730,10 @@ def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layou
             bodies.append(body)
             names.append(name if len(b) == 1 else f"{name} {k + 1}")
             info.body_part.append(pidx)
+    all_issues.extend(extra)
     info.bbox = (lo, hi)
     info.diag = float(np.linalg.norm(hi - lo))
-    info.parts = len(parts)
+    info.parts = len(recs)
     info.mesh_check = summarize(all_issues, {"ready": not unready, "problems": unready})
     info.body_names = names
     info.shells = sum(len(b) for b in bodies)

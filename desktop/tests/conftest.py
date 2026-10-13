@@ -41,6 +41,7 @@ class FakeUI:
         self.confirm = True
         self.asked = []
         self.folder = None
+        self.touching = "split"
 
     def confirm_discard(self, count, action):
         self.asked.append((count, action))
@@ -48,6 +49,10 @@ class FakeUI:
 
     def choose_output_folder(self):
         return self.folder
+
+    def ask_touching(self, job):
+        self.asked.append(("touching", job.file_name))
+        return self.touching
 
 
 @pytest.fixture
@@ -81,7 +86,7 @@ def meshes(tmp_path):
     for name in ("one.stl", "my_parts.3mf", "will_crash.stl", "has_error.stl", "very_slow.stl", "broken.stl",
                  "with_issues.stl", "Part.stl", "Part.3mf", "dense_sculpt.stl",
                  "was_repaired.stl", "repaired_issues.stl", "holes.stl", "overlap.stl", "overlap_mergefail.stl",
-                 "crossing.stl"):
+                 "crossing.stl", "touching.3mf"):
         p = d / name
         p.write_text("solid x\nendsolid x\n")
         out[name] = str(p)

@@ -16,7 +16,6 @@ placement is removed), with any scaling done in the slicer kept. Each part
 becomes its own named body.
 """
 import os
-import posixpath
 import re
 import zipfile
 import xml.etree.ElementTree as ET
@@ -52,9 +51,12 @@ class ThreeMFError(Exception):
 
 
 class Part:
-    def __init__(self, name, tris):
+    def __init__(self, name, tris, frame=0):
         self.name = name
         self.tris = tris  # (n, 3, 3) float64, millimetres
+        # parts with the same frame share coordinates (the parts of one
+        # object; with the whole build plate, every part)
+        self.frame = frame
 
 
 def _parse_transform(s):
@@ -90,7 +92,6 @@ class _ModelFile:
         verts = []
         tris = []
         comps = []
-        in_mesh = False
         for event, el in ET.iterparse(fh, events=("start", "end")):
             tag = el.tag
             if event == "start":
@@ -99,8 +100,6 @@ class _ModelFile:
                 elif tag == CORE + "object":
                     cur = dict(el.attrib)
                     verts, tris, comps = [], [], []
-                elif tag == CORE + "mesh":
-                    in_mesh = True
                 continue
             # end events
             if tag == CORE + "vertex":
@@ -115,8 +114,6 @@ class _ModelFile:
                         "transform": _parse_transform(el.get("transform")),
                     }
                 )
-            elif tag == CORE + "mesh":
-                in_mesh = False
             elif tag == CORE + "object" and cur is not None:
                 oid = cur.get("id")
                 entry = {"attrib": cur, "mesh": None, "components": comps}
@@ -227,9 +224,13 @@ def _polar_scale(M):
     """Symmetric stretch part S of the linear map L = R S (keeps slicer
     scaling, drops rotation and translation)."""
     L = M[:3, :3]
+    out = np.eye(4)
+    if np.linalg.det(L) < 0:
+        # mirrored in the slicer: keep the mirror (and so the plate's turn too)
+        out[:3, :3] = L
+        return out
     U, sv, Vt = np.linalg.svd(L)
     S = Vt.T @ np.diag(sv) @ Vt
-    out = np.eye(4)
     if np.abs(S - np.eye(3)).max() > 1e-4:  # ignore float noise
         out[:3, :3] = S
     return out
@@ -317,7 +318,7 @@ def read_3mf(path, layout="parts", report=None):
         seen = {}
         negative = 0
         skipped = 0
-        for it in items:
+        for item_no, it in enumerate(items):
             oid = it["objectid"]
             M_item = it["transform"]
             if layout == "parts":
@@ -349,7 +350,7 @@ def read_3mf(path, layout="parts", report=None):
                 seen[key] = True
             for k, (tris, pname) in enumerate(normal):
                 nm = obj_name if len(normal) == 1 else f"{obj_name} - {pname or f'part {k + 1}'}"
-                parts.append(Part(nm, tris))
+                parts.append(Part(nm, tris, item_no if layout == "parts" else 0))
         if report is not None:
             if skipped:
                 report.log(f"Skipped {skipped} modifier or support part(s) from the slicer project")

@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
 from . import system
 from .engine import EngineMissing, EngineTask, engine_command
@@ -23,6 +23,10 @@ ACCEPTED_EXTENSIONS = {"stl", "obj", "ply", "off", "3mf", "glb", "gltf"}
 # Reading a file loads the whole mesh; a few at a time keeps memory in check
 # when a big folder is dropped.
 INSPECT_LIMIT = 3
+
+# what a conversion run used, kept with the job
+RUN_SETTINGS = ("preset", "quality", "autoQuality", "repair", "unit", "plateLayout", "removeDebris",
+                "useCustomTolerance", "customTolerance", "maxFaces")
 
 ENGINE_MISSING_MESSAGE = "Part of the app is missing (the converter). Please reinstall Manifold Mesh Mix."
 
@@ -138,6 +142,16 @@ class MeshCheck:
     def fixed_anything(self):
         return any(i.status == "fixed" for i in self.issues)
 
+    def kept_parts_separate(self):
+        """The user chose to keep touching parts separate: the engine reports
+        that as a note (the same words as engine/mmm/meshcheck.py)."""
+        self.issues = [MeshIssue(i.code, i.count, "note", i.problem,
+                                 "Kept as separate parts, as you chose. Use “Merge Touching Parts” to join them "
+                                 "into one solid.", i.part) if i.code == "touching_parts" else i for i in self.issues]
+        st = {i.status for i in self.issues}
+        self.status = ("problems" if "not_fixed" in st else "action" if "action" in st else
+                       "fixed" if "fixed" in st else "ok")
+
 
 @dataclass
 class ConversionResult:
@@ -238,6 +252,14 @@ class Job(QObject):
         self.mesh_check = None
         self.merge_overlaps = False
         self.merge_error = None
+        # 3MF parts that touch each other ([{"parts": [...], "names": [...]}])
+        # and what to do with them: None (not asked yet), "split" or "merge"
+        self.touching = []
+        self.touching_choice = None
+        # convert as soon as it has been read again (the choice came first)
+        self.convert_after_read = False
+        # the settings of the last conversion run (see RUN_SETTINGS)
+        self.run_settings = None
         # where "Save Fixed Mesh" last saved this file's fixed mesh
         self.saved_fixed_mesh = None
         # read again after a change (no automatic conversion then)
@@ -489,10 +511,12 @@ class AppModel(QObject):
         self.selection = None
         self.engine_missing = engine_command() is None
         self._inspect_waiting = deque()
+        self._touch_waiting = deque()
         self._fix_tasks = set()
         self._stamp = 0
-        self.preview_dir = os.path.join(tempfile.gettempdir(), f"{PREVIEW_PREFIX}{os.getpid()}")
-        os.makedirs(self.preview_dir, exist_ok=True)
+        # a new private folder: a shared, predictable one would let another
+        # user of the computer swap the converted files
+        self.preview_dir = tempfile.mkdtemp(prefix=f"{PREVIEW_PREFIX}{os.getpid()}-")
         self._export_done.connect(self._finish_export, Qt.ConnectionType.QueuedConnection)
         threading.Thread(target=self.remove_stale_preview_dirs, daemon=True).start()
 
@@ -526,7 +550,7 @@ class AppModel(QObject):
             if not n.startswith(PREVIEW_PREFIX):
                 continue
             try:
-                pid = int(n[len(PREVIEW_PREFIX):])
+                pid = int(n[len(PREVIEW_PREFIX):].split("-")[0])
             except ValueError:
                 continue
             if pid != os.getpid() and not system.pid_alive(pid):
@@ -637,8 +661,11 @@ class AppModel(QObject):
         stamp = self._next_stamp()
         prev = os.path.join(self.preview_dir, f"{job.id}-in-{stamp}.mmmp")
         part_dir = os.path.join(self.preview_dir, f"{job.id}-parts-{stamp}")
+        s = self.settings
         args = ["inspect", job.path, "--json", "--preview", prev, "--part-previews", part_dir,
-                "--repair", self.settings.repair]
+                "--repair", s.repair, "--layout", s.plateLayout, "--touching-parts", job.touching_choice or "ask"]
+        if not s.removeDebris:
+            args.append("--keep-debris")
         if job.merge_overlaps:
             args.append("--merge-overlaps")
         try:
@@ -662,6 +689,9 @@ class AppModel(QObject):
                 job.parts = _int(ev.get("parts"), None)
                 job.bbox_size = _bbox_size(ev.get("bbox"))
                 job.mesh_check = MeshCheck.from_event(ev.get("mesh_check"))
+                t_ = ev.get("touching")
+                job.touching = [g for g in t_ if isinstance(g, dict) and isinstance(g.get("names"), list)] \
+                    if isinstance(t_, list) else []
                 plist = ev.get("part_list")
                 if isinstance(plist, list) and len(plist) > 1:
                     parts = []
@@ -691,8 +721,13 @@ class AppModel(QObject):
             if code == 0 and not t.cancelled:
                 job.input_preview = prev if os.path.exists(prev) else None
                 self._set_status(job, JobStatus.READY)
-                if self.settings.convertOnDrop and not job.merge_error and not job.reinspecting:
+                if job.touching and job.touching_choice is None:
+                    # ask whether to keep the touching parts separate (then convert)
+                    self._ask_touching(job)
+                elif job.convert_after_read or (self.settings.convertOnDrop and not job.merge_error
+                                                and not job.reinspecting):
                     self.enqueue(job)
+                job.convert_after_read = False
                 job.reinspecting = False
             elif job.merge_overlaps and not t.cancelled:
                 # merging went wrong: read the file again the usual way
@@ -771,18 +806,66 @@ class AppModel(QObject):
         again, and a finished file goes back to Ready."""
         if job.merge_overlaps == on or not job.readable or job.status.is_busy or job.status == JobStatus.QUEUED:
             return
+        if job.needs_export and not self._confirm_discard(1, "Change"):
+            return
         job.merge_overlaps = on
         job.merge_error = None
+        self._reread(job)
+
+    def _ask_touching(self, job):
+        """Asks (one file at a time) whether parts that touch each other stay
+        separate or are merged into one solid."""
+        self._touch_waiting.append(job)
+        if len(self._touch_waiting) == 1:
+            QTimer.singleShot(0, self._ask_next_touching)
+
+    def _ask_next_touching(self):
+        while self._touch_waiting:
+            job = self._touch_waiting[0]
+            if job in self.jobs and job.touching_choice is None and job.status == JobStatus.READY:
+                ask = getattr(self.ui, "ask_touching", None)
+                choice = ask(job) if ask and not os.environ.get("MMM_SELFTEST") else "split"
+                self.set_touching_choice(job, choice or "split", convert=self.settings.convertOnDrop)
+            self._touch_waiting.popleft()
+
+    def set_touching_choice(self, job, choice, convert=False):
+        """Keeps parts that touch each other separate ("split") or merges them
+        into one solid ("merge", the file is read again). A finished file
+        goes back to Ready."""
+        if choice not in ("split", "merge") or job.status.is_busy or job.status == JobStatus.QUEUED:
+            return
+        before = job.touching_choice
+        if before is not None and before != choice and job.needs_export and not self._confirm_discard(1, "Change"):
+            return
+        job.touching_choice = choice
+        if choice == "split":
+            if before == "merge":
+                self._reread(job, convert)
+                return
+            if self.split_available and len(job.part_list) > 1:
+                job.split = True
+            if job.mesh_check is not None:
+                job.mesh_check.kept_parts_separate()
+            job.touch()
+            self.state_changed.emit()
+            if convert:
+                self.enqueue(job)
+            return
+        if before != "merge":
+            self._reread(job, convert)
+
+    def _reread(self, job, convert=False):
+        """Reads the file again with the current choices (results are dropped)."""
         self.discard_previews(job.clear_results())
         old = [job.input_preview] + [p.input_preview for p in job.part_list]
         old += [os.path.dirname(p) for p in old if p and os.path.basename(os.path.dirname(p)).startswith(f"{job.id}-parts-")]
         self.discard_previews(old)
         job.input_preview = None
-        for p in job.part_list:
-            p.input_preview = None
+        job.part_list = []
         job.error = job.error_reason = job.error_details = None
         job.stage = ""
         job.reinspecting = True
+        job.convert_after_read = convert
         self._inspect(job)
         job.touch()
         self.state_changed.emit()
@@ -797,10 +880,16 @@ class AppModel(QObject):
             args.append("--keep-debris")
         if job.merge_overlaps:
             args.append("--merge-overlaps")
+        if job.touching:
+            args += ["--touching-parts", job.touching_choice or "split"]
+        def later(msg):
+            # after this call has returned, like a real result
+            QTimer.singleShot(0, lambda: completion(msg))
+
         try:
             t = EngineTask(args)
         except EngineMissing:
-            completion(ENGINE_MISSING_MESSAGE)
+            later(ENGINE_MISSING_MESSAGE)
             return
         state = {"error": None, "result": False}
 
@@ -824,7 +913,14 @@ class AppModel(QObject):
             t.start()
         except OSError as e:
             self._fix_tasks.discard(t)
-            completion(f"The converter couldn't start ({e.strerror or e}). Try reinstalling Manifold Mesh Mix.")
+            later(f"The converter couldn't start ({e.strerror or e}). Try reinstalling Manifold Mesh Mix.")
+
+    def recheck(self):
+        """Mesh repair or Remove debris changed: files that aren't converted
+        yet are checked again, so the Mesh view shows what will happen."""
+        for j in self.jobs:
+            if j.readable and j.status == JobStatus.READY and j.task is None:
+                self._reread(j)
 
     def apply_split_default(self):
         """The Settings default changed: files that aren't converted yet follow it."""
@@ -872,6 +968,9 @@ class AppModel(QObject):
     def _start(self, job):
         s = self.settings
         stamp = self._next_stamp()
+        # the settings this run uses (for the "Auto used" mark and reports)
+        job.run_settings = {k: getattr(s, k) for k in RUN_SETTINGS}
+        job.run_settings["quality"] = s.quality_for(job.triangles)
         # The STEP files go into the app's temporary folder first; nothing is
         # saved next to the originals until the user exports.
         result_dir = os.path.join(self.preview_dir, "results", f"{job.id}-{stamp}")
@@ -896,6 +995,8 @@ class AppModel(QObject):
             args += ["--max-faces", str(int(s.maxFaces))]
         if job.merge_overlaps:
             args.append("--merge-overlaps")
+        if job.touching:
+            args += ["--touching-parts", job.touching_choice or "split"]
         try:
             t = EngineTask(args)
         except EngineMissing:
@@ -948,6 +1049,12 @@ class AppModel(QObject):
 
         def on_exit(code, stderr):
             job.task = None
+            if job not in self.jobs:
+                # removed while converting: nothing will show these files
+                parts = [os.path.join(self.preview_dir, f"{job.id}-part{p.index}-out-{stamp}.mmmp") for p in job.part_list]
+                self.discard_previews([result_dir, prev] + parts)
+                self._pump()
+                return
             if t.cancelled:
                 job.stage = "Cancelled"
                 self._set_status(job, JobStatus.CANCELLED)
@@ -1038,7 +1145,8 @@ class AppModel(QObject):
         unexported = sum(1 for j in done if j.needs_export)
         if unexported and not self._confirm_discard(unexported, "Remove"):
             return
-        self.jobs = [j for j in self.jobs if j.status != JobStatus.DONE]
+        # only the files asked about (others may have finished while asking)
+        self.jobs = [j for j in self.jobs if j not in done]
         if self.selected_job is None:
             self.select(self.jobs[0].id if self.jobs else None)
         for j in done:
