@@ -140,9 +140,13 @@ def triangles_to_indexed(tris, merge_tol_rel=1e-7):
     return V, F
 
 
-def remove_degenerate(V, F):
-    """Drop faces with repeated vertices and exact duplicate faces."""
+def remove_degenerate(V, F, stats=None):
+    """Drop faces with repeated vertices and exact duplicate faces. stats
+    (a dict) gets the counts: squashed, duplicates, back_to_back (pairs)."""
     ok = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])
+    if stats is not None:
+        stats["squashed"] = int((~ok).sum())
+        stats["duplicates"] = stats["back_to_back"] = 0
     F = F[ok]
     # Duplicate faces (same vertex set). Same orientation -> keep one.
     # Opposite orientation -> internal double wall, drop both.
@@ -164,6 +168,9 @@ def remove_degenerate(V, F):
             rest = pos[n_pairs:] + neg[n_pairs:]
             if rest:
                 keep[rest[0]] = True
+            if stats is not None:
+                stats["back_to_back"] += n_pairs
+                stats["duplicates"] += max(0, len(rest) - 1)
         F = F[keep]
     return V, F
 
@@ -251,13 +258,16 @@ def face_components(F, topo):
     return connected_components(g, directed=False)
 
 
-def fix_winding(V, F, topo=None):
-    """Make face orientation consistent within each connected component."""
+def fix_winding(V, F, topo=None, count_flips=False):
+    """Make face orientation consistent within each connected component.
+    Returns (F, conflicts), plus the number of turned faces with
+    count_flips (each piece keeps the direction most of its faces had, so
+    that is the number of faces that faced the wrong way)."""
     if topo is None:
         topo = EdgeTopology(V, F)
     nf = len(F)
     if not topo.same_dir.any():
-        return F, 0
+        return (F, 0, 0) if count_flips else (F, 0)
     from collections import deque
 
     F = F.copy()
@@ -291,7 +301,16 @@ def fix_winding(V, F, topo=None):
                     dq.append(g)
                 elif inconsistent:
                     conflicts += 1
+    if count_flips:
+        # keep the majority direction of every piece
+        n, lab = face_components(F, topo)
+        tot = np.bincount(lab, minlength=n)
+        fl = np.bincount(lab, weights=flipped.astype(np.float64), minlength=n)
+        invert = fl > tot / 2
+        flipped ^= invert[lab]
     F[flipped] = F[flipped][:, ::-1]
+    if count_flips:
+        return F, conflicts // 2, int(flipped.sum())
     return F, conflicts // 2
 
 
@@ -347,6 +366,9 @@ class Shell:
         self.volume = signed_volume(V, F) if self.closed else 0.0
         self.depth = 0
         self.parent = None
+        # self-intersections counted by the mesh check (None: not counted);
+        # turning the shell inside out doesn't change it
+        self.crossings = None
 
     @property
     def n_faces(self):
@@ -364,7 +386,7 @@ def split_shells(V, F):
     return shells
 
 
-def organise_bodies(shells, report=NULL):
+def organise_bodies(shells, report=NULL, stats=None):
     """Orient shells and group them into bodies (outer shell + cavities).
 
     A shell inside another one is a *cavity* only when the file orients it
@@ -431,6 +453,8 @@ def organise_bodies(shells, report=NULL):
     for i, s in enumerate(closed):
         want_positive = not is_cavity[i]
         if (s.volume > 0) != want_positive:
+            if stats is not None and want_positive:
+                stats["inside_out"] = stats.get("inside_out", 0) + 1
             s.F = s.F[:, ::-1].copy()
             s.volume = -s.volume
             s.topo = EdgeTopology(s.V, s.F)
@@ -573,6 +597,8 @@ class MeshInfo:
         self.part_triangles = []
         self.part_bbox = []
         self.body_part = []
+        # the mesh check report (meshcheck.summarize)
+        self.mesh_check = None
 
     def as_dict(self):
         d = dict(self.__dict__)
@@ -581,22 +607,34 @@ class MeshInfo:
         return d
 
 
-def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layout="parts"):
+def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layout="parts", merge=False):
     """Read a mesh file and return (bodies, info).
 
     Every part in the file (3MF projects can hold several) is cleaned and
     repaired on its own, so touching parts never get fused together.
     ``info.body_names`` holds a name for every body.
     repair: "off" | "auto" | "aggressive"
+    merge: join pieces of a part that overlap each other into one solid.
+    ``info.mesh_check`` is the check report (see meshcheck.summarize).
     """
+    from .meshcheck import summarize, verify_bodies as verify_part
+
     parts = read_parts(path, report, layout)
     info = MeshInfo()
     bodies = []
     names = []
+    all_issues, unready = [], []
     lo = np.full(3, np.inf)
     hi = np.full(3, -np.inf)
     for pidx, (name, tris) in enumerate(parts):
-        b, pi = _prepare_part(tris, repair, remove_debris, report)
+        b, pi, issues = _prepare_part(tris, repair, remove_debris, report, merge)
+        if len(parts) > 1:
+            for it in issues:
+                it["part"] = name
+        all_issues.extend(issues)
+        ready, left = verify_part(b, pi.diag, merge)
+        if not ready:
+            unready.extend(f"{name}: {p}" if len(parts) > 1 else p for p in left)
         info.input_triangles += pi.input_triangles
         info.removed_debris += pi.removed_debris
         info.repaired += pi.repaired
@@ -612,6 +650,7 @@ def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layou
     info.bbox = (lo, hi)
     info.diag = float(np.linalg.norm(hi - lo))
     info.parts = len(parts)
+    info.mesh_check = summarize(all_issues, {"ready": not unready, "problems": unready})
     info.body_names = names
     info.shells = sum(len(b) for b in bodies)
     info.open_shells = sum(1 for b in bodies for s in b if not s.closed)
@@ -625,63 +664,81 @@ def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layou
     return bodies, info
 
 
-def _prepare_part(tris, repair, remove_debris, report):
-    info = MeshInfo()
-    info.input_triangles = int(len(tris))
-    report.log(f"Read {len(tris):,} triangles")
-    V, F = triangles_to_indexed(tris)
-    V, F = remove_degenerate(V, F)
-    V, F = compact(V, F)
-    if len(F) == 0:
-        raise MeshError("Every triangle in this mesh is squashed flat, so there is no shape to convert.")
-    lo, hi = V.min(0), V.max(0)
-    info.diag = float(np.linalg.norm(hi - lo))
-    info.bbox = (lo, hi)
+def _prepare_part(tris, repair, remove_debris, report, merge=False):
+    """Check and fix one part (see meshcheck.prepare_part)."""
+    from .meshcheck import prepare_part
 
-    topo = EdgeTopology(V, F)
-    F, conflicts = fix_winding(V, F, topo)
-    if conflicts:
-        report.warn(f"In {conflicts} places the mesh's triangles face opposite ways and couldn't be made consistent.")
+    bodies, info, issues = prepare_part(tris, repair, remove_debris, report, merge)
+    return bodies, info, issues
 
-    shells = split_shells(V, F)
-    if remove_debris and len(shells) > 1:
-        areas = [face_normals_areas(s.V, s.F)[1].sum() for s in shells]
-        amax = max(areas)
-        keep = []
-        for s, a in zip(shells, areas):
-            # fewer than 4 triangles can't enclose volume; zero-volume closed
-            # shells (back-to-back triangles) are junk too
-            flat = s.closed and abs(s.volume) < 1e-9 * max(a, 1e-30) ** 1.5
-            if s.n_faces < 4 or flat or a < 5e-5 * amax:
-                info.removed_debris += 1
-            else:
-                keep.append(s)
-        shells = keep
 
-    if repair != "off":
-        fixed = []
-        for s in shells:
-            if s.closed:
-                fixed.append(s)
-                continue
-            s2 = fill_small_holes(s)
-            if not s2.closed:
-                try:
-                    s2 = repair_shell_light(s2, report)
-                except Exception as e:  # pragma: no cover
-                    report.log(f"Quick mesh repair didn't work ({e})")
-            if not s2.closed and (repair == "aggressive" or s2.topo.n_nonmanifold_edges or s2.topo.n_boundary_edges):
-                report.log("Running full mesh repair (this can take a while on big meshes)")
-                try:
-                    s2 = repair_shell_meshfix(s2, report)
-                except Exception as e:  # pragma: no cover
-                    report.warn(f"Full mesh repair failed ({e}); the mesh was converted as it is.")
-            if s2.closed:
-                info.repaired += 1
-            # repairs can separate pieces that only touched at an edge
-            parts = split_shells(s2.V, s2.F) if s2.closed else [s2]
-            fixed.extend(parts)
-        shells = fixed
+# ----------------------------------------------------------------------------
+# Writing (Save fixed mesh)
+# ----------------------------------------------------------------------------
 
-    bodies = organise_bodies(shells, report)
-    return bodies, info
+
+def _body_mesh(bodies):
+    Vs, Fs, off = [], [], 0
+    for b in bodies:
+        for s in b:
+            Vs.append(s.V)
+            Fs.append(s.F + off)
+            off += len(s.V)
+    if not Vs:
+        return np.zeros((0, 3)), np.zeros((0, 3), np.int64)
+    return np.vstack(Vs), np.vstack(Fs)
+
+
+def write_stl(path, bodies, name="Manifold Mesh Mix"):
+    """Binary STL of all bodies."""
+    V, F = _body_mesh(bodies)
+    T = V[F].astype(np.float32)
+    n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    ln = np.linalg.norm(n, axis=1)
+    ln[ln == 0] = 1
+    rec = np.zeros(len(F), dtype=_BIN_DTYPE)
+    rec["n"] = n / ln[:, None]
+    rec["v"] = T
+    head = f"Fixed by {name}".encode("ascii", "replace")[:80].ljust(80, b" ")
+    tmp = path + ".part"
+    with open(tmp, "wb") as fh:
+        fh.write(head)
+        fh.write(struct.pack("<I", len(F)))
+        fh.write(rec.tobytes())
+    os.replace(tmp, path)
+
+
+def write_3mf(path, parts):
+    """3MF with one object per part: parts = [(name, bodies)]."""
+    import zipfile
+    from xml.sax.saxutils import quoteattr
+
+    objs, items = [], []
+    for k, (name, bodies) in enumerate(parts, start=1):
+        V, F = _body_mesh(bodies)
+        vs = "".join(f'<vertex x="{x:.9g}" y="{y:.9g}" z="{z:.9g}"/>' for x, y, z in V)
+        ts = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in F)
+        objs.append(f'<object id="{k}" name={quoteattr(str(name or f"Part {k}"))} type="model"><mesh>'
+                    f"<vertices>{vs}</vertices><triangles>{ts}</triangles></mesh></object>")
+        items.append(f'<item objectid="{k}"/>')
+    model = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+             '<model unit="millimeter" xml:lang="en-US" '
+             'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+             '<metadata name="Application">Manifold Mesh Mix</metadata>'
+             f"<resources>{''.join(objs)}</resources><build>{''.join(items)}</build></model>")
+    types = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+             '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>'
+             "</Types>")
+    rels = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Target="/3D/3dmodel.model" Id="rel0" '
+            'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')
+    tmp = path + ".part"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("3D/3dmodel.model", model)
+    os.replace(tmp, path)
+

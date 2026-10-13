@@ -20,6 +20,10 @@ enum AccentChoice: String, CaseIterable, Identifiable {
 
     var nsColor: NSColor { NSColor(color) }
 
+    /// The color that marks the preset Auto chose: one that stands apart
+    /// from the accent color.
+    var autoPick: Color { (self == .violet || self == .pink) ? AccentChoice.mint.color : AccentChoice.violet.color }
+
     var title: String { rawValue.capitalized }
 }
 

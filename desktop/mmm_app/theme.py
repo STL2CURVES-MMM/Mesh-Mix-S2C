@@ -43,6 +43,7 @@ VIEWPORT_TOP = rgbf(0.085, 0.092, 0.112)
 VIEWPORT_BOTTOM = rgbf(0.035, 0.038, 0.048)
 
 _accent = QColor(ACCENT_COLORS["cyan"])
+_accent_name = "cyan"
 
 
 def accent():
@@ -50,8 +51,15 @@ def accent():
 
 
 def set_accent(name):
-    global _accent
-    _accent = QColor(ACCENT_COLORS.get(name, ACCENT_COLORS["cyan"]))
+    global _accent, _accent_name
+    _accent_name = name if name in ACCENT_COLORS else "cyan"
+    _accent = QColor(ACCENT_COLORS[_accent_name])
+
+
+def auto_pick():
+    """The color that marks the preset Auto chose: one that stands apart
+    from the accent color."""
+    return QColor(ACCENT_COLORS["mint" if _accent_name in ("violet", "pink") else "violet"])
 
 
 def with_alpha(c, a):

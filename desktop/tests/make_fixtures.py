@@ -5,6 +5,8 @@
 Needs tests/models (python tests/make_models.py). Writes:
   two_parts.3mf        a plain 3MF with two parts (for "Split to parts")
   Peça ção teste.stl   an STL with accents in its name (non-ASCII paths)
+  Messy cube.stl       a cube with problems the mesh check fixes (two
+                       triangles facing the wrong way, a duplicate one)
 """
 import os
 import shutil
@@ -78,12 +80,26 @@ def write_3mf(path, parts):
         z.writestr("3D/3dmodel.model", model)
 
 
+def write_stl(path, tris):
+    """Binary STL (normals left at zero: readers work them out)."""
+    with open(path, "wb") as fh:
+        fh.write(b"Manifold Mesh Mix test file".ljust(80, b" "))
+        fh.write(struct.pack("<I", len(tris)))
+        for t in tris:
+            fh.write(struct.pack("<12fH", 0, 0, 0, *t[0], *t[1], *t[2], 0))
+
+
 def main(out):
     os.makedirs(out, exist_ok=True)
     cube = read_stl(os.path.join(MODELS, "cad_cube.stl"))
     cyl = read_stl(os.path.join(MODELS, "cad_cylinder.stl"))
     write_3mf(os.path.join(out, "two_parts.3mf"), [("Cube", cube, (0, 0, 0)), ("Cylinder", cyl, (80, 0, 0))])
     shutil.copyfile(os.path.join(MODELS, "cad_cube.stl"), os.path.join(out, "Peça ção teste.stl"))
+    messy = [list(t) for t in cube]
+    for k in (0, len(messy) // 2):
+        messy[k] = messy[k][::-1]
+    messy.append(messy[1])
+    write_stl(os.path.join(out, "Messy cube.stl"), messy)
     print("\n".join(sorted(os.listdir(out))))
 
 

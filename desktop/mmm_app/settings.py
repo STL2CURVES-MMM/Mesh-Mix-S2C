@@ -51,6 +51,22 @@ ACCENTS = [
 ]
 
 
+# Auto quality (with the Auto preset): each file gets a quality from its
+# triangle count. Small meshes are quick even near the top of the slider;
+# very big ones get a faster setting, so they don't take hours or make huge
+# STEP files. (triangles below, quality)
+AUTO_QUALITY_STEPS = ((50_000, 0.9), (300_000, 0.8), (1_000_000, 0.7), (3_000_000, 0.6))
+AUTO_QUALITY_BIGGEST = 0.5
+
+
+def auto_quality(triangles):
+    """The quality Auto picks for a mesh with this many triangles."""
+    for limit, q in AUTO_QUALITY_STEPS:
+        if triangles < limit:
+            return q
+    return AUTO_QUALITY_BIGGEST
+
+
 def choice(options, value):
     for c in options:
         if c.value == value:
@@ -147,6 +163,9 @@ class Settings(QObject):
 
     preset = Field("auto", _values(PRESETS))
     quality = Field(0.7, lo=0.0, hi=1.0)
+    # with the Auto preset, pick the quality for each file (moving the
+    # slider turns it off: then every file uses the slider's quality)
+    autoQuality = Field(True)
     repair = Field("auto", _values(REPAIR_LEVELS))
     removeDebris = Field(True)
     unit = Field("mm", _values(UNITS))
@@ -189,6 +208,16 @@ class Settings(QObject):
                 s.clear()
             return s
         return QSettings("ManifoldMeshMix", "Manifold Mesh Mix")
+
+    @property
+    def auto_quality_on(self):
+        return self.preset == "auto" and self.autoQuality
+
+    def quality_for(self, triangles):
+        """The quality a file with this many triangles is converted at."""
+        if self.auto_quality_on and triangles:
+            return auto_quality(triangles)
+        return self.quality
 
     @classmethod
     def fields(cls):

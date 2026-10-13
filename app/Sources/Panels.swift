@@ -160,7 +160,9 @@ struct JobPreview: View {
                         .multilineTextAlignment(.center).frame(maxWidth: 380)
                 } else if job.status == .failed {
                     Image(systemName: "xmark.octagon").font(.system(size: 30, weight: .light)).foregroundStyle(Theme.bad)
-                    Text(job.error ?? "Conversion failed").foregroundStyle(Theme.textDim).font(.system(size: 12))
+                    // the details are in the card below
+                    Text(job.readable ? "Conversion failed" : (job.error ?? "Conversion failed"))
+                        .foregroundStyle(Theme.textDim).font(.system(size: 12))
                         .multilineTextAlignment(.center).frame(maxWidth: 380)
                 } else if job.status == .done && job.isSplit {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 30, weight: .light)).foregroundStyle(Theme.warn)
@@ -201,6 +203,9 @@ struct JobPreview: View {
                     .helpIfTruncated(job.url.path)
                     .padding(.leading, 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if mode == .mesh, let mc = job.meshCheck {
+                    meshPill(mc)
+                }
                 if let r = shownResult {
                     checkBadge(r)
                 }
@@ -335,9 +340,190 @@ struct JobPreview: View {
         }
     }
 
+    private func meshPillStyle(_ status: String) -> (color: Color, icon: String) {
+        switch status {
+        case "ok", "fixed": return (Theme.good, "checkmark")
+        case "action": return (settings.accent.color, "info.circle")
+        case "problems": return (Theme.warn, "exclamationmark")
+        default: return (Theme.textDim, "info.circle")
+        }
+    }
+
+    /// The mesh check result, with what it found in the tooltip.
+    func meshPill(_ mc: MeshCheck) -> some View {
+        let style = meshPillStyle(mc.status)
+        return Pill(text: mc.title, color: style.color, icon: style.icon)
+            .fixedSize()
+            .help(meshSummary(mc))
+    }
+
+    /// Tooltip of the mesh check pill.
+    func meshSummary(_ mc: MeshCheck) -> String {
+        if mc.issues.isEmpty {
+            return "The mesh was checked for holes, flipped or tangled triangles, internal walls, self-crossings and overlapping pieces, and nothing was wrong."
+        }
+        var lines = mc.issues.map { "• \($0.problemCapitalized): \($0.result)" }
+        if let ready = mc.ready {
+            lines.append(recheckLine(mc, ready: ready))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func issueIcon(_ status: String) -> String {
+        switch status {
+        case "fixed": return "checkmark.circle.fill"
+        case "not_fixed": return "exclamationmark.triangle.fill"
+        default: return "info.circle.fill"
+        }
+    }
+
+    private func issueColor(_ status: String) -> Color {
+        switch status {
+        case "fixed": return Theme.good
+        case "not_fixed": return Theme.warn
+        case "action": return settings.accent.color
+        default: return Theme.textDim
+        }
+    }
+
+    /// What the second check of the fixed mesh found.
+    private func recheckLine(_ mc: MeshCheck, ready: Bool) -> String {
+        if ready { return "Checked again after fixing: ready to convert." }
+        return "Checked again after fixing: " + mc.problems.joined(separator: "; ") + "."
+    }
+
+    private var saveFixedTitle: String {
+        if job.savingFixedMesh { return "Saving…" }
+        return job.savedFixedMesh != nil ? "Saved ✓  Save Again…" : "Save Fixed Mesh…"
+    }
+
+    /// "Part: Problem. " and what was done about it, dimmer.
+    private func issueText(_ i: MeshIssue) -> Text {
+        let lead = (i.part.isEmpty ? "" : "\(i.part): ") + i.problemCapitalized + ". "
+        return Text(lead).foregroundColor(Theme.text) + Text(i.result).foregroundColor(Theme.textDim)
+    }
+
+    /// What the mesh check found and did about it, with the choice to merge
+    /// overlapping pieces and to save the fixed mesh.
+    @ViewBuilder var meshCard: some View {
+        if mode == .mesh, job.status != .inspecting, let mc = job.meshCheck,
+           !mc.issues.isEmpty || !mc.problems.isEmpty || job.mergeError != nil {
+            VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(Array(mc.issues.enumerated()), id: \.offset) { _, issue in
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: issueIcon(issue.status))
+                                .font(.system(size: 11))
+                                .foregroundStyle(issueColor(issue.status))
+                                .padding(.top, 1)
+                            issueText(issue)
+                                .font(.system(size: 11.5))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if let e = job.mergeError {
+                        Text("Merging the overlapping pieces didn't work: \(e)")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let ready = mc.ready, mc.fixedAnything || !mc.problems.isEmpty {
+                        Text(recheckLine(mc, ready: ready))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(ready ? Theme.good : Theme.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if mc.hasOverlaps || mc.fixedAnything || job.mergeOverlaps {
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        if mc.hasOverlaps || job.mergeOverlaps {
+                            mergeToggle
+                        }
+                        if mc.fixedAnything || job.mergeOverlaps {
+                            saveFixedButton
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(padding: 10)
+        }
+    }
+
+    var mergeToggle: some View {
+        Toggle(isOn: Binding(get: { job.mergeOverlaps }, set: { model.setMergeOverlaps(job, $0) })) {
+            Label("Merge Overlapping Pieces", systemImage: "square.stack")
+                .font(.system(size: 11.5, weight: .medium))
+        }
+        .toggleStyle(.button)
+        .controlSize(.small)
+        .fixedSize()
+        .disabled(job.status.isBusy || job.status == .queued)
+        .help(job.mergeOverlaps
+              ? "The overlapping pieces are joined into one solid. Click to keep them as separate solids again."
+              : "Join the pieces that overlap each other into one solid (the file is read again). Pieces that overlap on purpose, like parts of an assembly, are better kept separate.")
+    }
+
+    var saveFixedButton: some View {
+        Button { model.askToSaveFixedMesh(job) } label: {
+            Label(saveFixedTitle, systemImage: "square.and.arrow.down")
+                .lineLimit(1).fixedSize()
+        }
+        .buttonStyle(GhostButtonStyle())
+        .fixedSize()
+        .disabled(job.savingFixedMesh || !job.readable || job.status == .inspecting)
+        .help("Save the checked and fixed mesh as an STL or 3MF file, for example for your slicer")
+    }
+
+    /// A failed conversion: what went wrong and why, and a report to send.
+    private var showsErrorCard: Bool { job.status == .failed && job.readable && job.error != nil }
+
+    @ViewBuilder var errorCard: some View {
+        if showsErrorCard, let e = job.error {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "xmark.octagon.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.bad)
+                        .padding(.top, 1)
+                    Text(e)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let why = job.errorReason {
+                    Text(why)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    Spacer(minLength: 0)
+                    Button { model.saveReport(for: job) } label: {
+                        Label("Save Report…", systemImage: "doc.text").lineLimit(1).fixedSize()
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                    .fixedSize()
+                    .help("Save a text file about this problem that you can send to the developer")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(padding: 10)
+        }
+    }
+
+    /// Something went wrong or looks off: offer a report to send (unless the
+    /// error card already does).
+    private var showsReportButton: Bool {
+        let trouble = job.status == .failed || !job.warnings.isEmpty || (shownResult?.hasIssues ?? false)
+            || job.meshCheck?.ready == false
+        return trouble && !showsErrorCard
+    }
+
     /// What the check of the saved STEP file found, in plain words.
     @ViewBuilder var issuesCard: some View {
-        if let r = shownResult, !r.checks.isEmpty {
+        if mode == .result, let r = shownResult, !r.checks.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(r.checks, id: \.self) { issue in
                     HStack(alignment: .top, spacing: 7) {
@@ -359,6 +545,8 @@ struct JobPreview: View {
 
     var bottomBar: some View {
         VStack(alignment: .leading, spacing: 8) {
+            meshCard
+            errorCard
             issuesCard
             if showLog && (!job.log.isEmpty || !job.warnings.isEmpty) {
                 ScrollView {
@@ -389,6 +577,12 @@ struct JobPreview: View {
                         }
                     }
                     .buttonStyle(GhostButtonStyle()).help("Show the conversion log")
+                }
+                if showsReportButton {
+                    Button { model.saveReport(for: job) } label: { Image(systemName: "doc.text") }
+                        .buttonStyle(GhostButtonStyle())
+                        .help("Save a report about this file that you can send to the developer")
+                        .accessibilityLabel("Save a report about this file…")
                 }
                 if job.status == .done && job.isExported {
                     Button { model.revealCurrent(job) } label: {
@@ -515,14 +709,47 @@ struct SettingsPanel: View {
 
     var accent: Color { settings.accent.color }
 
-    var qualityWord: String {
-        switch settings.quality {
+    /// With Auto selected, marks the preset Auto actually used for the
+    /// selected file (both CAD and Smooth when its parts used different
+    /// ones): the card's tooltip, or nil when it isn't marked.
+    private func autoPickTip(for p: Preset) -> String? {
+        guard settings.preset == .auto, p != .auto, let j = model.selectedJob, j.status == .done,
+              let used = j.result?.preset else { return nil }
+        if used == "mixed" {
+            return (p == .cad || p == .smooth) ? "Auto used CAD + Smooth for “\(j.fileName)”." : nil
+        }
+        return used == p.rawValue ? "Auto used \(p.title) for “\(j.fileName)”." : nil
+    }
+
+    func qualityWord(_ q: Double) -> String {
+        switch q {
         case ..<0.25: return "Fastest"
         case ..<0.5: return "Fast"
         case ..<0.62: return "Balanced"
         case ..<0.85: return "High quality"
         default: return "Best quality"
         }
+    }
+
+    /// The slider's position: with Auto quality, the quality picked for the
+    /// selected file.
+    var shownQuality: Double {
+        settings.autoQualityOn ? settings.quality(for: model.selectedJob?.triangles) : settings.quality
+    }
+
+    var qualityHeader: String {
+        guard settings.autoQualityOn else { return qualityWord(settings.quality) }
+        guard let t = model.selectedJob?.triangles else { return "Auto" }
+        return "Auto · \(Int((settings.quality(for: t) * 100).rounded()))%"
+    }
+
+    var qualityHint: String {
+        guard settings.autoQualityOn else { return settings.preset.qualityHint }
+        var h = "Auto picks the quality for each file from its size: up to 90% for small meshes, down to 50% for very big ones, so they don't take hours."
+        if let j = model.selectedJob, let t = j.triangles {
+            h += " “\(j.fileName)” gets \(Int((settings.quality(for: t) * 100).rounded()))%."
+        }
+        return h + " Move the slider to use one setting for every file."
     }
 
     var body: some View {
@@ -532,7 +759,7 @@ struct SettingsPanel: View {
                     SectionLabel(text: "Preset")
                     VStack(spacing: 8) {
                         ForEach(Preset.allCases) { p in
-                            PresetCard(preset: p, selected: settings.preset == p)
+                            PresetCard(preset: p, selected: settings.preset == p, autoPickTip: autoPickTip(for: p))
                                 .onTapGesture { settings.preset = p }
                                 .accessibilityAddTraits(.isButton)
                                 .accessibilityLabel("\(p.title) preset")
@@ -543,9 +770,21 @@ struct SettingsPanel: View {
                         HStack {
                             SectionLabel(text: "Speed ↔ Quality")
                             Spacer()
-                            Text(qualityWord).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(accent)
+                            Text(qualityHeader).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(accent)
+                            if settings.preset == .auto && !settings.autoQuality {
+                                // switches Auto quality back on
+                                Button("Auto") { settings.autoQuality = true }
+                                    .buttonStyle(GhostButtonStyle())
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .fixedSize()
+                                    .help("Pick the quality for each file from its size again")
+                            }
                         }
-                        Slider(value: $settings.quality, in: 0...1)
+                        Slider(value: Binding(get: { shownQuality }, set: { v in
+                            // moving the slider: one quality for every file
+                            if settings.autoQualityOn { settings.autoQuality = false }
+                            settings.quality = v
+                        }), in: 0...1)
                             .controlSize(.small)
                             .accessibilityLabel("Speed versus quality")
                         HStack {
@@ -555,11 +794,11 @@ struct SettingsPanel: View {
                         }
                         .font(.system(size: 10))
                         .foregroundStyle(Theme.textFaint)
-                        Text(settings.preset.qualityHint)
+                        Text(qualityHint)
                             .font(.system(size: 10.5))
                             .foregroundStyle(Theme.textDim)
                             .fixedSize(horizontal: false, vertical: true)
-                        if let warning = FineDetail.warning(jobs: model.jobs, quality: settings.quality,
+                        if let warning = FineDetail.warning(jobs: model.jobs, quality: { settings.quality(for: $0.triangles) },
                                                             preset: settings.preset, maxFaces: settings.maxFaces) {
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12))
@@ -748,30 +987,53 @@ struct PresetCard: View {
     @EnvironmentObject var settings: Settings
     let preset: Preset
     let selected: Bool
+    /// Set when the Auto preset chose this one for the selected file (its tooltip)
+    var autoPickTip: String? = nil
     @LocalState private var hover = false
+
+    /// Marked in a color of its own: the preset Auto chose
+    private var picked: Bool { autoPickTip != nil && !selected }
+    private var pickColor: Color { settings.accent.autoPick }
+
+    /// The icon and border color: the accent when selected, the Auto color when picked
+    private var markColor: Color? {
+        if selected { return settings.accent.color }
+        return picked ? pickColor : nil
+    }
+
+    private var iconBackground: Color {
+        if let c = markColor { return c.opacity(0.18) }
+        return Color.white.opacity(0.05)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? settings.accent.color.opacity(0.18) : Color.white.opacity(0.05))
+                    .fill(iconBackground)
                 Image(systemName: preset.icon)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(selected ? settings.accent.color : Theme.textDim)
+                    .foregroundStyle(markColor ?? Theme.textDim)
             }
             .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(preset.title).font(.system(size: 13, weight: .semibold))
                 Text(preset.subtitle).font(.system(size: 10.5)).foregroundStyle(Theme.textDim)
                     .fixedSize(horizontal: false, vertical: true)
+                if picked {
+                    Pill(text: "Auto used", color: pickColor, filled: true)
+                        .fixedSize()
+                        .padding(.top, 3)
+                }
             }
             Spacer(minLength: 0)
             if selected {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(settings.accent.color)
             }
         }
-        .card(highlighted: selected || hover, accent: selected ? settings.accent.color : Theme.strokeStrong, padding: 10)
+        .card(highlighted: selected || picked || hover, accent: markColor ?? Theme.strokeStrong, padding: 10)
         .onHover { hover = $0 }
         .contentShape(Rectangle())
+        .help(picked ? (autoPickTip ?? "") : "")
     }
 }

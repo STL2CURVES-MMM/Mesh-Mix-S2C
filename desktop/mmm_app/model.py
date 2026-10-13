@@ -79,6 +79,66 @@ class CheckIssue:
         return self.level == "error"
 
 
+@dataclass(frozen=True)
+class MeshIssue:
+    """One thing the mesh check found, and what it did about it."""
+
+    code: str
+    count: int
+    status: str  # fixed / not_fixed / action / note
+    problem: str
+    result: str
+    part: str = ""
+
+
+MESH_STATUS_TITLES = {
+    "ok": "Mesh is clean",
+    "fixed": "Mesh fixed",
+    "action": "Your choice needed",
+    "problems": "Mesh has problems",
+}
+
+
+@dataclass
+class MeshCheck:
+    """The engine's mesh check: what it found and fixed, and whether a
+    second check of the fixed mesh found it ready for conversion."""
+
+    status: str = "ok"  # ok / fixed / action / problems
+    issues: list = field(default_factory=list)
+    ready: object = None  # True / False / None (not reported)
+    problems: list = field(default_factory=list)
+
+    @classmethod
+    def from_event(cls, d):
+        if not isinstance(d, dict):
+            return None
+        mc = cls(status=str(d.get("status") or "ok"))
+        for i in d.get("issues") or []:
+            if isinstance(i, dict):
+                mc.issues.append(MeshIssue(code=str(i.get("code", "")), count=_int(i.get("count")),
+                                           status=str(i.get("status", "note")), problem=str(i.get("problem", "")),
+                                           result=str(i.get("result", "")), part=str(i.get("part") or "")))
+        v = d.get("verified")
+        if isinstance(v, dict):
+            mc.ready = v.get("ready") if isinstance(v.get("ready"), bool) else None
+            mc.problems = [str(x) for x in v.get("problems") or [] if isinstance(x, str)]
+        return mc
+
+    @property
+    def title(self):
+        return MESH_STATUS_TITLES.get(self.status, "Mesh checked")
+
+    @property
+    def has_overlaps(self):
+        """Overlapping pieces the user can choose to merge."""
+        return any(i.code == "overlaps" and i.status == "action" for i in self.issues)
+
+    @property
+    def fixed_anything(self):
+        return any(i.status == "fixed" for i in self.issues)
+
+
 @dataclass
 class ConversionResult:
     preset: str = ""
@@ -169,6 +229,20 @@ class Job(QObject):
         self.bbox_size = None
         self.result = None
         self.error = None
+        # why it went wrong, in plain words, and the technical details for
+        # a bug report (from the engine's error event)
+        self.error_reason = None
+        self.error_details = None
+        # what the mesh check found (MeshCheck), and whether overlapping
+        # pieces are merged into one solid (the user's choice, per file)
+        self.mesh_check = None
+        self.merge_overlaps = False
+        self.merge_error = None
+        # where "Save Fixed Mesh" last saved this file's fixed mesh
+        self.saved_fixed_mesh = None
+        # read again after a change (no automatic conversion then)
+        self.reinspecting = False
+        self.file_size = None
         self.warnings = []
         self.log = []
         self.input_preview = None
@@ -348,6 +422,13 @@ def friendly(msg):
     return re.sub(r"^[A-Za-z_][A-Za-z0-9_]*(Error|Exception): ", "", m, count=1)
 
 
+def take_error(job, ev):
+    """The engine's error event: what went wrong, why, and the details."""
+    job.error = friendly(ev.get("message"))
+    job.error_reason = ev.get("reason") if isinstance(ev.get("reason"), str) else None
+    job.error_details = ev.get("details") if isinstance(ev.get("details"), str) else None
+
+
 SIGKILL, SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE = 9, 11, 7, 4, 6, 8
 WIN_OUT_OF_MEMORY = {0xC0000017, 0xC000012D}  # STATUS_NO_MEMORY, STATUS_COMMITMENT_LIMIT
 
@@ -408,6 +489,7 @@ class AppModel(QObject):
         self.selection = None
         self.engine_missing = engine_command() is None
         self._inspect_waiting = deque()
+        self._fix_tasks = set()
         self._stamp = 0
         self.preview_dir = os.path.join(tempfile.gettempdir(), f"{PREVIEW_PREFIX}{os.getpid()}")
         os.makedirs(self.preview_dir, exist_ok=True)
@@ -516,6 +598,10 @@ class AppModel(QObject):
             if any(same_path(j.path, f) and j.status != JobStatus.DONE for j in self.jobs):
                 continue
             job = Job(f)
+            try:
+                job.file_size = os.path.getsize(f)
+            except OSError:
+                pass
             self.jobs.append(job)
             added = True
             if first_new is None:
@@ -546,10 +632,17 @@ class AppModel(QObject):
             self._start_inspect(job)
 
     def _start_inspect(self, job):
-        prev = os.path.join(self.preview_dir, f"{job.id}-in.mmmp")
-        part_dir = os.path.join(self.preview_dir, f"{job.id}-parts")
+        # a new name every time: the preview cache goes by file name, and
+        # merging overlapping pieces reads the file again
+        stamp = self._next_stamp()
+        prev = os.path.join(self.preview_dir, f"{job.id}-in-{stamp}.mmmp")
+        part_dir = os.path.join(self.preview_dir, f"{job.id}-parts-{stamp}")
+        args = ["inspect", job.path, "--json", "--preview", prev, "--part-previews", part_dir,
+                "--repair", self.settings.repair]
+        if job.merge_overlaps:
+            args.append("--merge-overlaps")
         try:
-            t = EngineTask(["inspect", job.path, "--json", "--preview", prev, "--part-previews", part_dir])
+            t = EngineTask(args)
         except EngineMissing:
             job.error = ENGINE_MISSING_MESSAGE
             self._set_status(job, JobStatus.FAILED)
@@ -568,6 +661,7 @@ class AppModel(QObject):
                 job.open_shells = _int(ev.get("open_shells"), None)
                 job.parts = _int(ev.get("parts"), None)
                 job.bbox_size = _bbox_size(ev.get("bbox"))
+                job.mesh_check = MeshCheck.from_event(ev.get("mesh_check"))
                 plist = ev.get("part_list")
                 if isinstance(plist, list) and len(plist) > 1:
                     parts = []
@@ -585,20 +679,32 @@ class AppModel(QObject):
                     job.selected_part = 0
                 job.touch()
             elif kind == "error":
-                job.error = friendly(ev.get("message"))
+                take_error(job, ev)
                 job.touch()
 
         def on_exit(code, _stderr):
             job.task = None
             if job not in self.jobs:
+                self.discard_previews([prev, part_dir])
                 self._pump_inspect()
                 return
             if code == 0 and not t.cancelled:
                 job.input_preview = prev if os.path.exists(prev) else None
                 self._set_status(job, JobStatus.READY)
-                if self.settings.convertOnDrop:
+                if self.settings.convertOnDrop and not job.merge_error and not job.reinspecting:
                     self.enqueue(job)
+                job.reinspecting = False
+            elif job.merge_overlaps and not t.cancelled:
+                # merging went wrong: read the file again the usual way
+                job.merge_overlaps = False
+                job.merge_error = job.error or "The overlapping pieces couldn't be merged."
+                job.error = job.error_reason = job.error_details = None
+                job.status = JobStatus.INSPECTING
+                self._inspect_waiting.append(job)
+                job.touch()
+                self.state_changed.emit()
             else:
+                job.reinspecting = False
                 job.readable = False
                 if job.error is None:
                     job.error = unreadable_message(code)
@@ -628,7 +734,7 @@ class AppModel(QObject):
             self.discard_previews(job.clear_results())
         job.progress = 0.0
         job.stage = "Waiting"
-        job.error = None
+        job.error = job.error_reason = job.error_details = None
         job.warnings = []
         job.log = []
         self._set_status(job, JobStatus.QUEUED)
@@ -658,6 +764,67 @@ class AppModel(QObject):
         else:
             job.touch()
             self.state_changed.emit()
+
+    def set_merge_overlaps(self, job, on):
+        """Joins the pieces of the file that overlap each other into one
+        solid (or keeps them separate again). The file is read and checked
+        again, and a finished file goes back to Ready."""
+        if job.merge_overlaps == on or not job.readable or job.status.is_busy or job.status == JobStatus.QUEUED:
+            return
+        job.merge_overlaps = on
+        job.merge_error = None
+        self.discard_previews(job.clear_results())
+        old = [job.input_preview] + [p.input_preview for p in job.part_list]
+        old += [os.path.dirname(p) for p in old if p and os.path.basename(os.path.dirname(p)).startswith(f"{job.id}-parts-")]
+        self.discard_previews(old)
+        job.input_preview = None
+        for p in job.part_list:
+            p.input_preview = None
+        job.error = job.error_reason = job.error_details = None
+        job.stage = ""
+        job.reinspecting = True
+        self._inspect(job)
+        job.touch()
+        self.state_changed.emit()
+
+    def save_fixed_mesh(self, job, dest, completion):
+        """Checks and fixes the mesh the same way the conversion does and
+        saves the fixed copy (.stl or .3mf). completion(error message or
+        None) is called on the main thread."""
+        s = self.settings
+        args = ["fix", job.path, "-o", dest, "--json", "--repair", s.repair, "--layout", s.plateLayout]
+        if not s.removeDebris:
+            args.append("--keep-debris")
+        if job.merge_overlaps:
+            args.append("--merge-overlaps")
+        try:
+            t = EngineTask(args)
+        except EngineMissing:
+            completion(ENGINE_MISSING_MESSAGE)
+            return
+        state = {"error": None, "result": False}
+
+        def on_event(ev):
+            if ev.get("event") == "error":
+                state["error"] = friendly(ev.get("message"))
+            elif ev.get("event") == "result":
+                state["result"] = True
+
+        def on_exit(code, _stderr):
+            self._fix_tasks.discard(t)
+            if code == 0 and state["result"]:
+                completion(None)
+            else:
+                completion(state["error"] or crash_message(code))
+
+        t.event.connect(on_event)
+        t.finished.connect(on_exit)
+        self._fix_tasks.add(t)
+        try:
+            t.start()
+        except OSError as e:
+            self._fix_tasks.discard(t)
+            completion(f"The converter couldn't start ({e.strerror or e}). Try reinstalling Manifold Mesh Mix.")
 
     def apply_split_default(self):
         """The Settings default changed: files that aren't converted yet follow it."""
@@ -714,7 +881,7 @@ class AppModel(QObject):
         prev = os.path.join(self.preview_dir, f"{job.id}-out-{stamp}.mmmp")
         args = ["convert", job.path, "-o", out, "--json",
                 "--preset", s.preset, "--repair", s.repair, "--unit", s.unit,
-                "--quality", f"{s.quality:.3f}", "--layout", s.plateLayout, "--preview", prev]
+                "--quality", f"{s.quality_for(job.triangles):.3f}", "--layout", s.plateLayout, "--preview", prev]
         if job.is_split:
             args.append("--split")
             for u in part_outs:
@@ -727,6 +894,8 @@ class AppModel(QObject):
             args += ["--tolerance", repr(float(s.customTolerance))]
         if s.maxFaces > 0:
             args += ["--max-faces", str(int(s.maxFaces))]
+        if job.merge_overlaps:
+            args.append("--merge-overlaps")
         try:
             t = EngineTask(args)
         except EngineMissing:
@@ -755,7 +924,7 @@ class AppModel(QObject):
                 if isinstance(ev.get("message"), str):
                     job.warnings.append(ev["message"])
             elif kind == "error":
-                job.error = friendly(ev.get("message"))
+                take_error(job, ev)
             elif kind == "part":
                 # one part of a split 3MF is finished: show it right away
                 p = ev.get("part")
@@ -772,6 +941,9 @@ class AppModel(QObject):
                 state["result"] = True
                 job.result = ConversionResult.from_event(ev)
                 job.used_preset = job.result.preset
+                mc = MeshCheck.from_event(ev.get("mesh_check"))
+                if mc is not None:
+                    job.mesh_check = mc
             job.touch()
 
         def on_exit(code, stderr):
@@ -823,7 +995,7 @@ class AppModel(QObject):
 
     def shutdown(self):
         """Stops every engine (the app is quitting) and removes the temporary files."""
-        tasks = [j.task for j in self.jobs if j.task is not None]
+        tasks = [j.task for j in self.jobs if j.task is not None] + list(self._fix_tasks)
         for t in tasks:
             t.cancelled = True
             t.kill()

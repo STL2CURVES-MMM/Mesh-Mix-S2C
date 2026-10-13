@@ -60,6 +60,8 @@ class Options:
         self.split = bool(kw.get("split", False))
         self.part_outputs = list(kw.get("part_outputs") or [])  # by part index
         self.part_previews = list(kw.get("part_previews") or [])
+        # join overlapping pieces of a part into one solid (mesh check)
+        self.merge_overlaps = bool(kw.get("merge_overlaps", False))
 
 
 # ----------------------------------------------------------------------------
@@ -281,7 +283,8 @@ def convert(input_path, output_path, opts=None, report=NULL):
     t0 = time.time()
     report.stage("Reading mesh", 0.0, 0.08)
     bodies, info = load_and_prepare(
-        input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout
+        input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout,
+        merge=opts.merge_overlaps,
     )
     diag = info.diag
     q = opts.quality
@@ -498,6 +501,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
         "file_size": os.path.getsize(output_path),
         "seconds": round(time.time() - t0, 2),
         "input": info.as_dict(),
+        "mesh_check": info.mesh_check,
         "tolerance": tol,
         "checked": check["checked"],
         "check_ok": check["ok"],
@@ -638,6 +642,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
         "file_size": sum(r["file_size"] for r in results),
         "seconds": round(time.time() - t0, 2),
         "input": info.as_dict(),
+        "mesh_check": info.mesh_check,
         "tolerance": tol,
         "checked": all(r["checked"] for r in results),
         "check_ok": all(r["check_ok"] for r in results),

@@ -41,10 +41,11 @@ def estimate(triangles, quality, preset, max_faces=0):
 
 
 def warning_text(jobs, quality, preset, max_faces=0):
-    """The panel's warning for the files in the list, or None."""
+    """The panel's warning for the files in the list, or None. quality is a
+    number, or a function giving each job's quality (Auto quality)."""
     hits = []
     for j in jobs:
-        e = estimate(j.triangles, quality, preset, max_faces)
+        e = estimate(j.triangles, quality(j) if callable(quality) else quality, preset, max_faces)
         if e:
             hits.append((e[1], j))
     if not hits:

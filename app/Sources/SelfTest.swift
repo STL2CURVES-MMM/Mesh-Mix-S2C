@@ -103,6 +103,7 @@ enum SelfTest {
         // Start from known settings.
         settings.preset = .auto
         settings.quality = 0.7
+        settings.autoQuality = true
         settings.outputMode = .subfolder
         settings.subfolderName = env["MMM_SELFTEST_SUBFOLDER"] ?? "SelfTest STEP"
         settings.replaceExisting = true
@@ -123,6 +124,14 @@ enum SelfTest {
         model.selection = model.jobs.first?.id
         await sleep(1.5)
         shot("ready", dir)
+        // the file the mesh check found the most problems in
+        if let messy = model.jobs.filter({ !($0.meshCheck?.issues.isEmpty ?? true) })
+            .max(by: { ($0.meshCheck?.issues.count ?? 0) < ($1.meshCheck?.issues.count ?? 0) }) {
+            model.selection = messy.id
+            await sleep(1.5)
+            shot("mesh-check", dir)
+            model.selection = model.jobs.first?.id
+        }
 
         if !convertOnly {
             for p in Preset.allCases {
@@ -136,10 +145,14 @@ enum SelfTest {
             await sleep(0.4)
             shot("custom-folder-missing", dir)
             settings.outputMode = .subfolder
+            await sleep(0.3)
+            shot("quality-auto", dir)
+            settings.autoQuality = false
             settings.quality = 0.15
             await sleep(0.3)
             shot("quality-fast", dir)
             settings.quality = 0.7
+            settings.autoQuality = true
         }
 
         model.convertAll()
@@ -239,6 +252,10 @@ enum SelfTest {
                 d["size"] = r.fileSize
             }
             if let t = j.triangles { d["triangles"] = t }
+            if let mc = j.meshCheck {
+                d["mesh_check"] = ["status": mc.status, "ready": mc.ready.map { $0 as Any } ?? NSNull(),
+                                   "issues": mc.issues.map(\.code)] as [String: Any]
+            }
             if !j.exportedFiles.isEmpty { d["exported"] = j.exportedFiles.map(\.path) }
             if let r = j.result { d["checks"] = r.checks.map(\.message); d["checked"] = r.checked }
             if j.canSplit {

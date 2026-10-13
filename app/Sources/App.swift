@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         model?.cancelAll()
+        model?.cancelFixes()
         model?.cleanUpPreviews()
         return .terminateNow
     }
@@ -81,8 +82,14 @@ struct ManifoldMeshMixApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 780)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Manifold Mesh Mix") { Support.showAbout() }
+            }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { updater.checkFromMenu() }
+            }
+            CommandGroup(after: .help) {
+                Button("Support the Project ☕") { NSWorkspace.shared.open(Support.url) }
             }
             CommandGroup(replacing: .newItem) {
                 Button("Add Files…") { model.openPanel() }
@@ -161,5 +168,32 @@ struct PreferencesView: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+}
+
+/// Buy Me a Coffee: Help → Support the Project, and a link in the About box.
+enum Support {
+    static let url = URL(string: "https://buymeacoffee.com/tunathefirst")!
+
+    /// The standard About box, with links to the source code and the coffee page.
+    static func showAbout() {
+        let center = NSMutableParagraphStyle()
+        center.alignment = .center
+        let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .paragraphStyle: center,
+                                                   .foregroundColor: NSColor.labelColor]
+        func link(_ text: String, _ target: URL) -> NSAttributedString {
+            var attrs = base
+            attrs[.link] = target
+            return NSAttributedString(string: text, attributes: attrs)
+        }
+        let credits = NSMutableAttributedString(string: "STL / 3MF / OBJ / PLY → editable STEP\n\n"
+            + "Free software under the GNU Affero General Public License v3, with no warranty.\n\n", attributes: base)
+        credits.append(link("Source code", URL(string: "https://github.com/\(Updater.repo)")!))
+        credits.append(NSAttributedString(string: "\n\nFree to use. If it saves you time, you can ", attributes: base))
+        credits.append(link("buy me a coffee ☕", url))
+        credits.append(NSAttributedString(string: ": it helps pay for the AI credits that go into building and improving it.",
+                                          attributes: base))
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

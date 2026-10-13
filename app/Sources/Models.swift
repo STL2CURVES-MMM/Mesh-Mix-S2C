@@ -118,6 +118,9 @@ final class Settings: ObservableObject {
 
     @Published var preset: Preset { didSet { d.set(preset.rawValue, forKey: "preset") } }
     @Published var quality: Double { didSet { d.set(quality, forKey: "quality") } }
+    /// With the Auto preset, pick the quality for each file (moving the
+    /// slider turns it off: then every file uses the slider's quality)
+    @Published var autoQuality: Bool { didSet { d.set(autoQuality, forKey: "autoQuality") } }
     @Published var repair: RepairLevel { didSet { d.set(repair.rawValue, forKey: "repair") } }
     @Published var removeDebris: Bool { didSet { d.set(removeDebris, forKey: "removeDebris") } }
     @Published var unit: OutputUnit { didSet { d.set(unit.rawValue, forKey: "unit") } }
@@ -143,6 +146,7 @@ final class Settings: ObservableObject {
     init() {
         preset = Preset(rawValue: d.string(forKey: "preset") ?? "") ?? .auto
         quality = d.object(forKey: "quality") as? Double ?? 0.7
+        autoQuality = d.object(forKey: "autoQuality") as? Bool ?? true
         repair = RepairLevel(rawValue: d.string(forKey: "repair") ?? "") ?? .auto
         removeDebris = d.object(forKey: "removeDebris") as? Bool ?? true
         unit = OutputUnit(rawValue: d.string(forKey: "unit") ?? "") ?? .mm
@@ -161,6 +165,27 @@ final class Settings: ObservableObject {
         splitParts = d.object(forKey: "splitParts") as? Bool ?? true
         colorFaces = d.object(forKey: "colorFaces") as? Bool ?? false
         checkUpdates = d.object(forKey: "checkUpdates") as? Bool ?? true
+    }
+
+    /// Auto quality (with the Auto preset): each file gets a quality from its
+    /// triangle count. Small meshes are quick even near the top of the
+    /// slider; very big ones get a faster setting, so they don't take hours
+    /// or make huge STEP files. (triangles below, quality)
+    static let autoQualitySteps: [(Int, Double)] = [(50_000, 0.9), (300_000, 0.8), (1_000_000, 0.7), (3_000_000, 0.6)]
+    static let autoQualityBiggest = 0.5
+
+    /// The quality Auto picks for a mesh with this many triangles.
+    static func pickedQuality(triangles: Int) -> Double {
+        for (limit, q) in autoQualitySteps where triangles < limit { return q }
+        return autoQualityBiggest
+    }
+
+    var autoQualityOn: Bool { preset == .auto && autoQuality }
+
+    /// The quality a file with this many triangles is converted at.
+    func quality(for triangles: Int?) -> Double {
+        if autoQualityOn, let t = triangles, t > 0 { return Settings.pickedQuality(triangles: t) }
+        return quality
     }
 }
 
@@ -216,6 +241,60 @@ struct CheckIssue: Hashable {
     let level: String
     let message: String
     var isError: Bool { level == "error" }
+}
+
+/// One thing the mesh check found, and what it did about it.
+struct MeshIssue: Hashable {
+    let code: String
+    let count: Int
+    /// fixed / not_fixed / action / note
+    let status: String
+    let problem: String
+    let result: String
+    /// The 3MF part it is in ("" for the whole file)
+    let part: String
+
+    /// The problem with a capital first letter, to start a sentence.
+    var problemCapitalized: String { problem.prefix(1).uppercased() + String(problem.dropFirst()) }
+}
+
+/// The engine's mesh check: what it found and fixed, and whether a second
+/// check of the fixed mesh found it ready for conversion.
+struct MeshCheck {
+    /// ok / fixed / action / problems
+    var status = "ok"
+    var issues: [MeshIssue] = []
+    /// nil when the engine didn't report it
+    var ready: Bool?
+    var problems: [String] = []
+
+    static let titles = ["ok": "Mesh is clean", "fixed": "Mesh fixed",
+                         "action": "Your choice needed", "problems": "Mesh has problems"]
+
+    var title: String { Self.titles[status] ?? "Mesh checked" }
+
+    /// Overlapping pieces the user can choose to merge.
+    var hasOverlaps: Bool { issues.contains { $0.code == "overlaps" && $0.status == "action" } }
+
+    var fixedAnything: Bool { issues.contains { $0.status == "fixed" } }
+
+    /// The engine's "mesh_check" JSON (nil when it isn't there).
+    init?(event value: Any?) {
+        guard let d = value as? [String: Any] else { return nil }
+        if let s = d["status"] as? String, !s.isEmpty { status = s }
+        for case let i as [String: Any] in (d["issues"] as? [Any] ?? []) {
+            issues.append(MeshIssue(code: i["code"] as? String ?? "",
+                                    count: i["count"] as? Int ?? 0,
+                                    status: i["status"] as? String ?? "note",
+                                    problem: i["problem"] as? String ?? "",
+                                    result: i["result"] as? String ?? "",
+                                    part: i["part"] as? String ?? ""))
+        }
+        if let v = d["verified"] as? [String: Any] {
+            ready = v["ready"] as? Bool
+            problems = (v["problems"] as? [Any] ?? []).compactMap { $0 as? String }
+        }
+    }
 }
 
 extension ConversionResult {
@@ -287,10 +366,11 @@ enum FineDetail {
         return Double(n) * kbPerPatch / 1000
     }
 
-    static func warning(jobs: [Job], quality: Double, preset: Preset, maxFaces: Int) -> String? {
+    /// quality: each job's quality (Auto quality picks one per file).
+    static func warning(jobs: [Job], quality: (Job) -> Double, preset: Preset, maxFaces: Int) -> String? {
         var hits: [(mb: Double, job: Job)] = []
         for j in jobs {
-            if let mb = estimateMB(triangles: j.triangles, quality: quality, preset: preset, maxFaces: maxFaces) {
+            if let mb = estimateMB(triangles: j.triangles, quality: quality(j), preset: preset, maxFaces: maxFaces) {
                 hits.append((mb: mb, job: j))
             }
         }
@@ -323,6 +403,23 @@ final class Job: ObservableObject, Identifiable {
     @Published var bboxSize: [Double]?
     @Published var result: ConversionResult?
     @Published var error: String?
+    /// Why it went wrong, in plain words, and the technical details for a
+    /// bug report (from the engine's error event)
+    @Published var errorReason: String?
+    @Published var errorDetails: String?
+    /// What the mesh check found, and whether overlapping pieces are merged
+    /// into one solid (the user's choice, per file)
+    @Published var meshCheck: MeshCheck?
+    @Published var mergeOverlaps = false
+    @Published var mergeError: String?
+    /// Where "Save Fixed Mesh" last saved this file's fixed mesh
+    @Published var savedFixedMesh: URL?
+    /// The fixed mesh is being saved right now
+    @Published var savingFixedMesh = false
+    /// Read again after a change (no automatic conversion then)
+    var reinspecting = false
+    /// Size of the file in bytes (for bug reports)
+    var fileSize: Int?
     @Published var warnings: [String] = []
     @Published var log: [String] = []
     @Published var inputPreview: URL?
@@ -412,6 +509,16 @@ final class AppModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
     }
     private let previewDir: URL
+    /// Engines saving a fixed mesh ("Save Fixed Mesh")
+    private var fixTasks: [EngineTask] = []
+    private var stampCount = 0
+
+    /// A new part for temporary file names every time (the preview cache
+    /// goes by file name).
+    private func nextStamp() -> String {
+        stampCount += 1
+        return "\(Int(Date().timeIntervalSince1970))-\(stampCount)"
+    }
 
     static let acceptedExtensions: Set<String> = ["stl", "obj", "ply", "off", "3mf", "glb", "gltf"]
 
@@ -478,6 +585,7 @@ final class AppModel: ObservableObject {
         for f in files {
             if jobs.contains(where: { $0.url.standardizedFileURL == f.standardizedFileURL && $0.status != .done }) { continue }
             let job = Job(url: f)
+            job.fileSize = (try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
             watch(job)
             jobs.append(job)
             if firstNew == nil { firstNew = job }
@@ -515,10 +623,15 @@ final class AppModel: ObservableObject {
     // MARK: inspect
 
     private func inspect(_ job: Job) {
-        let prev = previewDir.appendingPathComponent("\(job.id.uuidString)-in.mmmp")
-        let partDir = previewDir.appendingPathComponent("\(job.id.uuidString)-parts", isDirectory: true)
-        guard let t = EngineTask(arguments: ["inspect", job.url.path, "--json", "--preview", prev.path,
-                                             "--part-previews", partDir.path]) else {
+        // a new name every time: the preview cache goes by file name, and
+        // merging overlapping pieces reads the file again
+        let stamp = nextStamp()
+        let prev = previewDir.appendingPathComponent("\(job.id.uuidString)-in-\(stamp).mmmp")
+        let partDir = previewDir.appendingPathComponent("\(job.id.uuidString)-parts-\(stamp)", isDirectory: true)
+        var args = ["inspect", job.url.path, "--json", "--preview", prev.path, "--part-previews", partDir.path,
+                    "--repair", settings.repair.rawValue]
+        if job.mergeOverlaps { args.append("--merge-overlaps") }
+        guard let t = EngineTask(arguments: args) else {
             job.status = .failed
             job.error = AppModel.engineMissingMessage
             engineMissing = true
@@ -535,6 +648,7 @@ final class AppModel: ObservableObject {
                 if let bb = ev["bbox"] as? [[Double]], bb.count == 2 {
                     job.bboxSize = zip(bb[1], bb[0]).map { $0 - $1 }
                 }
+                job.meshCheck = MeshCheck(event: ev["mesh_check"])
                 if let list = ev["part_list"] as? [[String: Any]], list.count > 1 {
                     job.partList = list.enumerated().map { k, e in
                         var size: [Double]?
@@ -549,17 +663,35 @@ final class AppModel: ObservableObject {
                     job.selectedPart = 0
                 }
             } else if ev["event"] as? String == "error" {
-                job.error = AppModel.friendly(ev["message"] as? String)
+                AppModel.takeError(job, ev)
             }
         }
         t.onExit = { [weak self, weak job] status, _ in
-            guard let self, let job else { return }
+            guard let self else { return }
+            guard let job, self.jobs.contains(where: { $0 === job }) else {
+                // removed from the list while it was being read
+                self.discardPreviews([prev, partDir])
+                return
+            }
             job.task = nil
-            if status == 0 {
+            if status == 0 && !t.cancelled {
                 job.inputPreview = prev
                 job.status = .ready
-                if self.settings.convertOnDrop { self.enqueue(job) }
+                // not converted on its own after a merge failed or when read again
+                if self.settings.convertOnDrop && job.mergeError == nil && !job.reinspecting { self.enqueue(job) }
+                job.reinspecting = false
+            } else if job.mergeOverlaps && !t.cancelled {
+                // merging went wrong: read the file again the usual way
+                job.mergeOverlaps = false
+                job.mergeError = job.error ?? "The overlapping pieces couldn't be merged."
+                job.error = nil
+                job.errorReason = nil
+                job.errorDetails = nil
+                self.discardPreviews([prev, partDir])
+                job.status = .inspecting
+                self.inspect(job)
             } else {
+                job.reinspecting = false
                 job.status = .failed
                 job.readable = false
                 if job.error == nil {
@@ -570,8 +702,112 @@ final class AppModel: ObservableObject {
             }
         }
         do { try t.start() } catch {
+            job.task = nil
+            job.reinspecting = false
             job.status = .failed
             job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix."
+        }
+    }
+
+    /// Joins the pieces of the file that overlap each other into one solid
+    /// (or keeps them separate again). The file is read and checked again,
+    /// and a finished file goes back to Ready.
+    func setMergeOverlaps(_ job: Job, _ on: Bool) {
+        guard job.mergeOverlaps != on, job.readable, !job.status.isBusy, job.status != .queued else { return }
+        job.mergeOverlaps = on
+        job.mergeError = nil
+        discardPreviews(job.clearResults())
+        // the old previews of the file and its parts (and their folder)
+        var old: [URL?] = [job.inputPreview] + job.partList.map { $0.inputPreview }
+        let partsPrefix = "\(job.id.uuidString)-parts-"
+        for p in job.partList {
+            if let dir = p.inputPreview?.deletingLastPathComponent(), dir.lastPathComponent.hasPrefix(partsPrefix),
+               !old.contains(dir) {
+                old.append(dir)
+            }
+        }
+        discardPreviews(old)
+        job.inputPreview = nil
+        for i in job.partList.indices { job.partList[i].inputPreview = nil }
+        job.error = nil
+        job.errorReason = nil
+        job.errorDetails = nil
+        job.stage = ""
+        job.reinspecting = true
+        job.status = .inspecting
+        inspect(job)
+    }
+
+    /// Checks and fixes the mesh the same way the conversion does and saves
+    /// the fixed copy (.stl or .3mf). completion(error message or nil) is
+    /// called on the main thread.
+    func saveFixedMesh(_ job: Job, to dest: URL, completion: @escaping (String?) -> Void) {
+        let s = settings
+        var args = ["fix", job.url.path, "-o", dest.path, "--json",
+                    "--repair", s.repair.rawValue,
+                    "--layout", s.plateLayout.rawValue]
+        if !s.removeDebris { args.append("--keep-debris") }
+        if job.mergeOverlaps { args.append("--merge-overlaps") }
+        guard let t = EngineTask(arguments: args) else {
+            completion(AppModel.engineMissingMessage)
+            return
+        }
+        var failure: String?
+        var gotResult = false
+        t.onEvent = { ev in
+            switch ev["event"] as? String {
+            case "error": failure = AppModel.friendly(ev["message"] as? String)
+            case "result": gotResult = true
+            default: break
+            }
+        }
+        t.onExit = { [weak self] status, _ in
+            self?.fixTasks.removeAll { $0 === t }
+            if t.cancelled { return }  // the app is quitting
+            if status == 0 && gotResult {
+                completion(nil)
+            } else {
+                completion(failure ?? AppModel.crashMessage(status: status, signaled: t.signaled))
+            }
+        }
+        fixTasks.append(t)
+        do { try t.start() } catch {
+            fixTasks.removeAll { $0 === t }
+            completion("The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix.")
+        }
+    }
+
+    /// Stops the engines that are saving fixed meshes (the app is quitting).
+    func cancelFixes() {
+        for t in fixTasks { t.cancel() }
+    }
+
+    /// Asks where to save the checked and fixed copy of the mesh, then saves
+    /// it (.stl, or .3mf with one object per part).
+    func askToSaveFixedMesh(_ job: Job) {
+        guard !job.savingFixedMesh else { return }
+        let multi = job.partList.count > 1
+        let ext = multi ? "3mf" : "stl"
+        let p = NSSavePanel()
+        p.message = "Save the fixed mesh"
+        p.allowedContentTypes = (multi ? ["3mf", "stl"] : ["stl", "3mf"]).compactMap { UTType(filenameExtension: $0) }
+        p.directoryURL = job.url.deletingLastPathComponent()
+        p.nameFieldStringValue = "\(job.name) (fixed).\(ext)"
+        p.canCreateDirectories = true
+        guard p.runModal() == .OK, let chosen = p.url else { return }
+        let dest = ["stl", "3mf"].contains(chosen.pathExtension.lowercased()) ? chosen : chosen.appendingPathExtension(ext)
+        job.savingFixedMesh = true
+        saveFixedMesh(job, to: dest) { [weak job] err in
+            job?.savingFixedMesh = false
+            if let err {
+                let a = NSAlert()
+                a.messageText = "The fixed mesh couldn't be saved"
+                a.informativeText = err
+                a.addButton(withTitle: "OK")
+                a.runModal()
+            } else {
+                job?.savedFixedMesh = dest
+            }
         }
     }
 
@@ -588,6 +824,8 @@ final class AppModel: ObservableObject {
         job.progress = 0
         job.stage = "Waiting"
         job.error = nil
+        job.errorReason = nil
+        job.errorDetails = nil
         job.warnings = []
         job.log = []
         pump()
@@ -681,7 +919,7 @@ final class AppModel: ObservableObject {
                     "--preset", s.preset.rawValue,
                     "--repair", s.repair.rawValue,
                     "--unit", s.unit.rawValue,
-                    "--quality", String(format: "%.3f", s.quality),
+                    "--quality", String(format: "%.3f", s.quality(for: job.triangles)),
                     "--layout", s.plateLayout.rawValue,
                     "--preview", prev.path]
         if job.isSplit {
@@ -695,6 +933,7 @@ final class AppModel: ObservableObject {
         if !s.removeDebris { args.append("--keep-debris") }
         if s.useCustomTolerance && s.customTolerance > 0 { args += ["--tolerance", String(s.customTolerance)] }
         if s.maxFaces > 0 { args += ["--max-faces", String(s.maxFaces)] }
+        if job.mergeOverlaps { args.append("--merge-overlaps") }
         guard let t = EngineTask(arguments: args) else {
             job.status = .failed
             job.error = AppModel.engineMissingMessage
@@ -719,7 +958,7 @@ final class AppModel: ObservableObject {
             case "warning":
                 if let m = ev["message"] as? String { job.warnings.append(m) }
             case "error":
-                job.error = AppModel.friendly(ev["message"] as? String)
+                AppModel.takeError(job, ev)
             case "part":
                 // one part of a split 3MF is finished: show it right away
                 if let p = ev["part"] as? Int, let i = job.partList.firstIndex(where: { $0.index == p }) {
@@ -733,6 +972,7 @@ final class AppModel: ObservableObject {
                 gotResult = true
                 job.result = ConversionResult(event: ev)
                 job.usedPreset = Preset(rawValue: ev["preset"] as? String ?? "")
+                if let mc = MeshCheck(event: ev["mesh_check"]) { job.meshCheck = mc }
             default: break
             }
         }
@@ -784,6 +1024,13 @@ final class AppModel: ObservableObject {
         }
         if status == 0 { return "The converter finished without saving a STEP file. Convert the file again." }
         return "The converter stopped unexpectedly (code \(status)). Convert the file again; if it keeps failing, try another preset."
+    }
+
+    /// The engine's error event: what went wrong, why, and the details.
+    static func takeError(_ job: Job, _ ev: [String: Any]) {
+        job.error = friendly(ev["message"] as? String)
+        job.errorReason = ev["reason"] as? String
+        job.errorDetails = ev["details"] as? String
     }
 
     /// Strip Python exception class prefixes ("MeshError: ...").

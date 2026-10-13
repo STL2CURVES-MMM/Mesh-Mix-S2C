@@ -77,7 +77,7 @@ jobs:
         run: >
           xvfb-run -a -s "-screen 0 1600x1000x24"
           .venv/bin/python desktop/tests/run_selftest.py dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage selftest-linux
-          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl
+          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl "fixtures/Messy cube.stl"
           --big tests/models/huge_scan_blob.stl
       - name: Self-update test (AppImage)
         run: xvfb-run -a -s "-screen 0 1600x1000x24" .venv/bin/python desktop/tests/appimage_update_test.py dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage
@@ -137,7 +137,7 @@ jobs:
         run: >
           .venv/Scripts/python.exe desktop/tests/run_selftest.py dist-desktop/ManifoldMeshMix/ManifoldMeshMix.exe selftest-windows
           --unicode-temp
-          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl
+          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl "fixtures/Messy cube.stl"
           --big tests/models/huge_scan_blob.stl
       - name: Install, self-update and uninstall test
         run: .venv/Scripts/python.exe desktop/tests/windows_update_test.py dist-desktop/ManifoldMeshMix-*-Windows-x64-Setup.exe
@@ -178,7 +178,7 @@ jobs:
       - name: App self-test
         run: >
           python3 desktop/tests/run_selftest.py "dist/Manifold Mesh Mix.app/Contents/MacOS/ManifoldMeshMix" selftest-macos
-          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl
+          --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl "fixtures/Messy cube.stl"
           --big tests/models/huge_scan_blob.stl
       - name: Self-update test
         run: python3 app/Tests/update_test.py "dist/Manifold Mesh Mix.app"

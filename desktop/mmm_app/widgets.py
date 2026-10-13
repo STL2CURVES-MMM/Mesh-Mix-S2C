@@ -637,24 +637,44 @@ class PresetCard(Clickable):
         col.addWidget(self.title)
         col.addWidget(self.sub)
         self.lay.addLayout(col, 1)
+        self.picked = Pill("Auto used", filled=True)
+        self.picked.hide()
+        col.addWidget(self.picked, 0, Qt.AlignmentFlag.AlignLeft)
         self.check = IconLabel("check-circle", theme.accent(), 16)
         self.lay.addWidget(self.check, 0, Qt.AlignmentFlag.AlignVCenter)
+        # marked when the Auto preset chose this one for the selected file
+        self.auto_picked = False
         self.refresh()
 
     def set_selected(self, on):
         self.selected = on
         self.refresh()
 
+    def set_auto_picked(self, on, tip=""):
+        if on != self.auto_picked or tip != self.toolTip():
+            self.auto_picked = on
+            self.setToolTip(tip if on else "")
+            self.refresh()
+
     def on_hover(self, on):
         self.refresh()
 
     def refresh(self):
         a = theme.accent()
+        pick = theme.auto_pick()
         self.icon_box.selected = self.selected
+        self.icon_box.color = pick if (self.auto_picked and not self.selected) else None
         self.icon_box.update()
         self.check.setVisible(self.selected)
         self.check.set(color=a)
-        self.set_highlighted(self.selected or self.hover, a if self.selected else theme.STROKE_STRONG)
+        self.picked.color = pick
+        self.picked.setVisible(self.auto_picked and not self.selected)
+        if self.selected:
+            self.set_highlighted(True, a)
+        elif self.auto_picked:
+            self.set_highlighted(True, pick)
+        else:
+            self.set_highlighted(self.hover, theme.STROKE_STRONG)
 
 
 class _IconBox(QWidget):
@@ -662,16 +682,18 @@ class _IconBox(QWidget):
         super().__init__(parent)
         self.icon_name = icon
         self.selected = False
+        self.color = None  # a color of its own (the preset Auto chose)
         self.setFixedSize(32, 32)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        a = theme.accent()
+        a = self.color or theme.accent()
+        on = self.selected or self.color is not None
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.with_alpha(a, 0.18) if self.selected else theme.white(0.05))
+        p.setBrush(theme.with_alpha(a, 0.18) if on else theme.white(0.05))
         p.drawRoundedRect(QRectF(self.rect()), 8, 8)
-        p.drawPixmap(QPointF(9.5, 9.5), icons.pixmap(self.icon_name, a if self.selected else theme.TEXT_DIM, 13, _dpr(self)))
+        p.drawPixmap(QPointF(9.5, 9.5), icons.pixmap(self.icon_name, a if on else theme.TEXT_DIM, 13, _dpr(self)))
 
 
 class Divider(QFrame):

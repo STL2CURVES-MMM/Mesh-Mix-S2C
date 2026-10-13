@@ -336,3 +336,143 @@ def test_windows_show_in_explorer(tmp_path):
     b.write_text("x")
     assert system._windows_reveal([str(a), str(b)])
     assert system.reveal([str(a)])
+
+
+# ---------------------------------------------------------------- mesh check
+
+def test_mesh_check_from_event():
+    mc = M.MeshCheck.from_event({"status": "action", "issues": [
+        {"code": "holes", "count": 2, "status": "fixed", "problem": "2 holes", "result": "Filled them."},
+        {"code": "overlaps", "count": 2, "status": "action", "problem": "2 pieces overlapping", "result": "Kept.",
+         "part": "Left"}, "junk"], "verified": {"ready": True, "problems": []}})
+    assert mc.title == "Your choice needed" and mc.ready is True
+    assert [i.code for i in mc.issues] == ["holes", "overlaps"] and mc.issues[1].part == "Left"
+    assert mc.has_overlaps and mc.fixed_anything
+    assert M.MeshCheck.from_event(None) is None
+    odd = M.MeshCheck.from_event({"issues": "x", "verified": {"ready": "yes"}})
+    assert odd.status == "ok" and odd.issues == [] and odd.ready is None
+
+
+def test_inspect_reports_mesh_check(model, settings, meshes, tmp_path, monkeypatch):
+    log = tmp_path / "args.log"
+    monkeypatch.setenv("FAKE_ENGINE_LOG", str(log))
+    settings.repair = "off"
+    a, b = add_and_read(model, meshes["holes.stl"], meshes["one.stl"])
+    assert a.mesh_check.status == "fixed" and a.mesh_check.fixed_anything and a.mesh_check.ready
+    assert b.mesh_check.status == "ok" and not b.mesh_check.issues
+    # the check repairs the way the conversion will
+    inspect = [line for line in log.read_text().splitlines() if line.startswith('["inspect"')]
+    assert all('"--repair", "off"' in line for line in inspect)
+
+
+def test_merge_overlapping_pieces(model, settings, meshes, tmp_path, monkeypatch):
+    log = tmp_path / "args.log"
+    monkeypatch.setenv("FAKE_ENGINE_LOG", str(log))
+    settings.convertOnDrop = True
+    (job,) = add_and_read(model, meshes["overlap.stl"])
+    assert wait_until(lambda: job.status == JobStatus.DONE)
+    assert job.mesh_check.has_overlaps and not job.merge_overlaps
+    first_preview = job.input_preview
+    model.set_merge_overlaps(job, True)
+    assert job.status == JobStatus.INSPECTING
+    assert wait_until(lambda: job.status == JobStatus.READY)
+    # read again (a new preview), not converted again on its own
+    assert job.merge_overlaps and job.result is None and job.input_preview != first_preview
+    assert not job.mesh_check.has_overlaps and job.mesh_check.issues[0].status == "fixed"
+    assert not os.path.exists(first_preview)
+    model.enqueue(job)
+    assert wait_until(lambda: job.status == JobStatus.DONE)
+    lines = log.read_text().splitlines()
+    assert any(line.startswith('["inspect"') and "--merge-overlaps" in line for line in lines)
+    assert any(line.startswith('["convert"') and "--merge-overlaps" in line for line in lines)
+    model.set_merge_overlaps(job, False)
+    assert wait_until(lambda: job.status == JobStatus.READY)
+    assert job.mesh_check.has_overlaps
+
+
+def test_merge_failure_reads_the_file_again(model, meshes):
+    (job,) = add_and_read(model, meshes["overlap_mergefail.stl"])
+    model.set_merge_overlaps(job, True)
+    assert wait_until(lambda: job.status == JobStatus.READY and not job.merge_overlaps)
+    assert job.readable and job.merge_error == "The pieces couldn't be joined."
+    assert job.mesh_check.has_overlaps and job.error is None
+
+
+def test_save_fixed_mesh(model, meshes, tmp_path, monkeypatch):
+    log = tmp_path / "args.log"
+    monkeypatch.setenv("FAKE_ENGINE_LOG", str(log))
+    (job,) = add_and_read(model, meshes["holes.stl"])
+    done = []
+    dest = str(tmp_path / "fixed.stl")
+    model.save_fixed_mesh(job, dest, done.append)
+    assert wait_until(lambda: done)
+    assert done == [None] and os.path.exists(dest)
+    fix = [line for line in log.read_text().splitlines() if line.startswith('["fix"')][0]
+    assert dest.replace("\\", "\\\\") in fix and '"--repair", "auto"' in fix
+
+
+def test_error_reason_and_report(model, settings, meshes):
+    from mmm_app import bugreport
+
+    (job,) = add_and_read(model, meshes["has_error.stl"])
+    model.enqueue(job)
+    assert wait_until(lambda: job.status == JobStatus.FAILED)
+    assert job.error == "The mesh has no usable faces."
+    assert job.error_reason == "The file itself is the problem, not the app."
+    assert "Traceback" in job.error_details
+    text = bugreport.build(job, settings)
+    assert "has_error.stl" in text and "Why: The file itself is the problem" in text
+    assert "Technical details" in text and "Mesh check" in text
+    # no folders, no user name
+    folder = os.path.dirname(job.path)
+    assert folder not in text and os.path.expanduser("~") not in text
+    assert "<file folder>" in text
+    # enqueueing again clears the old reason
+    model.enqueue(job)
+    assert job.error_reason is None and job.error_details is None
+
+
+def test_report_scrubs_paths(monkeypatch, tmp_path):
+    from mmm_app import bugreport
+
+    home = os.path.expanduser("~")
+    job_path = os.path.join(str(tmp_path), "model.stl")
+    text = (f"at {job_path} and {os.path.join(home, 'Desktop', 'x.stl')} and C:\\Users\\Maria\\AppData\\x.py "
+            "and /home/joao/src/a.py and /Users/ana/b.py")
+    out = bugreport.scrub(text, job_path)
+    assert str(tmp_path) not in out and home not in out
+    assert "Maria" not in out and "joao" not in out and "ana/" not in out
+    assert "<file folder>" in out and "model.stl" in out
+
+
+# ---------------------------------------------------------------- auto quality
+
+def test_auto_quality_steps(settings):
+    from mmm_app.settings import auto_quality
+
+    assert [auto_quality(n) for n in (1, 49_999, 50_000, 299_999, 300_000, 999_999, 1_000_000, 2_999_999,
+                                      3_000_000, 50_000_000)] == [0.9, 0.9, 0.8, 0.8, 0.7, 0.7, 0.6, 0.6, 0.5, 0.5]
+    settings.preset = "auto"
+    settings.quality = 0.3
+    assert settings.auto_quality_on and settings.quality_for(2_000_000) == 0.6
+    assert settings.quality_for(None) == 0.3  # not read yet: the slider's quality
+    settings.autoQuality = False
+    assert settings.quality_for(2_000_000) == 0.3
+    settings.autoQuality = True
+    settings.preset = "smooth"
+    assert not settings.auto_quality_on and settings.quality_for(2_000_000) == 0.3
+
+
+def test_auto_quality_per_file(model, settings, meshes, tmp_path, monkeypatch):
+    import json
+
+    log = tmp_path / "args.log"
+    monkeypatch.setenv("FAKE_ENGINE_LOG", str(log))
+    settings.preset = "auto"
+    settings.quality = 0.4
+    small, dense = add_and_read(model, meshes["one.stl"], meshes["dense_sculpt.stl"])
+    model.convert_all()
+    assert wait_until(lambda: small.status == JobStatus.DONE and dense.status == JobStatus.DONE)
+    runs = [json.loads(line) for line in log.read_text().splitlines() if line.startswith('["convert"')]
+    q = {os.path.basename(r[1]): r[r.index("--quality") + 1] for r in runs}
+    assert q == {"one.stl": "0.900", "dense_sculpt.stl": "0.600"}

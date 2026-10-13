@@ -7,8 +7,8 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBo
 
 from . import detail, system, theme
 from .model import JobStatus
-from .settings import MAX_FACES, OUTPUT_MODES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice
-from .theme import SEMIBOLD
+from .settings import MAX_FACES, OUTPUT_MODES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice, preset_title
+from .theme import MEDIUM, SEMIBOLD
 from .widgets import (AccentButton, Card, ElidedLabel, GhostButton, IconLabel, Label, PresetCard, SectionLabel, Divider,
                       hbox, vbox)
 
@@ -131,12 +131,17 @@ class SettingsPanel(QWidget):
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 1000)
         self.slider.setAccessibleName("Speed versus quality")
-        self.slider.valueChanged.connect(lambda v: setattr(s, "quality", v / 1000))
+        self.slider.valueChanged.connect(self._slider_moved)
+        # shown when Auto quality is off, to switch it back on
+        self.auto_q = GhostButton("Auto")
+        self.auto_q.setFont(theme.font(10.5, MEDIUM))
+        self.auto_q.setToolTip("Pick the quality for each file from its size again")
+        self.auto_q.clicked.connect(lambda: setattr(s, "autoQuality", True))
         ends = hbox(IconLabel("fast", theme.TEXT_FAINT, 11), Label("Faster", 10, color=theme.TEXT_FAINT), None,
                     IconLabel("sparkles", theme.TEXT_FAINT, 11), Label("Better", 10, color=theme.TEXT_FAINT), spacing=4)
         self.quality_hint = Label("", 10.5, color=theme.TEXT_DIM, wrap=True)
         quality = Card()
-        quality.lay.addLayout(hbox(SectionLabel("Speed ↔ Quality"), None, self.quality_word))
+        quality.lay.addLayout(hbox(SectionLabel("Speed ↔ Quality"), None, self.quality_word, self.auto_q, spacing=6))
         quality.lay.addWidget(self.slider)
         quality.lay.addLayout(ends)
         quality.lay.addWidget(self.quality_hint)
@@ -277,6 +282,11 @@ class SettingsPanel(QWidget):
         model.jobs_changed.connect(self.refresh_buttons)
         model.state_changed.connect(self.refresh_detail_warning)
         model.jobs_changed.connect(self.refresh_detail_warning)
+        model.state_changed.connect(self.refresh_auto_pick)
+        model.selection_changed.connect(self.refresh_auto_pick)
+        model.jobs_changed.connect(self.refresh_auto_pick)
+        model.state_changed.connect(self.refresh_quality)
+        model.selection_changed.connect(self.refresh_quality)
         self.refresh()
 
     def paintEvent(self, _):
@@ -292,17 +302,56 @@ class SettingsPanel(QWidget):
             self.model.apply_split_default()
         self.refresh()
 
+    def _slider_moved(self, v):
+        s = self.settings
+        if s.auto_quality_on:
+            s.autoQuality = False  # the user chose a quality for every file
+        s.quality = v / 1000
+
+    def refresh_quality(self):
+        """The slider and its words. With Auto quality the slider shows the
+        quality picked for the selected file."""
+        s = self.settings
+        j = self.model.selected_job
+        tris = j.triangles if j is not None else None
+        auto = s.auto_quality_on
+        q = s.quality_for(tris) if auto else s.quality
+        if self.slider.value() != round(q * 1000):
+            self.slider.blockSignals(True)
+            self.slider.setValue(round(q * 1000))
+            self.slider.blockSignals(False)
+        self.auto_q.setVisible(s.preset == "auto" and not s.autoQuality)
+        if auto:
+            self.quality_word.setText(f"Auto · {round(q * 100)}%" if tris else "Auto")
+            hint = ("Auto picks the quality for each file from its size: up to 90% for small meshes, down to 50% "
+                    "for very big ones, so they don't take hours.")
+            if tris:
+                hint += f" “{j.file_name}” gets {round(q * 100)}%."
+            self.quality_hint.setText(hint + " Move the slider to use one setting for every file.")
+        else:
+            self.quality_word.setText(quality_word(s.quality))
+            self.quality_hint.setText(choice(PRESETS, s.preset).hint)
+        self.quality_word.set_color(theme.accent())
+
+    def refresh_auto_pick(self):
+        """With Auto selected, marks the preset Auto actually used for the
+        selected file (both CAD and Smooth when its parts used different ones)."""
+        j = self.model.selected_job
+        used = j.used_preset if (j is not None and j.status == JobStatus.DONE and self.settings.preset == "auto") else None
+        picks = {"cad", "smooth"} if used == "mixed" else ({used} if used else set())
+        for card in self.preset_cards:
+            v = card.preset.value
+            on = v in picks and v != "auto"
+            tip = (f"Auto used {preset_title(used)} for “{j.file_name}”." if on and used == "mixed" and j else
+                   f"Auto used {card.preset.title} for “{j.file_name}”." if on and j else "")
+            card.set_auto_picked(on, tip)
+
     def refresh(self):
         s = self.settings
         for card in self.preset_cards:
             card.set_selected(card.preset.value == s.preset)
-        if self.slider.value() != round(s.quality * 1000):
-            self.slider.blockSignals(True)
-            self.slider.setValue(round(s.quality * 1000))
-            self.slider.blockSignals(False)
-        self.quality_word.setText(quality_word(s.quality))
-        self.quality_word.set_color(theme.accent())
-        self.quality_hint.setText(choice(PRESETS, s.preset).hint)
+        self.refresh_auto_pick()
+        self.refresh_quality()
         self.refresh_detail_warning()
         set_combo(self.unit, s.unit)
         set_checked(self.replace, s.replaceExisting)
@@ -330,7 +379,7 @@ class SettingsPanel(QWidget):
 
     def refresh_detail_warning(self):
         s = self.settings
-        text = detail.warning_text(self.model.jobs, s.quality, s.preset, s.maxFaces)
+        text = detail.warning_text(self.model.jobs, lambda j: s.quality_for(j.triangles), s.preset, s.maxFaces)
         self.detail_warning.setVisible(bool(text))
         if text and self.detail_text.text() != text:
             self.detail_text.setText(text)

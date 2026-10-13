@@ -37,13 +37,32 @@ def _preview_mesh(V, F):
     return V, F[np.sort(sel)]
 
 
+def _fix(args, rep):
+    """Check and fix a mesh, then save the fixed copy (STL or 3MF)."""
+    from .meshio import load_and_prepare, write_3mf, write_stl
+
+    bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=not args.keep_debris, report=rep,
+                                    layout=args.layout, merge=args.merge_overlaps)
+    out = args.output
+    if out.lower().endswith(".3mf"):
+        parts = []
+        for p, name in enumerate(info.part_names):
+            parts.append((name, [b for b, bp in zip(bodies, info.body_part) if bp == p]))
+        write_3mf(out, parts)
+    else:
+        write_stl(out, bodies)
+    rep.result({"output": out, "file_size": os.path.getsize(out), "triangles": info.triangles,
+                "bodies": info.bodies, "mesh_check": info.mesh_check})
+
+
 def _inspect(args, rep):
     import numpy as np
 
     from . import stepio
-    from .meshio import EdgeTopology, face_normals_areas, load_and_prepare
+    from .meshio import load_and_prepare
 
-    bodies, info = load_and_prepare(args.input, repair="off", remove_debris=True, report=rep)
+    bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=True, report=rep,
+                                    merge=args.merge_overlaps)
     d = info.as_dict()
     d["closed"] = info.open_shells == 0
     d["parts"] = info.parts
@@ -103,8 +122,21 @@ def main(argv=None):
     c.add_argument("--part-preview", action="append", default=[], help="with --split: preview file for part 1, 2, ... (repeat)")
     c.add_argument("--json", action="store_true", help="JSON-lines progress on stdout")
 
-    i = sub.add_parser("inspect", help="report mesh statistics")
+    c.add_argument("--merge-overlaps", action="store_true", help="join overlapping pieces of a part into one solid")
+
+    x = sub.add_parser("fix", help="check and fix a mesh and save the fixed copy (.stl or .3mf)")
+    x.add_argument("input")
+    x.add_argument("-o", "--output", required=True)
+    x.add_argument("--repair", default="auto", choices=["off", "auto", "aggressive"])
+    x.add_argument("--keep-debris", action="store_true")
+    x.add_argument("--layout", default="parts", choices=["parts", "plate"])
+    x.add_argument("--merge-overlaps", action="store_true")
+    x.add_argument("--json", action="store_true")
+
+    i = sub.add_parser("inspect", help="check a mesh and report what was found and fixed")
     i.add_argument("input")
+    i.add_argument("--repair", default="auto", choices=["off", "auto", "aggressive"])
+    i.add_argument("--merge-overlaps", action="store_true")
     i.add_argument("--preview", default=None)
     i.add_argument("--part-previews", default=None, help="folder for one preview per 3MF part")
     i.add_argument("--json", action="store_true")
@@ -145,6 +177,9 @@ def main(argv=None):
         if args.cmd == "inspect":
             _inspect(args, rep)
             return 0
+        if args.cmd == "fix":
+            _fix(args, rep)
+            return 0
         from .pipeline import Options, convert
 
         out = args.output or os.path.splitext(args.input)[0] + ".step"
@@ -162,6 +197,7 @@ def main(argv=None):
             split=args.split,
             part_outputs=args.part_output,
             part_previews=args.part_preview,
+            merge_overlaps=args.merge_overlaps,
         )
         res = convert(args.input, out, opts, rep)
         if not rep.json_mode:
@@ -173,8 +209,10 @@ def main(argv=None):
         from .meshio import MeshError
         from .pipeline import ConversionError
 
+        reason = None
         if isinstance(e, (MeshError, ConversionError)):
             msg = str(e)
+            reason = "The file itself is the problem, not the app."
         elif isinstance(e, MemoryError):
             msg = "Ran out of memory. Move the slider toward Faster, or convert fewer files at once (Advanced → Files at once)."
         elif isinstance(e, FileNotFoundError):
@@ -187,11 +225,21 @@ def main(argv=None):
         elif "STEP write failed" in str(e) or "STEP transfer failed" in str(e):
             msg = "The STEP file couldn't be written. Check that the output folder still exists and has free space."
         else:
-            msg = f"Something went wrong while converting ({e})." if str(e) else f"Something went wrong while converting ({type(e).__name__})."
+            msg = "Something went wrong while converting."
+            reason = ("This is a bug in the converter, not a problem with your file. "
+                      "Save a report and send it, so it can be fixed.")
+        if isinstance(e, MemoryError):
+            reason = "Very big or very detailed meshes need a lot of memory, and this one needed more than was free."
+        elif isinstance(e, FileNotFoundError):
+            reason = "The app reads the file again when it converts it, and it wasn't there any more."
+        elif isinstance(e, PermissionError):
+            reason = "The system's file permissions blocked the app."
+        details = f"{type(e).__name__}: {e}\n" + traceback.format_exc()
         if rep.json_mode:
-            rep.error(msg)
+            rep.error(msg, reason=reason, details=details)
             sys.stderr.write(traceback.format_exc())
         else:
+            print(msg + (f" {reason}" if reason else ""), file=sys.stderr)
             traceback.print_exc()
         return 1
 

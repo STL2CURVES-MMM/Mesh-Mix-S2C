@@ -62,8 +62,15 @@ class Reporter:
         if not self.json_mode and not self.quiet:
             print(f"           Part {data.get('name')}: {data.get('output')}", flush=True)
 
-    def error(self, message):
-        self._emit({"event": "error", "message": message})
+    def error(self, message, reason=None, details=None):
+        """message: what went wrong; reason: why, in plain words; details:
+        technical information for a bug report."""
+        ev = {"event": "error", "message": message}
+        if reason:
+            ev["reason"] = reason
+        if details:
+            ev["details"] = details
+        self._emit(ev)
 
 
 NULL = Reporter(json_mode=False, quiet=True)

@@ -7,6 +7,9 @@ same JSON events. What it does depends on words in the input file name:
     error   - convert reports an error message and exits 1
     slow    - convert takes 60 s (for cancel tests)
     issues  - the check finds a problem
+    holes   - the mesh check fixes holes and flipped triangles
+    overlap - the mesh check finds overlapping pieces (merged with --merge-overlaps)
+    mergefail - merging the overlapping pieces fails
 """
 import argparse
 import json
@@ -38,6 +41,32 @@ def preview(path, offset=0.0):
         fh.write(struct.pack("<6f", 0, 0, 0, 10, 0, 0))
 
 
+def issue(code, status, problem, result, count=1):
+    return {"code": code, "count": count, "status": status, "problem": problem, "result": result}
+
+
+def mesh_check(name, merge):
+    """The mesh check report for this test file."""
+    issues, status, ready, problems = [], "ok", True, []
+    if "holes" in name:
+        issues += [issue("holes", "fixed", "2 holes in the surface", "Filled them.", 2),
+                   issue("flipped", "fixed", "3 triangles facing the wrong way", "Turned them around.", 3)]
+        status = "fixed"
+    if "overlap" in name:
+        if merge:
+            issues.append(issue("overlaps", "fixed", "2 pieces overlapping each other", "Merged them into one solid.", 2))
+            status = "fixed" if status == "ok" else status
+        else:
+            issues.append(issue("overlaps", "action", "2 pieces overlapping each other",
+                                "Kept as separate solids. Use “Merge overlapping pieces” to join them into one.", 2))
+            status = "action"
+    if "crossing" in name:
+        issues.append(issue("self_intersections", "not_fixed", "the surface passes through itself in 4 places",
+                            "They couldn't be removed without changing the shape.", 4))
+        status, ready, problems = "problems", False, ["the surface still passes through itself in 4 places"]
+    return {"status": status, "issues": issues, "verified": {"ready": ready, "problems": problems}}
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd")
@@ -46,6 +75,12 @@ def main():
     i.add_argument("--json", action="store_true")
     i.add_argument("--preview")
     i.add_argument("--part-previews")
+    i.add_argument("--merge-overlaps", action="store_true")
+    x = sub.add_parser("fix")
+    x.add_argument("input")
+    x.add_argument("-o", "--output")
+    x.add_argument("--json", action="store_true")
+    x.add_argument("--merge-overlaps", action="store_true")
     c = sub.add_parser("convert")
     c.add_argument("input")
     c.add_argument("-o", "--output")
@@ -54,6 +89,7 @@ def main():
     c.add_argument("--split", action="store_true")
     c.add_argument("--part-output", action="append", default=[])
     c.add_argument("--part-preview", action="append", default=[])
+    c.add_argument("--merge-overlaps", action="store_true")
     args, rest = ap.parse_known_args()
     name = os.path.basename(args.input).lower()
     if os.environ.get("FAKE_ENGINE_LOG"):
@@ -63,14 +99,24 @@ def main():
         emit({"event": "error", "message": "FileNotFoundError: The file couldn't be found."})
         return 1
     parts = "parts" in name
+    if args.cmd == "fix":
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write("solid fixed\nendsolid fixed\n")
+        emit({"event": "result", "output": args.output, "file_size": os.path.getsize(args.output),
+              "mesh_check": mesh_check(name, args.merge_overlaps)})
+        return 0
     if args.cmd == "inspect":
+        if "mergefail" in name and args.merge_overlaps:
+            emit({"event": "error", "message": "The pieces couldn't be joined.", "reason": "A test failure."})
+            return 1
         if "broken" in name:
             emit({"event": "error", "message": "MeshError: This file isn't a mesh the app can read."})
             return 1
         preview(args.preview)
         ev = {"event": "result", "triangles": 2_060_000 if "dense" in name else 1234, "bodies": 2 if parts else 1,
               "open_shells": 0,
-              "parts": 2 if parts else 1, "bbox": [[0, 0, 0], [40, 30, 20.5]], "part_list": []}
+              "parts": 2 if parts else 1, "bbox": [[0, 0, 0], [40, 30, 20.5]], "part_list": [],
+              "mesh_check": mesh_check(name, args.merge_overlaps)}
         if parts:
             for k, nm in enumerate(["Left", "Right"]):
                 p = os.path.join(args.part_previews, f"part-{k}.mmmp")
@@ -88,7 +134,9 @@ def main():
     if "crash" in name:
         return 3
     if "error" in name:
-        emit({"event": "error", "message": "ConversionError: The mesh has no usable faces."})
+        emit({"event": "error", "message": "ConversionError: The mesh has no usable faces.",
+              "reason": "The file itself is the problem, not the app.",
+              "details": f"ConversionError: no faces\nTraceback: File \"{os.path.abspath(args.input)}\", line 1"})
         return 1
     emit({"event": "stage", "stage": "Writing STEP", "progress": 0.9})
     emit({"event": "warning", "message": "A small warning."})
@@ -109,7 +157,8 @@ def main():
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write("ISO-10303-21; fake\n")
     preview(args.preview)
-    emit({"event": "result", "output": args.output, "file_size": os.path.getsize(args.output), **base})
+    emit({"event": "result", "output": args.output, "file_size": os.path.getsize(args.output), **base,
+          "mesh_check": mesh_check(name, args.merge_overlaps)})
     return 0
 
 

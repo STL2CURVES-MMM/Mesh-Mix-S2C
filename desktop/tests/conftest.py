@@ -80,7 +80,8 @@ def meshes(tmp_path):
     out = {}
     for name in ("one.stl", "my_parts.3mf", "will_crash.stl", "has_error.stl", "very_slow.stl", "broken.stl",
                  "with_issues.stl", "Part.stl", "Part.3mf", "dense_sculpt.stl",
-                 "was_repaired.stl", "repaired_issues.stl"):
+                 "was_repaired.stl", "repaired_issues.stl", "holes.stl", "overlap.stl", "overlap_mergefail.stl",
+                 "crossing.stl"):
         p = d / name
         p.write_text("solid x\nendsolid x\n")
         out[name] = str(p)

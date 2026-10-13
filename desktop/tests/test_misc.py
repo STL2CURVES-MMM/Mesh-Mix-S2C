@@ -273,3 +273,26 @@ def test_fine_detail_warning_in_panel(window, meshes):
     assert not panel.detail_warning.isHidden()
     m.remove(next(j for j in m.jobs if "dense" in j.path))
     assert wait_until(lambda: panel.detail_warning.isHidden())
+
+
+def test_auto_quality_slider(window, meshes):
+    m, s, panel = window.model, window.settings, window.settings_panel
+    s.preset = "auto"
+    s.autoQuality = True
+    s.quality = 0.4
+    m.add([meshes["dense_sculpt.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    m.select(m.jobs[0].id)
+    panel.refresh()
+    # the slider shows the quality picked for the selected file
+    assert panel.slider.value() == 600 and panel.auto_q.isHidden()
+    assert panel.quality_word.text() == "Auto · 60%" and "dense_sculpt.stl" in panel.quality_hint.text()
+    # moving the slider: one quality for every file
+    panel.slider.setValue(250)
+    assert not s.autoQuality and s.quality == 0.25 and not panel.auto_q.isHidden()
+    assert panel.quality_word.text() == "Fast"
+    panel.auto_q.click()
+    assert s.autoQuality and panel.slider.value() == 600 and panel.auto_q.isHidden()
+    s.autoQuality = False
+    s.preset = "cad"
+    assert panel.auto_q.isHidden() and panel.slider.value() == 250

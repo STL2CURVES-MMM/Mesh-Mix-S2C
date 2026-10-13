@@ -9,5 +9,7 @@ from .version import __version__
 APP_NAME = "Manifold Mesh Mix"
 REPO = "TUNA-THE-FIRST/Manifold-Mesh-Mix"
 REPO_URL = f"https://github.com/{REPO}"
+# Help → Support the Project (Buy Me a Coffee)
+SUPPORT_URL = "https://buymeacoffee.com/tunathefirst"
 
-__all__ = ["APP_NAME", "REPO", "REPO_URL", "__version__"]
+__all__ = ["APP_NAME", "REPO", "REPO_URL", "SUPPORT_URL", "__version__"]

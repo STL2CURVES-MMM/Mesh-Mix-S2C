@@ -6,7 +6,7 @@ from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
                                QAbstractSpinBox, QWidget)
 
-from . import APP_NAME, REPO_URL, __version__, desktop_entry, system, theme
+from . import APP_NAME, REPO_URL, SUPPORT_URL, __version__, bugreport, desktop_entry, system, theme
 from .export_dialog import ExportDialog
 from .model import ACCEPTED_EXTENSIONS, ENGINE_MISSING_MESSAGE, AppModel, JobStatus
 from .preferences import PreferencesDialog
@@ -113,6 +113,7 @@ class MainWindow(QMainWindow):
         self._action(h, "Check for Updates…", self.check_for_updates)
         h.addSeparator()
         self._action(h, "Source Code", lambda: system.open_url(REPO_URL))
+        self._action(h, "Support the Project ☕", lambda: system.open_url(SUPPORT_URL))
         self._action(h, "Licenses", self.show_licenses)
         self._action(h, f"About {APP_NAME}", self.show_about)
 
@@ -190,6 +191,48 @@ class MainWindow(QMainWindow):
         d = QFileDialog.getExistingDirectory(self.export_dialog or self, "Choose the folder to export STEP files to", start)
         return os.path.abspath(d) if d else None
 
+    def save_fixed_mesh(self, job, done=None):
+        """Asks where to save the checked and fixed copy of the mesh, then
+        saves it (.stl, or .3mf with one object per part)."""
+        multi = len(job.part_list) > 1
+        ext = ".3mf" if multi else ".stl"
+        start = os.path.join(os.path.dirname(job.path), f"{job.name} (fixed){ext}")
+        filters = "3MF project (*.3mf);;STL mesh (*.stl)" if multi else "STL mesh (*.stl);;3MF project (*.3mf)"
+        path, chosen = QFileDialog.getSaveFileName(self, "Save the fixed mesh", start, filters)
+        if not path:
+            return False
+        if not path.lower().endswith((".stl", ".3mf")):
+            path += ".3mf" if chosen.startswith("3MF") else ".stl"
+
+        def finished(err):
+            if done is not None:
+                done(err, path)
+            if err:
+                QMessageBox.warning(self, APP_NAME, f"The fixed mesh couldn't be saved. {err}")
+        self.model.save_fixed_mesh(job, os.path.abspath(path), finished)
+        return True
+
+    def save_report(self, job):
+        """Saves a text report about this file to send with a bug report."""
+        start = os.path.join(os.path.expanduser("~"), bugreport.default_name(job))
+        path, _ = QFileDialog.getSaveFileName(self, "Save a report to send", start, "Text file (*.txt)")
+        if not path:
+            return
+        if not path.lower().endswith(".txt"):
+            path += ".txt"
+        try:
+            bugreport.save(job, self.settings, path)
+        except OSError as e:
+            QMessageBox.warning(self, APP_NAME, f"The report couldn't be saved ({e.strerror or e}).")
+            return
+        QMessageBox.information(
+            self, APP_NAME,
+            f"The report was saved as “{os.path.basename(path)}”.\n\nSend it with a short description of what "
+            f"happened, by opening an issue at {REPO_URL}/issues (attach the file), or to whoever gave you the app. "
+            "It has the file's name and its check results, but not its folder or your user name, and not the "
+            "mesh itself.")
+        system.reveal([path])
+
     def open_files(self):
         exts = " ".join(f"*.{e} *.{e.upper()}" for e in sorted(ACCEPTED_EXTENSIONS))
         files, _ = QFileDialog.getOpenFileNames(self, "Choose mesh files (STL, 3MF, OBJ, PLY) to convert",
@@ -227,7 +270,9 @@ class MainWindow(QMainWindow):
                           f"<b>{APP_NAME}</b> {__version__}<br>STL / 3MF / OBJ / PLY → editable STEP<br><br>"
                           "Copyright © 2026 Tuna-The-First and Claude.<br>"
                           "Free software under the GNU Affero General Public License v3, with no warranty.<br><br>"
-                          f'Source code: <a href="{REPO_URL}">{REPO_URL}</a>')
+                          f'Source code: <a href="{REPO_URL}">{REPO_URL}</a><br><br>'
+                          f'Free to use. If it saves you time, you can <a href="{SUPPORT_URL}">buy me a coffee ☕</a>: '
+                          "it helps pay for the AI credits that go into building and improving it.")
 
     def show_licenses(self):
         for name in ("THIRD_PARTY_NOTICES.md", "LICENSE"):

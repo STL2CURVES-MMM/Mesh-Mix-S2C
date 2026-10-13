@@ -1,10 +1,11 @@
 """Middle column: the 3D preview of the selected file (Mesh / STEP), its
 part tabs, the check result and the export buttons."""
+import html
 import os
 import threading
 from collections import OrderedDict
 
-from PySide6.QtCore import QObject, QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
@@ -22,6 +23,34 @@ STEP_TINT = (0.78, 0.78, 0.78)
 REPAIRED_TIP = ("Reading the STEP file back found small errors, so the app repaired them automatically, the way "
                 "CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a "
                 "valid solid and matches the mesh.")
+
+
+MESH_PILL = {
+    "ok": (theme.GOOD, "check"),
+    "fixed": (theme.GOOD, "check"),
+    "action": (theme.accent, "info"),
+    "problems": (theme.WARN, "exclamation"),
+}
+
+ISSUE_ICONS = {
+    "fixed": ("check-circle", theme.GOOD),
+    "not_fixed": ("warning", theme.WARN),
+    "action": ("info", theme.accent),
+    "note": ("info", theme.TEXT_DIM),
+}
+
+
+def mesh_summary(mc):
+    """Tooltip of the mesh check pill."""
+    if not mc.issues:
+        return "The mesh was checked for holes, flipped or tangled triangles, internal walls, self-crossings and " \
+               "overlapping pieces, and nothing was wrong."
+    lines = [f"• {i.problem[:1].upper()}{i.problem[1:]}: {i.result}" for i in mc.issues]
+    if mc.ready is True:
+        lines.append("Checked again after fixing: ready to convert.")
+    elif mc.ready is False:
+        lines.append("Checked again after fixing: " + "; ".join(mc.problems) + ".")
+    return "\n".join(lines)
 
 
 def repair_note(r):
@@ -205,17 +234,43 @@ class JobPreview(QWidget):
         self.reset_btn.clicked.connect(self.viewport.reset_view)
         self.path = ElidedLabel("", 10, mono=True, color=theme.TEXT_FAINT, mode=Qt.TextElideMode.ElideLeft)
         self.check_pill = Pill()
+        self.mesh_pill = Pill()
         self.export_pill = Pill()
         self.split_btn = GhostButton("Split to parts", "split", checkable=True)
         self.split_btn.setFont(theme.font(11.5, MEDIUM))
         self.split_btn.clicked.connect(self._toggle_split)
         row1 = hbox(self.tab_area, self.segment, self.palette_btn, self.edges_btn, self.reset_btn, spacing=6)
         row1.setStretch(0, 1)
-        row2 = hbox(self.path, self.check_pill, self.export_pill, self.split_btn, spacing=8)
+        row2 = hbox(self.path, self.mesh_pill, self.check_pill, self.export_pill, self.split_btn, spacing=8)
         row2.setStretch(0, 1)
         self.top.setLayout(vbox(row1, row2, spacing=6, margins=(12, 12, 12, 12)))
 
-        # --- bottom bar: issues, log, stats and buttons
+        # --- bottom bar: mesh check / error, issues, log, stats and buttons
+        self.mesh_card = Card(padding=10, spacing=6)
+        self.mesh_rows = vbox(spacing=5)
+        self.mesh_card.lay.addLayout(self.mesh_rows)
+        self.merge_btn = GhostButton("Merge Overlapping Pieces", "stack", checkable=True)
+        self.merge_btn.setFont(theme.font(11.5, MEDIUM))
+        self.merge_btn.clicked.connect(self._toggle_merge)
+        self.fixed_btn = GhostButton("Save Fixed Mesh…", "import")
+        self.fixed_btn.setFont(theme.font(11.5, MEDIUM))
+        self.fixed_btn.setToolTip("Save the checked and fixed mesh as an STL or 3MF file, for example for your slicer")
+        self.fixed_btn.clicked.connect(self._save_fixed)
+        self.mesh_buttons = hbox(None, self.merge_btn, self.fixed_btn, spacing=8)
+        self.mesh_card.lay.addLayout(self.mesh_buttons)
+        self._saving_fixed = None  # job whose fixed mesh is being saved
+        self.error_card = Card(padding=10, spacing=6)
+        self.error_title = Label("", 12, SEMIBOLD, wrap=True)
+        self.error_reason = Label("", 11.5, color=theme.TEXT_DIM, wrap=True)
+        self.report_btn2 = GhostButton("Save Report…", "doc")
+        self.report_btn2.setFont(theme.font(11.5, MEDIUM))
+        self.report_btn2.setToolTip("Save a text file about this problem that you can send to the developer")
+        self.report_btn2.clicked.connect(self._save_report)
+        err_head = hbox(IconLabel("x-octagon", theme.BAD, 13), self.error_title, spacing=7)
+        err_head.setStretch(1, 1)
+        self.error_card.lay.addLayout(err_head)
+        self.error_card.lay.addWidget(self.error_reason)
+        self.error_card.lay.addLayout(hbox(None, self.report_btn2))
         self.issues = Card(padding=10, spacing=6)
         self.log_card = Card(padding=10, spacing=0)
         self.log_scroll = QScrollArea()
@@ -243,15 +298,20 @@ class JobPreview(QWidget):
         self.log_btn = GhostButton(icon="text-left")
         self.log_btn.setToolTip("Show the conversion log")
         self.log_btn.clicked.connect(self._toggle_log)
+        self.report_btn = GhostButton(icon="doc")
+        self.report_btn.setToolTip("Save a report about this file that you can send to the developer")
+        self.report_btn.clicked.connect(self._save_report)
         self.reveal_btn = GhostButton(system.REVEAL_LABEL, "folder")
         self.reveal_btn.clicked.connect(lambda: self.job and self.model.reveal_current(self.job))
         self.export_again_btn = GhostButton("Export Again…", "upload", tint="accent")
         self.export_again_btn.clicked.connect(lambda: self.job and self.model.request_export([self.job]))
         self.export_btn = AccentButton("Export…", "upload", expand=False)
         self.export_btn.clicked.connect(lambda: self.job and self.model.request_export([self.job]))
-        row = hbox(self.chip_area, self.log_btn, self.reveal_btn, self.export_again_btn, self.export_btn, spacing=8)
+        row = hbox(self.chip_area, self.log_btn, self.report_btn, self.reveal_btn, self.export_again_btn,
+                   self.export_btn, spacing=8)
         row.setStretch(0, 1)
-        self.bottom.setLayout(vbox(self.issues, self.log_card, row, spacing=8, margins=(12, 12, 12, 12)))
+        self.bottom.setLayout(vbox(self.mesh_card, self.error_card, self.issues, self.log_card, row, spacing=8,
+                                   margins=(12, 12, 12, 12)))
 
         cache.loaded.connect(self._mesh_loaded)
         settings.changed.connect(self._setting_changed)
@@ -356,6 +416,9 @@ class JobPreview(QWidget):
         self._refresh_bottom()
         self._refresh_meshes()
         self._layout()
+        # rows just added to a card are shown a moment later (Qt shows new
+        # children of a visible widget from the event loop); size again then
+        QTimer.singleShot(0, self._layout)
 
     def _setting_changed(self, key):
         if key in ("colorFaces", "accent", "unit", "plateLayout"):
@@ -446,6 +509,14 @@ class JobPreview(QWidget):
             pill.show()
         else:
             pill.hide()
+        mc = j.mesh_check
+        if mc is not None and self.mode == "mesh":
+            color, icon = MESH_PILL.get(mc.status, (theme.TEXT_DIM, "info"))
+            self.mesh_pill.set(mc.title, color() if callable(color) else color, icon)
+            self.mesh_pill.setToolTip(mesh_summary(mc))
+            self.mesh_pill.show()
+        else:
+            self.mesh_pill.hide()
         done = j.status == JobStatus.DONE and bool(j.result_files)
         if done and j.is_exported:
             self.export_pill.set("Exported", theme.TEXT_DIM, "upload")
@@ -467,6 +538,31 @@ class JobPreview(QWidget):
                 "Each part of this 3MF becomes its own STEP file. Click to put all parts in one STEP file instead."
                 if j.split else "Click to save each part of this 3MF as its own STEP file, like “Split to parts” in the slicer.")
 
+    def _toggle_merge(self):
+        if self.job is not None:
+            self.model.set_merge_overlaps(self.job, self.merge_btn.isChecked())
+            self.merge_btn.setChecked(self.job.merge_overlaps)
+
+    def _save_fixed(self):
+        j = self.job
+        win = self.window()
+        if j is None or self._saving_fixed is not None or not hasattr(win, "save_fixed_mesh"):
+            return
+
+        def done(err, path):
+            self._saving_fixed = None
+            if not err:
+                j.saved_fixed_mesh = path
+            self.refresh()
+        if win.save_fixed_mesh(j, done):
+            self._saving_fixed = j
+            self.refresh()
+
+    def _save_report(self):
+        win = self.window()
+        if self.job is not None and hasattr(win, "save_report"):
+            win.save_report(self.job)
+
     def _toggle_split(self):
         if self.job is not None:
             self.model.set_split(self.job, self.split_btn.isChecked())
@@ -484,11 +580,67 @@ class JobPreview(QWidget):
         self.refresh()
 
     # bottom
+    def _refresh_mesh_card(self):
+        j = self.job
+        mc = j.mesh_check
+        show = (self.mode == "mesh" and mc is not None and (mc.issues or mc.problems or j.merge_error)
+                and j.status != JobStatus.INSPECTING)
+        self.mesh_card.setVisible(bool(show))
+        if not show:
+            return
+        clear_layout(self.mesh_rows)
+        for i in mc.issues:
+            icon, color = ISSUE_ICONS.get(i.status, ("info", theme.TEXT_DIM))
+            ic = IconLabel(icon, color() if callable(color) else color, 12)
+            where = f"{html.escape(i.part)}: " if i.part else ""
+            problem = html.escape(i.problem[:1].upper() + i.problem[1:])
+            t = Label(f"{where}{problem}. <span style='color:{theme.css(theme.TEXT_DIM)}'>{html.escape(i.result)}</span>",
+                      11.5, wrap=True)
+            t.setTextFormat(Qt.TextFormat.RichText)
+            row = hbox(ic, t, spacing=7)
+            row.setStretch(1, 1)
+            row.setAlignment(ic, Qt.AlignmentFlag.AlignTop)
+            self.mesh_rows.addLayout(row)
+        if j.merge_error:
+            self.mesh_rows.addWidget(Label(f"Merging the overlapping pieces didn't work: {j.merge_error}", 11.5,
+                                           color=theme.WARN, wrap=True))
+        if mc.ready is not None and (mc.fixed_anything or mc.problems):
+            if mc.ready:
+                text, color = "Checked again after fixing: ready to convert.", theme.GOOD
+            else:
+                text, color = "Checked again after fixing: " + "; ".join(mc.problems) + ".", theme.WARN
+            self.mesh_rows.addWidget(Label(text, 11, SEMIBOLD, color=color, wrap=True))
+        busy = j.status.is_busy or j.status == JobStatus.QUEUED
+        self.merge_btn.setVisible(mc.has_overlaps or j.merge_overlaps)
+        self.merge_btn.setChecked(j.merge_overlaps)
+        self.merge_btn.setEnabled(not busy)
+        self.merge_btn.setToolTip(
+            "The overlapping pieces are joined into one solid. Click to keep them as separate solids again."
+            if j.merge_overlaps else
+            "Join the pieces that overlap each other into one solid (the file is read again). Pieces that "
+            "overlap on purpose, like parts of an assembly, are better kept separate.")
+        saving = self._saving_fixed is j
+        self.fixed_btn.setVisible(mc.fixed_anything or j.merge_overlaps)
+        self.fixed_btn.setEnabled(not saving and j.readable and j.status != JobStatus.INSPECTING)
+        self.fixed_btn.setText("Saving…" if saving else ("Saved ✓  Save Again…" if j.saved_fixed_mesh
+                                                          else "Save Fixed Mesh…"))
+
+    def _refresh_error_card(self):
+        j = self.job
+        show = j.status == JobStatus.FAILED and bool(j.error) and j.readable
+        self.error_card.setVisible(show)
+        if show:
+            self.error_title.setText(j.error)
+            self.error_reason.setText(j.error_reason or "")
+            self.error_reason.setVisible(bool(j.error_reason))
+
     def _refresh_bottom(self):
         j = self.job
         r = self.shown_result()
+        self._refresh_mesh_card()
+        self._refresh_error_card()
         clear_layout(self.issues.lay)
-        if r is not None and r.checks:
+        if r is not None and r.checks and self.mode == "result":
             for c in r.checks:
                 ic = IconLabel("x-octagon" if c.is_error else "warning", theme.BAD if c.is_error else theme.WARN, 12)
                 t = Label(c.message, 11.5, wrap=True)
@@ -501,6 +653,9 @@ class JobPreview(QWidget):
             self.issues.hide()
         has_log = bool(j.log or j.warnings)
         self.log_btn.setVisible(has_log)
+        trouble = (j.status == JobStatus.FAILED or bool(j.warnings) or (r is not None and r.has_issues)
+                   or (j.mesh_check is not None and j.mesh_check.ready is False))
+        self.report_btn.setVisible(trouble and not self.error_card.isVisibleTo(self))
         self.log_btn.setText(str(len(j.warnings)) if j.warnings else "")
         self.log_btn.tint = theme.WARN if j.warnings else None
         if self.show_log and has_log:
@@ -586,7 +741,9 @@ class JobPreview(QWidget):
             if j.status in (JobStatus.CONVERTING, JobStatus.QUEUED):
                 ph.show_state(busy=True, text=j.stage or "Waiting…")
             elif j.status == JobStatus.FAILED:
-                ph.show_state("x-octagon-line", theme.BAD, text=j.error or "Conversion failed")
+                # the details are in the card below
+                ph.show_state("x-octagon-line", theme.BAD, text="Conversion failed" if j.readable else
+                              (j.error or "Conversion failed"))
             elif j.status == JobStatus.DONE and j.is_split:
                 ph.show_state("warning-line", theme.WARN, text="This part couldn't be converted")
             elif j.status == JobStatus.DONE and self.out_path():

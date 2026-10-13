@@ -133,6 +133,9 @@ class SelfTest(QObject):
                          checks=[c.message for c in r.checks], checked=r.checked)
             if j.triangles is not None:
                 d["triangles"] = j.triangles
+            if j.mesh_check is not None:
+                mc = j.mesh_check
+                d["mesh_check"] = {"status": mc.status, "ready": mc.ready, "issues": [i.code for i in mc.issues]}
             if j.exported_files:
                 d["exported"] = list(j.exported_files)
             if j.can_split:
@@ -159,6 +162,7 @@ class SelfTest(QObject):
         yield 1.0
         s.preset = "auto"
         s.quality = 0.7
+        s.autoQuality = True
         s.outputMode = "subfolder"
         s.subfolderName = env.get("MMM_SELFTEST_SUBFOLDER") or "SelfTest STEP"
         s.replaceExisting = True
@@ -181,6 +185,15 @@ class SelfTest(QObject):
             m.select(m.jobs[0].id)
         yield 1.5
         self.shot("ready")
+        # the file the mesh check found the most problems in
+        checked = [j for j in m.jobs if j.mesh_check is not None and j.mesh_check.issues]
+        messy = max(checked, key=lambda j: len(j.mesh_check.issues), default=None)
+        if messy is not None:
+            m.select(messy.id)
+            yield 1.5
+            self.shot("mesh-check")
+            if m.jobs:
+                m.select(m.jobs[0].id)
 
         if not convert_only:
             for p in PRESETS:
@@ -193,10 +206,14 @@ class SelfTest(QObject):
             yield 0.4
             self.shot("custom-folder-missing")
             s.outputMode = "subfolder"
+            yield 0.3
+            self.shot("quality-auto")
+            s.autoQuality = False
             s.quality = 0.15
             yield 0.3
             self.shot("quality-fast")
             s.quality = 0.7
+            s.autoQuality = True
 
         m.convert_all()
         self.note("convert-all")

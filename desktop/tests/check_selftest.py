@@ -60,6 +60,14 @@ def main():
     for j in ev.get("inspected", {}).get("jobs", []):
         if not j.get("readable", True):
             fail(problems, f"{j['file']} couldn't be read: {j.get('error')}")
+        mc = j.get("mesh_check")
+        if mc is None:
+            fail(problems, f"{j['file']} has no mesh check report")
+        elif j["file"].startswith("Messy"):
+            if mc.get("status") != "fixed" or mc.get("ready") is not True or "flipped" not in mc.get("issues", []):
+                fail(problems, f"the mesh check didn't fix {j['file']}: {mc}")
+        elif mc.get("ready") is False:
+            fail(problems, f"{j['file']} isn't ready after the mesh check: {mc}")
     if ev.get("converted", {}).get("ok") is not True:
         fail(problems, "converting timed out")
     for j in ev.get("converted", {}).get("jobs", []):

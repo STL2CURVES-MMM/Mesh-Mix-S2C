@@ -2,6 +2,8 @@
 
 An app for **macOS, Windows and Linux** that converts 3D-printing meshes (**STL, 3MF, OBJ, PLY**) into **editable STEP files** made of true CAD surfaces: planes, cylinders, cones, spheres, tori and smooth NURBS surfaces. It never writes triangle facets, and every STEP file is opened again and checked after it is saved.
 
+<a href="https://buymeacoffee.com/tunathefirst"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=%E2%98%95&slug=TunaTheFirst&button_colour=5F7FFF&font_colour=ffffff&font_family=Poppins&outline_colour=000000&coffee_colour=FFDD00" alt="Buy Me a Coffee" height="40"></a>
+
 ## Download
 
 Get the newest version from the [Releases page](https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix/releases/latest):
@@ -31,11 +33,34 @@ Every version can update itself. Click the **⬇ button** next to the app name (
 7. A green **File checked** badge means the saved STEP file was read back and is a valid solid that matches the mesh. Otherwise the app lists each problem it found in plain words (for example gaps in the surface, a part that isn't a closed solid, or a volume that doesn't match the mesh).
    **Automatic repair.** If reading the file back finds small errors (faces whose edges don't line up, small gaps, a solid whose surfaces cross), the app repairs the file the way CAD programs like Fusion do when they import one, and checks it again. Then the badge says **Repaired automatically**, so the file is clean in every program, not just in CAD programs that heal files themselves. The repair only runs when there is a problem, and a repaired version is kept only if it reads back better with the same shape and volume. If a part still has errors the repair can't fix, the app converts just that part again another way: smooth surfaces instead of CAD faces, CAD faces instead of smooth surfaces for mechanical parts, or denser smooth surfaces for organic ones. It uses the new version only if that checks out clean. It tells you when it did. Problems in the mesh itself (holes, missing pieces) can't be repaired this way and are still listed.
 
+### Mesh check
+
+Every file is checked when you add it, and again right before it's converted. The check looks for the problems that make 3D-printing meshes hard to turn into solids, fixes what it can, then checks the fixed mesh again from scratch. The **Mesh** view shows the result above the file name (**Mesh is clean**, **Mesh fixed**, **Your choice needed** or **Mesh has problems**) and lists each problem in plain words with what was done about it.
+
+| Problem | What the app does |
+|---|---|
+| Triangles with broken coordinates, squashed flat, or duplicated | Removes them. |
+| Paper-thin walls hidden inside a part (left where shapes were glued together, for example by slicer tools that merge parts into one mesh) | Removes them, so the outer surface is one clean piece. |
+| Tiny cracks between edges that should be joined | Joins them. |
+| Triangles facing the wrong way, or whole parts inside out | Turns them around. |
+| Points where the surface touches itself at a single corner | Separates them. |
+| Holes and tangled edges (an edge shared by 3 or more triangles) | Fills and untangles them. Big holes are filled with a simple surface, and the app says so. |
+| The surface passing through itself | Repairs it only where that doesn't change the shape: every repaired spot is compared with the original solid, and spots where material would be added or removed are put back. What's left is listed. |
+| Pieces that overlap each other | Asks you: they stay separate solids unless you click **Merge Overlapping Pieces**, which joins them into one. |
+| A surface with no thickness, or holes too big to fill | Converts it as a surface instead of a solid, and tells you. |
+| A model that's tiny or huge | Notes that it may be in inches or meters, so you can change **Units**. |
+
+**Save Fixed Mesh…** saves the checked and fixed mesh as an STL or 3MF (one object per part), for example to print it from your slicer. Nothing in your original file changes.
+
+### When something goes wrong
+
+If a conversion fails, the app says what went wrong and **why**, in plain words (for example that the file itself is the problem, or that the computer ran out of memory). **Save Report…** writes a small text file to send with a bug report ([open an issue](https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix/issues) and attach it). It has the app and system versions, your settings, the mesh check, the error and its technical details, and the log. It doesn't have the mesh itself, and the file's folder and your user name are removed from it.
+
 ### Presets
 
 | Preset | Best for | What you get |
 |---|---|---|
-| **Auto** | Everything | Checks every part and picks CAD or Smooth for it. |
+| **Auto** | Everything | Checks every part and picks CAD or Smooth for it. After converting, the preset Auto used is marked **Auto used** in its own color. |
 | **CAD** | Mechanical parts, brackets, enclosures, wheels | Planes, holes, cylinders, cones, fillets (tori) and spheres as exact CAD faces you can select, measure and edit. Anything else becomes fitted NURBS. |
 | **Smooth** | Sculpts, figurines, organic shapes, scans | Large smooth NURBS surfaces fitted to the mesh. |
 | **Precise** | When accuracy matters most | Like Auto, but with a tighter tolerance and more detail. |
@@ -50,7 +75,9 @@ The app reads the actual parts from slicer project files:
 
 ### Speed ↔ Quality
 
-Higher quality tightens the fitting tolerance and adds surface detail, but takes longer. The default (70%) leans toward quality. Very large sculpts (millions of triangles) take a minute or two.
+Higher quality tightens the fitting tolerance and adds surface detail, but takes longer.
+
+**Auto quality** (with the Auto preset, on by default): each file gets its own quality from its size, because small meshes are quick even near the top of the slider while very big ones would take hours. Under 50,000 triangles 90%, up to 300,000 80%, up to 1 million 70%, up to 3 million 60%, and 50% above that. The slider shows the quality picked for the selected file. Moving the slider switches to one quality for every file; the **Auto** button next to it switches back.
 
 **Best quality keeps fine detail.** In the *Best quality* part of the slider (85% and up), organic shapes get more surfaces the denser the mesh is, so sculpted texture like cracks, scales and tool marks survives. At the far right the surfaces stay within a few hundredths of a millimeter of a typical sculpt. Dense meshes then make much bigger STEP files and take a lot longer: a 2-million-triangle bust took about 20 minutes and made a 130 MB file, instead of about 8 minutes and 25 MB. When that's about to happen, a warning under the slider gives the expected file size. It needs a few GB of memory. A **Smooth surface limit** (Advanced) turns it off.
 
@@ -95,9 +122,15 @@ Pushing a tag such as `v1.0.1` (matching `VERSION`) makes GitHub Actions build a
 
 ### How the engine works (short version)
 
+- **Mesh check** (`engine/mmm/meshcheck.py`): runs on every part before converting. Each problem has its own detector (zero-volume pieces and coincident opposite sheets for internal walls, union-find over corner fans for pinched points, a uniform grid with exact triangle–triangle tests for self-intersections, Manifold booleans for overlapping pieces) and is fixed in an order where each fix makes the next one easier. MeshFix repairs crossing surfaces, but its result is compared with the original patch by patch, using winding numbers to tell inside from outside, and only kept where no material is added or removed. A second pass (`verify_bodies`) checks the fixed mesh again without fixing anything; the engine's `fix` command saves the fixed mesh.
+
 - **CAD:** the mesh is segmented by region growing with robust, area-weighted fits of planes, cylinders, cones, spheres and tori. Simpler surface types are preferred, and fits are checked between mesh vertices, not just at them. Leftover areas are split into height-field patches and fitted with trimmed B-splines. Edges are fitted curves shared by both faces; wrap-around faces get proper seams and poles.
 - **Smooth:** quad remesh (Instant Meshes, with a decimate → Manifold-clean → quad-split fallback), then Catmull–Clark-style bicubic patches (Loop–Schaefer ACC) least-squares fitted to the mesh. Regular patch areas are then merged into large B-spline faces.
 - Every result is checked with OpenCASCADE's shape analyzer before it's written, and the saved file is read back and checked again. When that finds problems, `engine/mmm/repair.py` opens the saved file and saves it again (as a CAD program would), then tries shape healing and sewing, keeping each step only if the file reads back better with the same volume. If problems remain, the broken parts are converted again another way (`convert_alt` in `pipeline.py`). The STEP file also stores each edge's 2D curve on its faces, so CAD programs rebuild every face exactly as it was checked (the test suite reads each file back and compares volumes).
+
+## Support the project
+
+Manifold Mesh Mix is free. If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/tunathefirst): it helps pay for the AI credits that go into building and improving it. **Help → Support the Project** in the app opens the same page.
 
 ## License
 
