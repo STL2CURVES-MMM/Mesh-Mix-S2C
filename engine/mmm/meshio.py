@@ -495,6 +495,8 @@ def organise_bodies(shells, report=NULL, stats=None):
     # normalise orientation: solids outward, cavities inward
     for i, s in enumerate(closed):
         want_positive = not is_cavity[i]
+        if s.volume == 0:
+            continue  # no volume (a double-sided sheet): no inside to turn
         if (s.volume > 0) != want_positive:
             if stats is not None and want_positive:
                 stats["inside_out"] = stats.get("inside_out", 0) + 1
@@ -800,6 +802,8 @@ def write_3mf(path, parts):
     objs, items = [], []
     for k, (name, bodies) in enumerate(parts, start=1):
         V, F = _body_mesh(bodies)
+        if not len(F):
+            continue
         vs = "".join(f'<vertex x="{x:.9g}" y="{y:.9g}" z="{z:.9g}"/>' for x, y, z in V)
         ts = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in F)
         objs.append(f'<object id="{k}" name={quoteattr(str(name or f"Part {k}"))} type="model"><mesh>'

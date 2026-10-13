@@ -157,3 +157,86 @@ def _shell(tris):
     from mmm.meshio import Shell, triangles_to_indexed
 
     return Shell(*triangles_to_indexed(tris))
+
+
+# ---------------------------------------------------------------- cases from the code review
+
+def _box_tris(extents=(10, 10, 10), at=(0, 0, 0)):
+    import trimesh
+
+    m = trimesh.creation.box(extents=extents)
+    m.apply_translation(at)
+    return np.asarray(m.vertices)[np.asarray(m.faces)].astype(float)
+
+
+def test_cracks_with_a_coarse_face_dont_stack_triangles():
+    """A coarse top face (2 triangles) on subdivided sides: T-junctions on
+    two edges of the same triangle."""
+    import trimesh
+    from mmm.meshio import face_normals_areas, triangles_to_indexed
+
+    t = _box_tris()
+    top = np.all(t[:, :, 2] > 4.9, axis=1)
+    rest = trimesh.Trimesh(*triangles_to_indexed(t[~top])).subdivide()
+    tt = np.vstack([t[top], np.asarray(rest.vertices)[np.asarray(rest.faces)]])
+    bodies, _, issues = meshcheck.prepare_part(tt, "auto", True, NULL, False)
+    s = bodies[0][0]
+    assert s.closed and s.volume == pytest.approx(1000.0)
+    assert face_normals_areas(s.V, s.F)[1].sum() == pytest.approx(600.0)
+    assert {i["code"] for i in issues} == {"cracks"}
+
+
+def test_flipped_solid_is_not_a_wall():
+    c = _box_tris()
+    n = np.cross(c[:, 1] - c[:, 0], c[:, 2] - c[:, 0])
+    neg = (n < -1e-9).any(1)
+    c[neg] = c[neg][:, ::-1]
+    big = _box_tris((20, 20, 20), at=(50, 0, 0))
+    bodies, _, issues = meshcheck.prepare_part(np.vstack([big, c]), "auto", True, NULL, False)
+    assert sorted(round(sum(s.volume for s in b)) for b in bodies) == [1000, 8000]
+    assert "internal_walls" not in {i["code"] for i in issues}
+
+
+def test_inside_out_self_crossing_isnt_repaired_into_another_shape():
+    t = CASES["self_crossing"][:, ::-1]
+    bodies, _, issues = meshcheck.prepare_part(t, "auto", True, NULL, False)
+    assert {i["code"]: i["status"] for i in issues}["self_intersections"] == "not_fixed"
+    assert sum(s.volume for b in bodies for s in b) == pytest.approx(533.33, rel=1e-3)
+
+
+def test_merge_counts_with_a_self_crossing_piece():
+    t3 = np.vstack([_box_tris(at=(-8, 0, 0)), CASES["self_crossing"], _box_tris(at=(8, 0, 0))])
+    bodies, _, issues = meshcheck.prepare_part(t3, "auto", True, NULL, True)
+    assert len(bodies) == 3  # the clean boxes don't overlap each other: nothing to merge
+    ov = next(i for i in issues if i["code"] == "overlaps")
+    assert ov["status"] == "not_fixed" and "still overlap" in ov["result"]
+
+
+def test_equal_pieces_arent_debris():
+    sq = np.array([[[0, 0, 0], [10, 0, 0], [10, 10, 0]], [[0, 0, 0], [10, 10, 0], [0, 10, 0]]], float)
+    bodies, _, issues = meshcheck.prepare_part(np.vstack([sq, sq + [20, 0, 0]]), "auto", True, NULL, False)
+    assert len(bodies) == 2 and "debris" not in {i["code"] for i in issues}
+
+
+def test_status_follows_the_second_check():
+    p = np.array([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], float)
+    up = p[[[0, 1, 2], [0, 2, 3]]]
+    down = p[[[0, 3, 1], [1, 3, 2]]]
+    bodies, info, issues = meshcheck.prepare_part(np.vstack([up, down]), "auto", True, NULL, False)
+    ok, problems = meshcheck.verify_bodies(bodies, info.diag)
+    assert not ok and "a part is still inside out" not in problems
+    assert meshcheck.summarize(issues, {"ready": ok, "problems": problems})["status"] == "problems"
+    assert "inside_out" not in {i["code"] for i in issues}
+
+
+def test_long_thin_triangles_are_quick():
+    """A plate whose bottom is a fan of long slivers (common in CAD exports)."""
+    import time
+
+    import trimesh
+
+    top = trimesh.creation.box(extents=(100, 100, 5)).subdivide().subdivide().subdivide().subdivide()
+    V, F = np.asarray(top.vertices), np.asarray(top.faces)
+    t = time.time()
+    assert meshcheck.self_intersections(V, F)[0] == 0
+    assert time.time() - t < 20

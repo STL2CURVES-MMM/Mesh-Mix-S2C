@@ -76,7 +76,7 @@ def _plural(n, one, many=None):
 def summarize(issues, verified=None):
     """Overall status for the apps: ok | fixed | action | problems."""
     st = [i["status"] for i in issues]
-    if "not_fixed" in st:
+    if "not_fixed" in st or (verified is not None and verified.get("ready") is False):
         status = "problems"
     elif "action" in st:
         status = "action"
@@ -122,7 +122,11 @@ def wall_components(V, F, diag, topo=None):
     open_he = cnt[inv.reshape(-1)] == 1
     has_open = np.bincount(comp[open_he], minlength=n) > 0
     thin = np.abs(vol_c) < WALL_THICKNESS_REL * diag * np.maximum(area_c, 1e-30)
-    wall = thin & ~has_open
+    # a piece with triangles facing different ways can measure no volume
+    # and still be a solid (it's turned the right way later)
+    mixed = np.bincount(comp[topo.same_dir.reshape(-1)], minlength=n) > 0 if topo.same_dir.any() \
+        else np.zeros(n, bool)
+    wall = thin & ~has_open & ~mixed
     wall[main] = False
     return wall[lab], int(wall.sum())
 
@@ -283,6 +287,41 @@ def _crossing(T, lo, hi, F, pr):
     return pr[hit]
 
 
+def _box_neighbours(lo, hi, which):
+    """For each triangle in which (big ones: long or huge), the triangles
+    whose boxes overlap its box: yields (triangle, neighbour indices). An
+    R-tree finds them directly; without one, a KD-tree over box centres
+    does (slower on long, thin triangles, whose spheres are much bigger
+    than their boxes)."""
+    if not len(which):
+        return
+    try:
+        from rtree import index
+
+        prop = index.Property()
+        prop.dimension = 3
+        tree = index.Index((np.arange(len(lo), dtype=np.int64), np.ascontiguousarray(lo), np.ascontiguousarray(hi)),
+                           properties=prop)
+        for s in range(0, len(which), 2000):
+            w = which[s:s + 2000]
+            ids, counts = tree.intersection_v(np.ascontiguousarray(lo[w]), np.ascontiguousarray(hi[w]))
+            ids = np.asarray(ids, dtype=np.int64)
+            ends = np.cumsum(counts)
+            for b, a, e in zip(w, ends - counts, ends):
+                near = ids[a:e]
+                yield int(b), near[near != b]
+        return
+    except ImportError:
+        pass
+    cen = (lo + hi) / 2
+    tree = cKDTree(cen)
+    rad = np.linalg.norm(hi - lo, axis=1) / 2
+    rmax = float(rad.max())
+    for b in which:
+        near = np.asarray(tree.query_ball_point(cen[b], rad[b] + rmax), dtype=np.int64)
+        yield int(b), near[near != b]
+
+
 def self_intersections(V, F):
     """Pairs of triangles (not sharing a corner) whose surfaces cross.
     Returns (count, faces involved). A uniform grid finds candidates (tested
@@ -329,16 +368,10 @@ def self_intersections(V, F):
                 hits.append(_crossing(T, lo, hi, F, pr))
         d += 1
     bigs = np.nonzero(big)[0]
-    if len(bigs):
-        cen = (lo + hi) / 2
-        tree = cKDTree(cen)
-        rad = np.linalg.norm(hi - lo, axis=1) / 2
-        rmax = float(rad.max())
-        for b in bigs:
-            near = np.asarray(tree.query_ball_point(cen[b], rad[b] + rmax), dtype=np.int64)
-            near = near[near != b]
-            if len(near):
-                hits.append(_crossing(T, lo, hi, F, np.sort(np.stack([np.full(len(near), b), near], 1), axis=1)))
+    for b, near in _box_neighbours(lo, hi, bigs):
+        for s in range(0, len(near), step):
+            nb = near[s:s + step]
+            hits.append(_crossing(T, lo, hi, F, np.sort(np.stack([np.full(len(nb), b), nb], 1), axis=1)))
     hits = [h for h in hits if len(h)]
     if not hits:
         return 0, np.zeros(0, np.int64)
@@ -569,12 +602,16 @@ def close_cracks(V, F, diag):
         mid = (A + Bp) / 2
         half = np.linalg.norm(Bp - A, axis=1) / 2
         splits = {}
+        split_faces = set()
         for k, h in enumerate(bh):
+            f = int(h) // 3
+            if f in split_faces:
+                continue  # one edge per triangle per round (the fans would overlap)
             near = tree.query_ball_point(mid[k], half[k] + tol)
             if not near:
                 continue
             cand = bv[near]
-            cand = cand[(cand != a[k]) & (cand != b[k])]
+            cand = cand[(cand != a[k]) & (cand != b[k]) & (cand != F[f, (int(h) % 3 + 2) % 3])]
             if not len(cand):
                 continue
             d = Bp[k] - A[k]
@@ -587,6 +624,7 @@ def close_cracks(V, F, diag):
             ok = (t > 1e-6) & (t < 1 - 1e-6) & (dist <= tol)
             if ok.any():
                 splits[int(h)] = sorted(zip(t[ok].tolist(), cand[ok].tolist()))
+                split_faces.add(f)
         if not splits:
             break
         newF = []
@@ -602,7 +640,7 @@ def close_cracks(V, F, diag):
         topo = EdgeTopology(V, F)
         bh = np.nonzero(topo.boundary_he)[0]
         bv = np.unique(np.concatenate([topo.he_from[bh], topo.he_to[bh]])) if len(bh) else np.zeros(0, np.int64)
-    return V, F, max(0, before - EdgeTopology(V, F).n_boundary_edges)
+    return V, F, max(0, before - EdgeTopology(V, F).n_boundary_edges) // 2
 
 
 def split_pinched(V, F, topo):
@@ -695,13 +733,15 @@ def _material_changed(a, b, Tr, Ta, rng, n=2000):
         if near.sum() > MAX_CHECK_TRIS:
             return np.inf
         w0 = float(np.rint(winding_number(s.V, s.F, q[None])[0]))
-        inside.append(w0 + _signed_hits(q, P, T[near]) >= 0.5)
+        # inside-out parts and cavities wrap their inside the other way round
+        sgn = 1.0 if signed_volume(s.V, s.F) >= 0 else -1.0
+        inside.append(sgn * (w0 + _signed_hits(q, P, T[near])) >= 0.5)
     return float((inside[0] != inside[1]).mean()) * box
 
 
 def too_many_crossings(k, n_faces):
     """Whether the self-crossing repair is skipped for this many crossings."""
-    return k > SELF_FIX_MAX_CROSSINGS or k > SELF_FIX_MAX_CROSSINGS_REL * n_faces
+    return k > SELF_FIX_MAX_CROSSINGS or (k > 50 and k > SELF_FIX_MAX_CROSSINGS_REL * n_faces)
 
 
 def fix_self_intersections(shell, report=NULL):
@@ -928,10 +968,12 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     if remove_debris and len(shells) > 1:
         areas = [face_normals_areas(s.V, s.F)[1].sum() for s in shells]
         amax = max(areas)
+        biggest = int(np.argmax(areas))
         keep = []
-        for s, a in zip(shells, areas):
+        for k, (s, a) in enumerate(zip(shells, areas)):
             flat = s.closed and abs(s.volume) < 1e-9 * max(a, 1e-30) ** 1.5
-            if s.n_faces < 4 or flat or a < 5e-5 * amax:
+            # small pieces next to a much bigger one (the biggest always stays)
+            if k != biggest and ((s.n_faces < 4 and a < 0.01 * amax) or flat or a < 5e-5 * amax):
                 info.removed_debris += 1
             else:
                 keep.append(s)
@@ -1055,18 +1097,19 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     if groups:
         n = sum(len(g) for g in groups)
         if merge:
-            n_broken = sum(1 for g in groups for k in g if broken(bodies[k]))
-            clean = [[k for k in g if not broken(bodies[k])] for g in groups]
-            clean = [g for g in clean if len(g) > 1]
-            bodies, n_merged, left = merge_overlaps(bodies, clean, diag, report, exclude=broken)
-            n_left = sum(len(g) for g in left) + n_broken
+            clean = overlapping_bodies(bodies, exclude=broken)
+            bodies, _, _ = merge_overlaps(bodies, clean, diag, report, exclude=broken)
+            # what still overlaps after merging
+            left = overlapping_bodies(bodies)
+            n_left = sum(len(g) for g in left)
+            n_broken = sum(1 for g in left for k in g if broken(bodies[k]))
             if not n_left:
                 res = "Merged them into one solid."
             elif n_broken:
-                res = (f"Merged {n - n_left:,}; {_plural(n_left, 'piece')} couldn't be merged because "
-                       "their own surfaces pass through themselves.")
+                res = (f"{_plural(n_left, 'piece')} still overlap: pieces whose own surfaces pass through "
+                       "themselves can't be merged.")
             else:
-                res = f"Merged {n - n_left:,}; {_plural(n_left, 'piece')} couldn't be merged."
+                res = f"{_plural(n_left, 'piece')} still overlap; they couldn't be merged."
             issues.append(_issue("overlaps", n, "not_fixed" if n_left else "fixed",
                                  f"{_plural(n, 'piece')} overlapping each other", res))
         else:
@@ -1093,7 +1136,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
 
     # 12. open surfaces
     n_open = sum(1 for b in bodies if not all(s.closed for s in b))
-    if n_open:
+    if n_open and fixing:
         issues.append(_issue("open_surface", n_open, "not_fixed",
                              f"{_plural(n_open, 'piece')} can't be closed into a solid (a surface with no thickness, "
                              "or holes too big to fill)", "Converted as surfaces instead of a solid."))
@@ -1119,13 +1162,15 @@ def verify_bodies(bodies, diag, merge=False):
     anything still wrong. Open surfaces and overlaps the user chose to keep
     are expected and don't count."""
     problems = []
+    if not any(len(s.F) for b in bodies for s in b):
+        problems.append("nothing is left of the mesh")
     for b in bodies:
         for s in b:
             topo = EdgeTopology(s.V, s.F)
-            if len(s.F) and (s.F[:, 0] == s.F[:, 1]).any():
-                problems.append("squashed triangles are left")
             stats = {}
             remove_degenerate(s.V, s.F, stats)
+            if stats.get("squashed"):
+                problems.append("squashed triangles are left")
             if stats.get("duplicates") or stats.get("back_to_back"):
                 problems.append("duplicate triangles are left")
             if topo.n_nonmanifold_edges:
@@ -1138,7 +1183,7 @@ def verify_bodies(bodies, diag, merge=False):
             if s.closed and _thin(s.V, s.F, diag):
                 problems.append("a paper-thin wall is left")
     for b in bodies:
-        if b and b[0].closed and b[0].volume <= 0:
+        if b and b[0].closed and b[0].volume < 0:
             problems.append("a part is still inside out")
     # counted again unless the check already counted this very shell
     per_shell = {id(s): s.crossings if s.crossings is not None else self_intersections(s.V, s.F)[0]
