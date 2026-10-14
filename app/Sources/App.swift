@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         model?.cancelAll()
-        model?.cancelFixes()
+        model?.shutdown()
         model?.cleanUpPreviews()
         return .terminateNow
     }

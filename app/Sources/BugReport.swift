@@ -51,7 +51,8 @@ enum BugReport {
             out = out.replacingOccurrences(of: v, with: label)
         }
         // a user name left in some other path (/Users/name/..., /home/name/...)
-        return out.replacingOccurrences(of: #"(/(?:home|Users)/)[^/\s"']+"#, with: "$1<user>", options: .regularExpression)
+        // (names can have spaces: up to the next separator or quote)
+        return out.replacingOccurrences(of: #"(/(?:home|Users)/)[^/"'\r\n]+"#, with: "$1<user>", options: .regularExpression)
     }
 
     /// "macOS 14.5, arm64"
@@ -136,24 +137,26 @@ enum BugReport {
             add("  Dimensions: " + bb.map { String(format: "%.4g", $0) }.joined(separator: " x ") + " \(s.unit.rawValue)")
         }
         add("")
-        add("Settings")
-        add("  Preset:        \(s.preset.title)")
-        if s.autoQualityOn {
-            add("  Quality:       Auto (\(Int((s.quality(for: job.triangles) * 100).rounded()))% for this file)")
-        } else {
-            add("  Quality:       \(Int((s.quality * 100).rounded()))%")
-        }
-        add("  Mesh repair:   \(s.repair.title)")
-        add("  Units:         \(s.unit.title)")
-        add("  3MF projects:  \(s.plateLayout.title)")
-        add("  Remove debris: \(s.removeDebris ? "yes" : "no")")
+        // the settings the last conversion used (else the current ones)
+        let run = job.runSettings ?? RunSettings(s, triangles: job.triangles)
+        add("Settings" + (job.runSettings != nil ? " (of the last conversion)" : " (current)"))
+        add("  Preset:        \(run.preset.title)")
+        let percent = Int((run.quality * 100).rounded())
+        add("  Quality:       \(run.preset == .auto && run.autoQuality ? "Auto, " : "")\(percent)%")
+        add("  Mesh repair:   \(run.repair.title)")
+        add("  Units:         \(run.unit.title)")
+        add("  3MF projects:  \(run.plateLayout.title)")
+        add("  Remove debris: \(run.removeDebris ? "yes" : "no")")
         add("  Merge overlapping pieces: \(job.mergeOverlaps ? "yes" : "no")")
-        if s.useCustomTolerance && s.customTolerance > 0 {
-            add("  Tolerance:     \(String(format: "%g", s.customTolerance)) \(s.unit.rawValue)")
+        if !job.touching.isEmpty {
+            add("  Touching parts: \(job.touchingChoice ?? "not asked yet")")
+        }
+        if run.useCustomTolerance && run.customTolerance > 0 {
+            add("  Tolerance:     \(String(format: "%g", run.customTolerance)) \(run.unit.rawValue)")
         } else {
             add("  Tolerance:     automatic")
         }
-        add("  Max faces:     \(maxFacesTitle(s.maxFaces))")
+        add("  Max faces:     \(maxFacesTitle(run.maxFaces))")
         add("  Split to parts: \(job.isSplit ? "yes" : "no")")
         add("")
         add("Mesh check")

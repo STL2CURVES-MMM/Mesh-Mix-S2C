@@ -90,20 +90,25 @@ final class EngineTask {
                 let tail = String(decoding: self.stderrTail, as: UTF8.self)
                 let status = p.terminationStatus
                 self.signaled = p.terminationReason == .uncaughtSignal
-                DispatchQueue.main.async { self.onExit?(status, tail) }
+                DispatchQueue.main.async {
+                    self.onExit?(status, tail)
+                    // the handlers usually hold this task: let it go now
+                    self.onExit = nil
+                    self.onEvent = nil
+                }
             }
         }
         try process.run()
     }
 
     func cancel() {
+        // already finished: its result stands
+        guard process.isRunning else { return }
         cancelled = true
-        if process.isRunning {
-            process.terminate()
-            let pid = process.processIdentifier
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-                if self.process.isRunning { kill(pid, SIGKILL) }
-            }
+        process.terminate()
+        let pid = process.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            if self.process.isRunning { kill(pid, SIGKILL) }
         }
     }
 

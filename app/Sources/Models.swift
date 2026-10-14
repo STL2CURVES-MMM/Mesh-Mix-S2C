@@ -189,6 +189,36 @@ final class Settings: ObservableObject {
     }
 }
 
+/// The settings a conversion run used, kept with the job (for the "Auto
+/// used" mark and bug reports).
+struct RunSettings {
+    let preset: Preset
+    /// The quality the file was converted at (Auto quality picks one per file)
+    let quality: Double
+    let autoQuality: Bool
+    let repair: RepairLevel
+    let unit: OutputUnit
+    let plateLayout: PlateLayout
+    let removeDebris: Bool
+    let useCustomTolerance: Bool
+    let customTolerance: Double
+    let maxFaces: Int
+
+    /// The settings now, for a file with this many triangles.
+    init(_ s: Settings, triangles: Int?) {
+        preset = s.preset
+        quality = s.quality(for: triangles)
+        autoQuality = s.autoQuality
+        repair = s.repair
+        unit = s.unit
+        plateLayout = s.plateLayout
+        removeDebris = s.removeDebris
+        useCustomTolerance = s.useCustomTolerance
+        customTolerance = s.customTolerance
+        maxFaces = s.maxFaces
+    }
+}
+
 enum JobStatus: Equatable {
     case inspecting, ready, queued, converting, done, failed, cancelled
 
@@ -277,6 +307,19 @@ struct MeshCheck {
     var hasOverlaps: Bool { issues.contains { $0.code == "overlaps" && $0.status == "action" } }
 
     var fixedAnything: Bool { issues.contains { $0.status == "fixed" } }
+
+    /// The user chose to keep touching parts separate: the engine reports
+    /// that as a note (the same words as engine/mmm/meshcheck.py).
+    mutating func keptPartsSeparate() {
+        issues = issues.map { i in
+            guard i.code == "touching_parts" else { return i }
+            return MeshIssue(code: i.code, count: i.count, status: "note", problem: i.problem,
+                             result: "Kept as separate parts, as you chose. Use “Merge Touching Parts” to join them into one solid.",
+                             part: i.part)
+        }
+        let st = Set(issues.map(\.status))
+        status = st.contains("not_fixed") ? "problems" : st.contains("action") ? "action" : st.contains("fixed") ? "fixed" : "ok"
+    }
 
     /// The engine's "mesh_check" JSON (nil when it isn't there).
     init?(event value: Any?) {
@@ -412,6 +455,14 @@ final class Job: ObservableObject, Identifiable {
     @Published var meshCheck: MeshCheck?
     @Published var mergeOverlaps = false
     @Published var mergeError: String?
+    /// 3MF parts that touch each other (the part names of each group), and
+    /// what to do with them: nil (not asked yet), "split" or "merge"
+    @Published var touching: [[String]] = []
+    @Published var touchingChoice: String?
+    /// Convert as soon as it has been read again (the choice came first)
+    var convertAfterRead = false
+    /// The settings of the last conversion run
+    var runSettings: RunSettings?
     /// Where "Save Fixed Mesh" last saved this file's fixed mesh
     @Published var savedFixedMesh: URL?
     /// The fixed mesh is being saved right now
@@ -511,6 +562,8 @@ final class AppModel: ObservableObject {
     private let previewDir: URL
     /// Engines saving a fixed mesh ("Save Fixed Mesh")
     private var fixTasks: [EngineTask] = []
+    /// Files waiting to be asked about their touching parts (one at a time)
+    private var touchWaiting: [Job] = []
     private var stampCount = 0
 
     /// A new part for temporary file names every time (the preview cache
@@ -628,8 +681,11 @@ final class AppModel: ObservableObject {
         let stamp = nextStamp()
         let prev = previewDir.appendingPathComponent("\(job.id.uuidString)-in-\(stamp).mmmp")
         let partDir = previewDir.appendingPathComponent("\(job.id.uuidString)-parts-\(stamp)", isDirectory: true)
+        let s = settings
         var args = ["inspect", job.url.path, "--json", "--preview", prev.path, "--part-previews", partDir.path,
-                    "--repair", settings.repair.rawValue]
+                    "--repair", s.repair.rawValue, "--layout", s.plateLayout.rawValue,
+                    "--touching-parts", job.touchingChoice ?? "ask"]
+        if !s.removeDebris { args.append("--keep-debris") }
         if job.mergeOverlaps { args.append("--merge-overlaps") }
         guard let t = EngineTask(arguments: args) else {
             job.status = .failed
@@ -649,6 +705,10 @@ final class AppModel: ObservableObject {
                     job.bboxSize = zip(bb[1], bb[0]).map { $0 - $1 }
                 }
                 job.meshCheck = MeshCheck(event: ev["mesh_check"])
+                // groups of 3MF parts that touch each other (their names)
+                job.touching = (ev["touching"] as? [[String: Any]] ?? []).compactMap { g in
+                    (g["names"] as? [Any]).map { $0.map { "\($0)" } }
+                }
                 if let list = ev["part_list"] as? [[String: Any]], list.count > 1 {
                     job.partList = list.enumerated().map { k, e in
                         var size: [Double]?
@@ -677,8 +737,15 @@ final class AppModel: ObservableObject {
             if status == 0 && !t.cancelled {
                 job.inputPreview = prev
                 job.status = .ready
-                // not converted on its own after a merge failed or when read again
-                if self.settings.convertOnDrop && job.mergeError == nil && !job.reinspecting { self.enqueue(job) }
+                if !job.touching.isEmpty && job.touchingChoice == nil {
+                    // ask whether to keep the touching parts separate (then convert)
+                    self.askTouching(job)
+                } else if job.convertAfterRead
+                            || (self.settings.convertOnDrop && job.mergeError == nil && !job.reinspecting) {
+                    // not converted on its own after a merge failed or when read again
+                    self.enqueue(job)
+                }
+                job.convertAfterRead = false
                 job.reinspecting = false
             } else if job.mergeOverlaps && !t.cancelled {
                 // merging went wrong: read the file again the usual way
@@ -692,6 +759,7 @@ final class AppModel: ObservableObject {
                 self.inspect(job)
             } else {
                 job.reinspecting = false
+                job.convertAfterRead = false
                 job.status = .failed
                 job.readable = false
                 if job.error == nil {
@@ -704,6 +772,7 @@ final class AppModel: ObservableObject {
         do { try t.start() } catch {
             job.task = nil
             job.reinspecting = false
+            job.convertAfterRead = false
             job.status = .failed
             job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix."
         }
@@ -714,8 +783,70 @@ final class AppModel: ObservableObject {
     /// and a finished file goes back to Ready.
     func setMergeOverlaps(_ job: Job, _ on: Bool) {
         guard job.mergeOverlaps != on, job.readable, !job.status.isBusy, job.status != .queued else { return }
+        if job.needsExport && !confirmDiscard(count: 1, action: "Change") { return }
         job.mergeOverlaps = on
         job.mergeError = nil
+        reread(job)
+    }
+
+    /// Asks (one file at a time) whether parts that touch each other stay
+    /// separate or are merged into one solid.
+    private func askTouching(_ job: Job) {
+        touchWaiting.append(job)
+        if touchWaiting.count == 1 {
+            DispatchQueue.main.async { [weak self] in self?.askNextTouching() }
+        }
+    }
+
+    private func askNextTouching() {
+        // files read while the question is open join the queue
+        while let job = touchWaiting.first {
+            if jobs.contains(where: { $0 === job }) && job.touchingChoice == nil && job.status == .ready {
+                let choice = SelfTest.isActive ? "split" : askTouchingAlert(job)
+                setTouchingChoice(job, choice, convert: settings.convertOnDrop)
+            }
+            touchWaiting.removeFirst()
+        }
+    }
+
+    /// "split" or "merge"
+    private func askTouchingAlert(_ job: Job) -> String {
+        let groups = job.touching.map { $0.joined(separator: ", ") }.joined(separator: "; ")
+        let separate = splitAvailable ? "one STEP file each" : "separate solids in one STEP file"
+        let a = NSAlert()
+        a.messageText = "Parts that touch"
+        a.informativeText = "In “\(job.fileName)”, these parts touch each other: \(groups).\n\n"
+            + "Keep them as separate parts (\(separate)), or merge them into one solid? "
+            + "You can change this later in the Mesh view."
+        // the first button is the default (Return)
+        a.addButton(withTitle: "Split to Parts")
+        a.addButton(withTitle: "Merge Into One")
+        return a.runModal() == .alertSecondButtonReturn ? "merge" : "split"
+    }
+
+    /// Keeps parts that touch each other separate ("split") or merges them
+    /// into one solid ("merge", the file is read again). A finished file
+    /// goes back to Ready.
+    func setTouchingChoice(_ job: Job, _ choice: String, convert: Bool = false) {
+        guard choice == "split" || choice == "merge", !job.status.isBusy, job.status != .queued else { return }
+        let before = job.touchingChoice
+        if before != nil && before != choice && job.needsExport && !confirmDiscard(count: 1, action: "Change") { return }
+        job.touchingChoice = choice
+        if choice == "split" {
+            if before == "merge" {
+                reread(job, convert: convert)
+                return
+            }
+            if splitAvailable && job.partList.count > 1 { job.split = true }
+            job.meshCheck?.keptPartsSeparate()
+            if convert { enqueue(job) }
+            return
+        }
+        if before != "merge" { reread(job, convert: convert) }
+    }
+
+    /// Reads the file again with the current choices (results are dropped).
+    private func reread(_ job: Job, convert: Bool = false) {
         discardPreviews(job.clearResults())
         // the old previews of the file and its parts (and their folder)
         var old: [URL?] = [job.inputPreview] + job.partList.map { $0.inputPreview }
@@ -728,14 +859,23 @@ final class AppModel: ObservableObject {
         }
         discardPreviews(old)
         job.inputPreview = nil
-        for i in job.partList.indices { job.partList[i].inputPreview = nil }
+        job.partList = []
+        job.selectedPart = 0
         job.error = nil
         job.errorReason = nil
         job.errorDetails = nil
         job.stage = ""
         job.reinspecting = true
+        job.convertAfterRead = convert
         job.status = .inspecting
         inspect(job)
+    }
+
+    /// Mesh repair, Remove debris or the 3MF layout changed: files that
+    /// aren't converted yet are checked again, so the Mesh view shows what
+    /// will happen.
+    func recheck() {
+        for j in jobs where j.readable && j.status == .ready && j.task == nil { reread(j) }
     }
 
     /// Checks and fixes the mesh the same way the conversion does and saves
@@ -748,6 +888,7 @@ final class AppModel: ObservableObject {
                     "--layout", s.plateLayout.rawValue]
         if !s.removeDebris { args.append("--keep-debris") }
         if job.mergeOverlaps { args.append("--merge-overlaps") }
+        if !job.touching.isEmpty { args += ["--touching-parts", job.touchingChoice ?? "split"] }
         guard let t = EngineTask(arguments: args) else {
             completion(AppModel.engineMissingMessage)
             return
@@ -777,8 +918,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Stops the engines that are saving fixed meshes (the app is quitting).
-    func cancelFixes() {
+    /// Stops every engine: conversions, files being read and fixed meshes
+    /// being saved (the app is quitting).
+    func shutdown() {
+        for j in jobs { j.task?.cancel() }
         for t in fixTasks { t.cancel() }
     }
 
@@ -905,16 +1048,22 @@ final class AppModel: ObservableObject {
 
     private func start(_ job: Job) {
         let s = settings
+        let stamp = nextStamp()
+        // the settings this run uses (for the "Auto used" mark and reports)
+        job.runSettings = RunSettings(s, triangles: job.triangles)
         // The STEP files go into the app's temporary folder first; nothing is
         // saved next to the originals until the user exports.
-        let resultDir = previewDir.appendingPathComponent("results/\(job.id.uuidString)-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
+        let resultDir = previewDir.appendingPathComponent("results/\(job.id.uuidString)-\(stamp)", isDirectory: true)
         try? FileManager.default.createDirectory(at: resultDir, withIntermediateDirectories: true)
         var partOuts: [URL] = []
         if job.isSplit {
             partOuts = job.partList.indices.map { resultDir.appendingPathComponent("part\($0).step") }
         }
         let out = partOuts.first ?? resultDir.appendingPathComponent("result.step")
-        let prev = previewDir.appendingPathComponent("\(job.id.uuidString)-out-\(Int(Date().timeIntervalSince1970)).mmmp")
+        let prev = previewDir.appendingPathComponent("\(job.id.uuidString)-out-\(stamp).mmmp")
+        let partPreviews = job.isSplit
+            ? job.partList.map { previewDir.appendingPathComponent("\(job.id.uuidString)-part\($0.index)-out-\(stamp).mmmp") }
+            : []
         var args = ["convert", job.url.path, "-o", out.path, "--json",
                     "--preset", s.preset.rawValue,
                     "--repair", s.repair.rawValue,
@@ -923,17 +1072,15 @@ final class AppModel: ObservableObject {
                     "--layout", s.plateLayout.rawValue,
                     "--preview", prev.path]
         if job.isSplit {
-            let stamp = Int(Date().timeIntervalSince1970)
             args.append("--split")
             for u in partOuts { args += ["--part-output", u.path] }
-            for part in job.partList {
-                args += ["--part-preview", previewDir.appendingPathComponent("\(job.id.uuidString)-part\(part.index)-out-\(stamp).mmmp").path]
-            }
+            for u in partPreviews { args += ["--part-preview", u.path] }
         }
         if !s.removeDebris { args.append("--keep-debris") }
         if s.useCustomTolerance && s.customTolerance > 0 { args += ["--tolerance", String(s.customTolerance)] }
         if s.maxFaces > 0 { args += ["--max-faces", String(s.maxFaces)] }
         if job.mergeOverlaps { args.append("--merge-overlaps") }
+        if !job.touching.isEmpty { args += ["--touching-parts", job.touchingChoice ?? "split"] }
         guard let t = EngineTask(arguments: args) else {
             job.status = .failed
             job.error = AppModel.engineMissingMessage
@@ -977,7 +1124,13 @@ final class AppModel: ObservableObject {
             }
         }
         t.onExit = { [weak self, weak job] status, stderr in
-            guard let self, let job else { return }
+            guard let self else { return }
+            guard let job, self.jobs.contains(where: { $0 === job }) else {
+                // removed while converting: nothing will show these files
+                self.discardPreviews([resultDir, prev] + partPreviews)
+                self.pump()
+                return
+            }
             job.task = nil
             if t.cancelled {
                 job.status = .cancelled
@@ -1074,7 +1227,8 @@ final class AppModel: ObservableObject {
         let unexported = done.filter { $0.needsExport }.count
         if unexported > 0 && !confirmDiscard(count: unexported, action: "Remove") { return }
         for j in done { jobWatchers[j.id] = nil }
-        jobs.removeAll { $0.status == .done }
+        // only the files asked about (others may have finished while asking)
+        jobs.removeAll { j in done.contains { $0 === j } }
         if selectedJob == nil { selection = jobs.first?.id }
         discardPreviews(done.flatMap { Self.previewFiles(of: $0) })
     }

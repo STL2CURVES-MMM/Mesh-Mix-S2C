@@ -434,13 +434,16 @@ struct JobPreview: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                if mc.hasOverlaps || mc.fixedAnything || job.mergeOverlaps {
+                if mc.hasOverlaps || mc.fixedAnything || job.mergeOverlaps || !job.touching.isEmpty {
                     HStack(spacing: 8) {
                         Spacer(minLength: 0)
+                        if !job.touching.isEmpty {
+                            touchingToggle
+                        }
                         if mc.hasOverlaps || job.mergeOverlaps {
                             mergeToggle
                         }
-                        if mc.fixedAnything || job.mergeOverlaps {
+                        if mc.fixedAnything || job.mergeOverlaps || job.touchingChoice == "merge" {
                             saveFixedButton
                         }
                     }
@@ -463,6 +466,23 @@ struct JobPreview: View {
         .help(job.mergeOverlaps
               ? "The overlapping pieces are joined into one solid. Click to keep them as separate solids again."
               : "Join the pieces that overlap each other into one solid (the file is read again). Pieces that overlap on purpose, like parts of an assembly, are better kept separate.")
+    }
+
+    /// 3MF parts that touch each other: separate parts, or merged into one solid
+    var touchingToggle: some View {
+        let merged = job.touchingChoice == "merge"
+        return Toggle(isOn: Binding(get: { job.touchingChoice == "merge" },
+                                    set: { model.setTouchingChoice(job, $0 ? "merge" : "split") })) {
+            Label("Merge Touching Parts", systemImage: "square.on.square")
+                .font(.system(size: 11.5, weight: .medium))
+        }
+        .toggleStyle(.button)
+        .controlSize(.small)
+        .fixedSize()
+        .disabled(job.status.isBusy || job.status == .queued)
+        .help(merged
+              ? "The touching parts are merged into one solid. Click to keep them as separate parts again."
+              : "Merge the parts that touch each other into one solid (the file is read again)")
     }
 
     var saveFixedButton: some View {
@@ -711,10 +731,11 @@ struct SettingsPanel: View {
 
     /// With Auto selected, marks the preset Auto actually used for the
     /// selected file (both CAD and Smooth when its parts used different
-    /// ones): the card's tooltip, or nil when it isn't marked.
+    /// ones): the card's tooltip, or nil when it isn't marked. Only for a
+    /// file whose last conversion was asked to use Auto.
     private func autoPickTip(for p: Preset) -> String? {
         guard settings.preset == .auto, p != .auto, let j = model.selectedJob, j.status == .done,
-              let used = j.result?.preset else { return nil }
+              j.runSettings?.preset == .auto, let used = j.result?.preset else { return nil }
         if used == "mixed" {
             return (p == .cad || p == .smooth) ? "Auto used CAD + Smooth for “\(j.fileName)”." : nil
         }
@@ -873,7 +894,10 @@ struct SettingsPanel: View {
                                         ForEach(PlateLayout.allCases) { l in Text(l.title).tag(l) }
                                     }
                                     .labelsHidden().frame(width: 150)
-                                    .onChange(of: settings.plateLayout) { _, _ in model.applySplitDefault() }
+                                    .onChange(of: settings.plateLayout) { _, _ in
+                                        model.applySplitDefault()
+                                        model.recheck()
+                                    }
                                 }
                                 Text(settings.plateLayout.help)
                                     .font(.system(size: 10.5)).foregroundStyle(Theme.textFaint)
@@ -886,9 +910,11 @@ struct SettingsPanel: View {
                                     ForEach(RepairLevel.allCases) { r in Text(r.title).tag(r) }
                                 }
                                 .labelsHidden().frame(width: 120)
+                                .onChange(of: settings.repair) { _, _ in model.recheck() }
                             }
                             .help("Closes holes and fixes broken triangles before converting.")
                             Toggle("Remove tiny floating pieces", isOn: $settings.removeDebris).font(.system(size: 12))
+                                .onChange(of: settings.removeDebris) { _, _ in model.recheck() }
                             Toggle("Custom fit tolerance", isOn: $settings.useCustomTolerance).font(.system(size: 12))
                                 .help("How far the CAD surfaces may deviate from the mesh. Normally chosen automatically from the part size and the quality slider.")
                             if settings.useCustomTolerance {
