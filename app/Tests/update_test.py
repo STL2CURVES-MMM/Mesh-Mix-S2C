@@ -116,9 +116,6 @@ def main():
         failed = os.path.join(tempfile.gettempdir(), "ManifoldMeshMix-update-failed.txt")
         why = open(failed).read() if os.path.exists(failed) else "no reason recorded"
         problems.append(f"the app wasn't replaced ({why})")
-    leftovers = [n for n in os.listdir(apps) if n != "Manifold Mesh Mix.app"]
-    if leftovers:
-        problems.append(f"files left in the Applications folder: {leftovers}")
     pids = []
     end = time.time() + 60
     while time.time() < end and not pids:
@@ -128,6 +125,11 @@ def main():
         print("the updated app opened again (pid", pids[0], ")")
     else:
         problems.append("the updated app didn't open again")
+    # the installer removes the old app after copying the new one (the
+    # marker shows up during the copy), then opens the app: check after that
+    leftovers = [n for n in os.listdir(apps) if n != "Manifold Mesh Mix.app"]
+    if leftovers:
+        problems.append(f"files left in the Applications folder: {leftovers}")
     for pid in pids:
         try:
             os.kill(pid, 15)
