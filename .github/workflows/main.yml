@@ -1,0 +1,60 @@
+name: Auto Release (create tag, run build and publish)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g., 1.5.0)"
+        required: false
+        default: "1.5.0"
+
+permissions:
+  contents: write
+  workflows: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create tag if missing
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          VERSION=${VERSION:-$(tr -d '[:space:]' < VERSION)}
+          TAG="v${VERSION}"
+          echo "Version: $VERSION Tag: $TAG"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists on remote; skipping tag creation"
+          else
+            git fetch origin main
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Dispatch 'Build and test' workflow with publish=true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          REF="main"
+          WORKFLOW_FILE="build.yml"
+          echo "Dispatching $WORKFLOW_FILE on $REF with publish=true"
+
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW_FILE/dispatches" \
+            -d "{\"ref\":\"$REF\",\"inputs\":{\"publish\":true}}"
+
+      - name: Done
+        run: echo "Auto release: tag ensured and build workflow dispatched."
