@@ -41,7 +41,7 @@ jobs:
             git push origin "$TAG"
           fi
 
-      - name: Dispatch 'Build and test' workflow with publish=true
+      - name: Dispatch Build and test workflow with publish=true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -57,4 +57,5 @@ jobs:
             -d "{\"ref\":\"$REF\",\"inputs\":{\"publish\":true}}"
 
       - name: Done
-        run: echo "Auto release: tag ensured and build workflow dispatched."
+        run: |
+          echo 'Auto release: tag ensured and build workflow dispatched.'
