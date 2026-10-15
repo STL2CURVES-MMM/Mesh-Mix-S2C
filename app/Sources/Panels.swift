@@ -320,21 +320,19 @@ struct JobPreview: View {
         r.repaired.isEmpty ? "" : "The app repaired what it could automatically; this is left:\n"
     }
 
-    /// 3MF files carry their own unit (the engine saves them in mm)
-    private var modelUnit: String {
-        job.url.pathExtension.lowercased() == "3mf" ? "mm" : settings.unit.rawValue
-    }
+    private var modelUnit: String { job.resultUnit(settings) }
 
     private func fitLine(_ r: ConversionResult) -> String {
         guard let f = r.fidelity else { return "" }
         return "\nCompared with the mesh: \(f.summary(unit: modelUnit))."
+            + (f.ok ? "" : " It doesn't follow the mesh closely everywhere.")
     }
 
     @ViewBuilder func checkBadge(_ r: ConversionResult) -> some View {
         if r.hasErrors {
             Pill(text: "Problem found", color: Theme.bad, icon: "xmark")
                 .fixedSize()
-                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n"))
+                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n") + fitLine(r))
         } else if !r.checks.isEmpty {
             Pill(text: r.checks.count == 1 ? "1 thing to check" : "\(r.checks.count) things to check", color: Theme.warn, icon: "exclamationmark")
                 .fixedSize()

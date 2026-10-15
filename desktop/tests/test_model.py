@@ -603,3 +603,30 @@ def test_conversion_reports_how_closely_it_follows_the_mesh(model, settings, mes
     assert "99.8% of the surface is within 0.1 mm" in good.result.fidelity.summary()
     text = bugreport.build(rough, settings)
     assert "Compared with the mesh" in text and "doesn't follow it closely everywhere" in text
+
+
+def test_fidelity_summary_never_overstates():
+    from mmm_app.model import Fidelity
+
+    f = Fidelity.from_event({"ok": False, "tolerance": 0.05, "within2": 0.9996, "max": 0.04, "wrong_way": 0.02})
+    text = f.summary("mm")
+    # a failing result never reads 100.0%, and says what failed
+    assert text.startswith("99.9% of the surface") and "2.0% of it faces another way" in text
+    assert "faces another way" not in Fidelity.from_event({"tolerance": 0.05, "wrong_way": 0.001}).summary()
+    assert Fidelity.from_event({"ok": False}).summary() == "the details weren't reported"
+    assert Fidelity.from_event(None) is None and Fidelity.from_event("x") is None
+
+
+def test_result_unit(model, settings, meshes):
+    from mmm_app import bugreport
+    from mmm_app.model import result_unit
+
+    settings.unit = "in"
+    stl, project = add_and_read(model, meshes["one.stl"], meshes["my_parts.3mf"])
+    # 3MF files carry their own unit; the engine saves them in mm
+    assert result_unit(project, settings) == "mm" and result_unit(stl, settings) == "in"
+    model.convert_all()
+    assert wait_until(lambda: stl.status == JobStatus.DONE)
+    settings.unit = "mm"  # changed after converting: the result is still in inches
+    assert result_unit(stl, settings) == "in"
+    assert "within 0.1 in of the mesh" in bugreport.build(stl, settings)

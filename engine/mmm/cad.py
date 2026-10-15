@@ -432,8 +432,17 @@ class Segmenter:
         and a cylinder along that direction is fitted to them alone.
         Returns a hypothesis tuple like _process_seed's, or None."""
         V, F, fa, fn = self.V, self.F, self.fa, self.fn
-        T = V[F[faces]]
-        E = np.concatenate([T[:, 1] - T[:, 0], T[:, 2] - T[:, 1], T[:, 0] - T[:, 2]])
+        topo = self.topo
+        # the direction of the seed's longest outline edge (the edges inside
+        # it, like a quad's diagonal, don't count)
+        he = (3 * faces[:, None] + np.arange(3)[None]).reshape(-1)
+        tw = topo.twin[he]
+        inside = np.zeros(len(F), dtype=bool)
+        inside[faces] = True
+        outline = he[(tw < 0) | ~inside[np.maximum(tw, 0) // 3]]
+        if not outline.size:
+            return None
+        E = V[topo.he_to[outline]] - V[topo.he_from[outline]]
         L = np.linalg.norm(E, axis=1)
         k = int(np.argmax(L))
         lmax = float(L[k])
@@ -447,13 +456,13 @@ class Segmenter:
         sin_perp = np.sin(np.radians(2.0))
         if np.abs(fn[faces] @ d).max() > sin_perp:
             return None
-        topo = self.topo
         stamp = self._new_stamp()
         st = self._stamp
         st[faces] = stamp
         strip = [faces]
         frontier = faces
-        while frontier.size:
+        total = len(faces)
+        while frontier.size and total < 4000:
             he = (3 * frontier[:, None] + np.arange(3)[None]).reshape(-1)
             tw = topo.twin[he]
             ok = tw >= 0
@@ -471,6 +480,7 @@ class Segmenter:
             st[new] = stamp
             strip.append(new)
             frontier = new
+            total += len(new)
         strip = np.concatenate(strip)
         # at least a few distinct facets around the axis
         ang = np.round(np.degrees(np.arctan2(*(fn[strip] @ np.stack(perp_basis(d), 1)).T[::-1])), 0)
@@ -1840,7 +1850,7 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
             # valid faces that still don't follow their part of the mesh (a
             # surface that bulges between the mesh's vertices, a face whose
             # edges tear it away from the mesh) are replaced the same way
-            off = _inaccurate_regions(seg, labels, asm, tol) - bad
+            off = _inaccurate_regions(seg, labels, asm, tol, skip=bad) - bad
             if off:
                 report.log(f"{len(off)} surface(s) don't follow the mesh closely enough and are fitted again")
                 inaccurate += len(off)
@@ -1851,7 +1861,9 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
             break
         replaced += len(bad)
         # a freeform face that still strays from the mesh becomes flat faces
-        flat = {r for r in off if r < len(regions) and regions[r].kind == "freeform"}
+        # (when its triangles are few, and big enough to be faces of their own)
+        flat = {r for r in off if r < len(regions) and regions[r].kind == "freeform"
+                and _facets_ok(seg, regions[r].faces)}
         labels, regions = _demote(seg, labels, regions, bad - flat, split_more=rnd > 0, facet=flat)
     # Splitting freeform faces can leave slivers too small to be valid faces;
     # those still broken at the end go to a neighbouring face (no new faces
@@ -1870,16 +1882,18 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     return asm, faces, regions
 
 
-def _inaccurate_regions(seg, labels, asm, tol, bad_k=3.0, share=0.01, worst_k=8.0):
+def _inaccurate_regions(seg, labels, asm, tol, bad_k=3.0, share=0.01, worst_k=8.0, skip=()):
     """Regions whose built face strays from the mesh triangles it stands
     for, found by measuring both ways (see fidelity.py): points of the face
     far from the mesh (bulges, flaps, torn edges) and points of the region's
     triangles far from the shape (dents, missing material). A region is
     inaccurate when more than ``share`` of either lies beyond ``bad_k``
     tolerances, or any of it beyond ``worst_k`` tolerances."""
-    from .fidelity import Surface, sample, tessellate_faces
+    from .fidelity import Surface, mesh_surface, sample, tessellate_faces
 
-    items = [(r, f) for r, f in asm.region_faces.items()]
+    # (faces already known to be broken are replaced anyway; meshing them
+    # can fail)
+    items = [(r, f) for r, f in asm.region_faces.items() if r not in skip]
     if not items:
         return set()
     rng = np.random.default_rng(0)
@@ -1888,11 +1902,9 @@ def _inaccurate_regions(seg, labels, asm, tol, bad_k=3.0, share=0.01, worst_k=8.
     if len(SF) == 0:
         return set()
     own_region = np.array([r for r, _ in items], dtype=np.int64)[owner]
-    area = float(seg.fa.sum())
-    spacing = max(np.sqrt(area / 5e5), tol * 0.5)
-    mesh = Surface(V, F, spacing, rng)
-    shape = Surface(SV, SF, spacing, rng)
-    n = int(min(200_000, max(30_000, area / spacing ** 2 * 0.1)))
+    mesh, _, spacing = mesh_surface(V, F)
+    shape = Surface(SV, SF, max(spacing, tol * 0.5), rng)
+    n = int(np.clip(20 * len(F), 20_000, 150_000))
     out = set()
     # face -> mesh
     Q, qt = sample(SV, SF, n, rng)
@@ -2081,6 +2093,14 @@ def _demote(seg, labels, regions, bad, split_more=False, facet=()):
             new_labels[cell.faces] = len(new_regions)
             new_regions.append(cell)
     return new_labels, new_regions
+
+
+def _facets_ok(seg, faces, max_tris=2000, area_k=25.0):
+    """Whether a region can become flat faces from its own triangles: not
+    too many of them, and on average big enough that a face of one or two
+    triangles isn't a sliver (see _too_small_for_face)."""
+    faces = np.asarray(faces)
+    return 0 < len(faces) <= max_tris and float(seg.fa[faces].mean()) >= area_k * seg.tol ** 2
 
 
 def _flat_facets(seg, faces, max_deg=0.5):

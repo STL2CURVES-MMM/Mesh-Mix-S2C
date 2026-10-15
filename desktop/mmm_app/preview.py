@@ -10,7 +10,7 @@ from PySide6.QtGui import QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from . import icons, system, theme
-from .model import JobStatus
+from .model import JobStatus, result_unit
 from .sidebar import format_bytes, format_int
 from .theme import BOLD, MEDIUM, SEMIBOLD
 from .viewport import PreviewMesh, Viewport
@@ -22,7 +22,7 @@ STEP_TINT = (0.78, 0.78, 0.78)
 
 REPAIRED_TIP = ("Reading the STEP file back found small errors, so the app repaired them automatically, the way "
                 "CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a "
-                "valid solid and matches the mesh.")
+                "valid solid with the mesh's volume.")
 
 
 MESH_PILL = {
@@ -481,13 +481,13 @@ class JobPreview(QWidget):
         return theme.TEXT_DIM
 
     def _unit(self):
-        # 3MF files carry their own unit (the engine saves them in mm)
-        return "mm" if self.job.extension == "3mf" else self.settings.unit
+        return result_unit(self.job, self.settings)
 
     def _fit_line(self, r):
         if r.fidelity is None:
             return ""
-        return "\nCompared with the mesh: " + r.fidelity.summary(self._unit()) + "."
+        return ("\nCompared with the mesh: " + r.fidelity.summary(self._unit()) + "."
+                + ("" if r.fidelity.ok else " It doesn't follow the mesh closely everywhere."))
 
     # badges
     def _refresh_badges(self):
@@ -499,7 +499,7 @@ class JobPreview(QWidget):
             pill.hide()
         elif r.has_errors:
             pill.set("Problem found", theme.BAD, "x")
-            pill.setToolTip(repair_note(r) + "\n".join(c.message for c in r.checks))
+            pill.setToolTip(repair_note(r) + "\n".join(c.message for c in r.checks) + self._fit_line(r))
             pill.show()
         elif r.checks:
             n = len(r.checks)

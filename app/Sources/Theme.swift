@@ -171,6 +171,9 @@ struct ThinProgress: View {
                         .onAppear {
                             withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) { phase = 1 }
                         }
+                        // start the sweep again next time (a file read again
+                        // shows the moving bar before the check reports progress)
+                        .onDisappear { phase = 0 }
                 } else {
                     Capsule()
                         .fill(accent)

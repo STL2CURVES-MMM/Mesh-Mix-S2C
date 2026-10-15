@@ -277,7 +277,12 @@ struct Fidelity {
     /// Share of the surface within twice the tolerance
     var within2 = 1.0
     var p99 = 0.0
-    var max = 0.0
+    var largestGap = 0.0
+    /// Share of the surface facing another way than the mesh
+    var wrongWay = 0.0
+
+    /// The engine's limit for wrongWay (engine/mmm/fidelity.py, Verdict)
+    static let wrongWayMax = 0.005
 
     init?(event value: Any?) {
         guard let d = value as? [String: Any] else { return nil }
@@ -285,13 +290,29 @@ struct Fidelity {
         tolerance = d["tolerance"] as? Double ?? 0
         within2 = d["within2"] as? Double ?? 1
         p99 = d["p99"] as? Double ?? 0
-        max = d["max"] as? Double ?? 0
+        largestGap = d["max"] as? Double ?? 0
+        wrongWay = d["wrong_way"] as? Double ?? 0
     }
 
     func summary(unit: String) -> String {
-        let pct = String(format: "%.1f", 100 * within2)
-        return "\(pct)% of the surface is within \(String(format: "%.2g", 2 * tolerance)) \(unit) of the mesh; "
-            + "the largest gap is \(String(format: "%.2g", max)) \(unit)"
+        guard tolerance > 0 else { return "the details weren't reported" }
+        // rounded down, so a result that fails never shows 100.0%
+        let share = (1000 * Swift.min(Swift.max(within2, 0), 1) + 1e-6).rounded(.down) / 10
+        var text = "\(String(format: "%.1f", share))% of the surface is within \(String(format: "%.2g", 2 * tolerance)) \(unit) of the mesh; "
+            + "the largest gap is \(String(format: "%.2g", largestGap)) \(unit)"
+        if wrongWay > Self.wrongWayMax {
+            text += "; \(String(format: "%.1f", 100 * wrongWay))% of it faces another way than the mesh (wrinkles or dents)"
+        }
+        return text
+    }
+}
+
+extension Job {
+    /// The unit this job's result is in: 3MF files carry their own (the
+    /// engine saves them in mm), others the unit the last conversion used.
+    func resultUnit(_ settings: Settings) -> String {
+        if url.pathExtension.lowercased() == "3mf" { return "mm" }
+        return (runSettings?.unit ?? settings.unit).rawValue
     }
 }
 

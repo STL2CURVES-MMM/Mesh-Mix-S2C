@@ -190,3 +190,50 @@ def test_reading_reports_each_step(tmp_path):
     assert names[-1] == "Checking the fixed mesh again"
     progress = [p for _, p in rep.stages]
     assert progress == sorted(progress) and progress[-1] <= 0.5
+
+
+def test_nothing_is_reported_when_not_checked(tmp_path):
+    from mmm.pipeline import Options, convert
+
+    V, F = _box_mesh((20, 10, 5))
+    path = str(tmp_path / "box.stl")
+    trimesh.Trimesh(V, F).export(path)
+    res = convert(path, str(tmp_path / "box.step"), Options(quality=0.7, validate=False), NULL)
+    assert res["fidelity"] is None
+
+
+def test_checking_leaves_no_fine_mesh_on_the_shape():
+    # the 3D preview meshes the shape again and would reuse a finer mesh
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    V, F = _box_mesh((10, 8, 6))
+    shape = _box_shape((10, 8, 6))
+    fidelity.compare(shape, [(V, F)], 0.01)
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        assert BRep_Tool.Triangulation_s(TopoDS.Face(exp.Current()), TopLoc_Location()) is None
+        exp.Next()
+
+
+@pytest.mark.parametrize("exc", [MemoryError, IndexError])
+def test_converter_faults_are_not_blamed_on_the_file(tmp_path, monkeypatch, exc):
+    """Out of memory, or a bug in the converter, stays what it is (the
+    error report says so) instead of "None of the parts could be converted"."""
+    from mmm import cad, pipeline, smooth
+    from mmm.pipeline import Options, convert
+
+    def boom(*a, **kw):
+        raise exc("test")
+
+    monkeypatch.setattr(cad, "convert_body_cad", boom)
+    monkeypatch.setattr(smooth, "convert_body_smooth", boom)
+    monkeypatch.setattr(pipeline, "convert_body_exact", boom)
+    V, F = _box_mesh((20, 10, 5))
+    path = str(tmp_path / "box.stl")
+    trimesh.Trimesh(V, F).export(path)
+    with pytest.raises(exc):
+        convert(path, str(tmp_path / "box.step"), Options(quality=0.7), NULL)

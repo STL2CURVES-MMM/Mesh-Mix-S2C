@@ -69,6 +69,9 @@ def tessellate(shape, deflection, angle=0.25):
             ids.append(np.full(m, fi, dtype=np.int64))
             base += n
         fi += 1
+    # drop the fine triangulation again: it would stay on the shape, and the
+    # 3D preview (and anything else that meshes it) would reuse it
+    BRepTools.Clean_s(shape)
     if not Vs:
         return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64)
     return np.vstack(Vs), np.vstack(Fs), np.concatenate(ids)
@@ -219,14 +222,21 @@ class Surface:
             near = self.tri[idx]  # (m, k)
             nb = self.adj[near[:, :3]].reshape(len(Q), -1)
             cand = np.concatenate([near, np.where(nb >= 0, nb, near[:, :1])], axis=1)
-            m, kk = cand.shape
-            Qr = np.repeat(Q, kk, axis=0)
-            c = cand.ravel()
-            d, _ = point_triangle_distance(Qr, V[F[c, 0]], V[F[c, 1]], V[F[c, 2]])
-            d = d.reshape(m, kk)
-            j = np.argmin(d, axis=1)
-            dist[s:s + chunk] = d[np.arange(m), j]
-            tri[s:s + chunk] = cand[np.arange(m), j]
+            # each (point, triangle) pair once: the nearest samples are
+            # mostly on the same few triangles
+            cand.sort(axis=1)
+            keep = np.ones(cand.shape, dtype=bool)
+            keep[:, 1:] = cand[:, 1:] != cand[:, :-1]
+            pi = np.nonzero(keep)[0]
+            c = cand[keep]
+            d, _ = point_triangle_distance(Q[pi], V[F[c, 0]], V[F[c, 1]], V[F[c, 2]])
+            # the smallest distance of each point (rows are in order)
+            order = np.lexsort((d, pi))
+            first = np.ones(len(order), dtype=bool)
+            first[1:] = pi[order][1:] != pi[order][:-1]
+            best = order[first]
+            dist[s:s + chunk] = d[best]
+            tri[s:s + chunk] = c[best]
         return dist, tri
 
 
@@ -245,6 +255,10 @@ class Verdict:
     def __init__(self, r, tol):
         self.r = r
         self.tol = tol
+        if r.get("unknown"):
+            # the comparison itself failed: neither good nor bad
+            self.ok, self.score = True, -3.0
+            return
         if r.get("empty"):
             self.ok, self.score = False, -1e9
             return
@@ -258,16 +272,18 @@ class Verdict:
 
     def summary(self, unit="mm"):
         r = self.r
+        if r.get("unknown"):
+            return "it couldn't be compared with the mesh"
         if r.get("empty"):
-            return "The shape has no surface to compare with the mesh."
+            return "the shape has no surface to compare with the mesh"
         within = 100.0 * r["within2"]
         return (f"{within:.1f}% of the surface is within {2 * self.tol:.2g} {unit} of the mesh; "
                 f"largest gap {r['worst_distance']:.2g} {unit}")
 
     def as_dict(self):
         r = self.r
-        if r.get("empty"):
-            return {"ok": False, "empty": True}
+        if r.get("empty") or r.get("unknown"):
+            return {"ok": bool(self.ok), "empty": True}
         return {
             "ok": bool(self.ok),
             "tolerance": self.tol,
@@ -280,7 +296,7 @@ class Verdict:
         }
 
 
-def judge(shape, shells, tol, n_points=120_000):
+def judge(shape, shells, tol, n_points=None):
     """Verdict for a converted shape against the mesh shells (objects with
     V and F) it was made from."""
     r = compare(shape, [(s.V, s.F) for s in shells], tol, n_points=n_points)
@@ -316,6 +332,37 @@ def _edge_neighbours(F):
     return out.reshape(n, 3)
 
 
+_MESH_CACHE = {}
+
+
+def mesh_surface(V, F):
+    """The mesh as a Surface, its smoothed normals and the sample spacing,
+    kept for the next call with the same mesh (every candidate of a body
+    is compared with the same mesh)."""
+    import hashlib
+
+    h = hashlib.blake2b(digest_size=16)
+    h.update(np.ascontiguousarray(V).tobytes())
+    h.update(np.ascontiguousarray(F).tobytes())
+    key = h.hexdigest()
+    hit = _MESH_CACHE.get(key)
+    if hit is not None:
+        return hit
+    area = _tri_normals(V, F)[1]
+    # reference points on each surface for the nearest-triangle search (the
+    # distances themselves are exact); more for detailed meshes
+    n_ref = np.clip(4 * len(F), 1e5, 5e5)
+    spacing = float(np.sqrt(area.sum() / n_ref))
+    M = Surface(V, F, spacing, np.random.default_rng(1))
+    # the mesh's directions, smoothed over neighbouring triangles (not
+    # across sharp edges): a scan's noisy triangles point every which way,
+    # but a smooth surface through them is what a conversion should give
+    MN = smoothed_normals(M.normals, area, M.adj)
+    _MESH_CACHE.clear()  # one mesh at a time (they can be big)
+    _MESH_CACHE[key] = (M, MN, spacing)
+    return M, MN, spacing
+
+
 def smoothed_normals(N, A, adj, iters=3, keep_deg=30.0):
     """Triangle normals averaged with their neighbours' (by area), a few
     times over; neighbours across a sharp edge (more than ``keep_deg``
@@ -336,7 +383,7 @@ def _angle_deg(a, b):
     return np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", a, b), -1.0, 1.0)))
 
 
-def compare(shape, meshes, tol, n_points=200_000, seed=0):
+def compare(shape, meshes, tol, n_points=None, seed=0):
     """Compares a converted shape with the mesh pieces it came from
     (``meshes``: list of (V, F) with outward-facing triangles).
 
@@ -349,6 +396,10 @@ def compare(shape, meshes, tol, n_points=200_000, seed=0):
       worst: a point where the shape is furthest from the mesh
     """
     rng = np.random.default_rng(seed)
+    if n_points is None:
+        # enough points for the 99.9th percentile to mean something, more
+        # for detailed meshes
+        n_points = int(np.clip(30 * sum(len(F) for _, F in meshes), 30_000, 150_000))
     MV = np.vstack([V for V, _ in meshes])
     off = np.cumsum([0] + [len(V) for V, _ in meshes[:-1]])
     MF = np.vstack([F + o for (_, F), o in zip(meshes, off)])
@@ -357,17 +408,8 @@ def compare(shape, meshes, tol, n_points=200_000, seed=0):
     SV, SF, _ = tessellate(shape, tol * 0.25)
     if len(SF) == 0:
         return {"empty": True}
-    mesh_area = float(_tri_normals(MV, MF)[1].sum())
-    # about half a million reference points per surface: distances come
-    # out within a few percent of the exact ones, in a couple of seconds
-    spacing = np.sqrt(mesh_area / 5e5)
+    M, MN, spacing = mesh_surface(MV, MF)
     S = Surface(SV, SF, spacing, rng)
-    M = Surface(MV, MF, spacing, rng)
-
-    # the mesh's directions, smoothed over neighbouring triangles (not
-    # across sharp edges): a scan's noisy triangles point every which way,
-    # but a smooth surface through them is what a conversion should give
-    MN = smoothed_normals(M.normals, _tri_normals(MV, MF)[1], M.adj)
     # mesh -> shape: distances and directions
     P, ptri = sample(MV, MF, n_points, rng)
     d_ms, stri = S.nearest(P)

@@ -1,6 +1,7 @@
 """Jobs, the conversion queue and exporting: everything the window shows,
 without the window itself (a port of the Mac app's AppModel)."""
 import errno
+import math
 import os
 import re
 import shutil
@@ -162,17 +163,38 @@ class Fidelity:
     within2: float = 1.0  # share of the surface within twice the tolerance
     p99: float = 0.0
     max: float = 0.0
+    wrong_way: float = 0.0  # share of the surface facing another way than the mesh
+
+    # the engine's limit for wrong_way (engine/mmm/fidelity.py, Verdict)
+    WRONG_WAY_MAX = 0.005
 
     @classmethod
     def from_event(cls, d):
         if not isinstance(d, dict):
             return None
         return cls(ok=d.get("ok") is not False, tolerance=_float(d.get("tolerance")),
-                   within2=_float(d.get("within2"), 1.0), p99=_float(d.get("p99")), max=_float(d.get("max")))
+                   within2=_float(d.get("within2"), 1.0), p99=_float(d.get("p99")), max=_float(d.get("max")),
+                   wrong_way=_float(d.get("wrong_way")))
 
     def summary(self, unit="mm"):
-        return (f"{100 * self.within2:.1f}% of the surface is within {2 * self.tolerance:.2g} {unit} of the mesh; "
+        if not self.tolerance > 0:
+            return "the details weren't reported"
+        # rounded down, so a result that fails never shows 100.0%
+        pct = math.floor(1000 * min(max(self.within2, 0.0), 1.0) + 1e-6) / 10
+        text = (f"{pct:.1f}% of the surface is within {2 * self.tolerance:.2g} {unit} of the mesh; "
                 f"the largest gap is {self.max:.2g} {unit}")
+        if self.wrong_way > self.WRONG_WAY_MAX:
+            text += f"; {100 * self.wrong_way:.1f}% of it faces another way than the mesh (wrinkles or dents)"
+        return text
+
+
+def result_unit(job, settings):
+    """The unit a job's result is in: 3MF files carry their own (the engine
+    saves them in mm), others the unit the last conversion used."""
+    if job.extension == "3mf":
+        return "mm"
+    run = job.run_settings or {}
+    return run.get("unit") or settings.unit
 
 
 @dataclass
