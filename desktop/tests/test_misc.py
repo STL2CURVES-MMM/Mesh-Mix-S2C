@@ -198,12 +198,25 @@ def test_repaired_badge(window, meshes):
     assert by_name["one.stl"].result.repaired == []
     m.select(by_name["was_repaired.stl"].id)
     assert wait_until(lambda: jp.check_pill._text == "Repaired automatically")
-    assert jp.check_pill.toolTip() == REPAIRED_TIP
+    tip = jp.check_pill.toolTip()
+    assert tip.startswith(REPAIRED_TIP) and "Compared with the mesh: 99.8% of the surface" in tip
     m.select(by_name["repaired_issues.stl"].id)
     assert wait_until(lambda: jp.check_pill._text == "1 thing to check")
     assert jp.check_pill.toolTip().startswith("The app repaired what it could")
     m.select(by_name["one.stl"].id)
     assert wait_until(lambda: jp.check_pill._text == "File checked")
+
+
+def test_badge_when_the_shape_strays_from_the_mesh(window, meshes):
+    m = window.model
+    m.add([meshes["rough.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    m.convert_all()
+    assert wait_until(lambda: m.is_idle)
+    jp = window.preview.preview
+    m.select(m.jobs[0].id)
+    assert wait_until(lambda: jp.check_pill._text == "Doesn't match the mesh everywhere")
+    assert "the largest gap is 1.3 mm" in jp.check_pill.toolTip()
 
 
 def test_fine_detail_estimate_matches_engine():

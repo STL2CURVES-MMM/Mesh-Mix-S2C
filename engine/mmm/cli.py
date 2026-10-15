@@ -49,8 +49,10 @@ def _fix(args, rep):
     """Check and fix a mesh, then save the fixed copy (STL or 3MF)."""
     from .meshio import load_and_prepare, write_3mf, write_stl
 
-    bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=not args.keep_debris, report=rep,
-                                    layout=args.layout, merge=args.merge_overlaps, touching=args.touching_parts)
+    with rep.section(0.0, 0.95):
+        bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=not args.keep_debris, report=rep,
+                                        layout=args.layout, merge=args.merge_overlaps, touching=args.touching_parts)
+    rep.stage("Saving the fixed mesh", 0.95, 1.0)
     _need_bodies(bodies)
     out = args.output
     if out.lower().endswith(".3mf"):
@@ -70,8 +72,10 @@ def _inspect(args, rep):
     from . import stepio
     from .meshio import load_and_prepare
 
-    bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=not args.keep_debris, report=rep,
-                                    layout=args.layout, merge=args.merge_overlaps, touching=args.touching_parts)
+    with rep.section(0.0, 0.92):
+        bodies, info = load_and_prepare(args.input, repair=args.repair, remove_debris=not args.keep_debris, report=rep,
+                                        layout=args.layout, merge=args.merge_overlaps, touching=args.touching_parts)
+    rep.stage("Making the 3D preview", 0.92, 1.0)
     _need_bodies(bodies)
     d = info.as_dict()
     d["closed"] = info.open_shells == 0

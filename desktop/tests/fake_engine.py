@@ -124,6 +124,12 @@ def main():
         if "broken" in name:
             emit({"event": "error", "message": "MeshError: This file isn't a mesh the app can read."})
             return 1
+        emit({"event": "stage", "stage": "Reading the file", "progress": 0.0})
+        emit({"event": "stage", "stage": "Looking for hidden internal walls", "progress": 0.3})
+        if "slowread" in name:
+            for k in range(100):
+                time.sleep(0.05)
+                emit({"event": "progress", "stage": "Looking for hidden internal walls", "progress": 0.3 + k / 200})
         preview(args.preview)
         ev = {"event": "result", "triangles": 2_060_000 if "dense" in name else 1234, "bodies": 2 if parts else 1,
               "open_shells": 0,
@@ -156,7 +162,10 @@ def main():
     emit({"event": "warning", "message": "A small warning."})
     checks = [{"code": "gaps", "level": "warning", "message": "There is 1 open edge."}] if "issues" in name else []
     base = {"preset": "cad", "valid": True, "solids": 1, "shells": 1, "faces": 69, "seconds": 1.5,
-            "volume": 100.0, "mesh_volume": 100.0, "tolerance": 0.05, "checked": True, "checks": checks}
+            "volume": 100.0, "mesh_volume": 100.0, "tolerance": 0.05, "checked": True, "checks": checks,
+            "fidelity": {"ok": "rough" not in name, "tolerance": 0.05, "within": 0.99, "within2": 0.998,
+                         "p99": 0.04 if "rough" not in name else 0.4, "max": 0.12 if "rough" not in name else 1.3,
+                         "wrong_way": 0.001}}
     if "repaired" in name:
         base["repaired"] = ["read back and saved again"]
     if args.split:

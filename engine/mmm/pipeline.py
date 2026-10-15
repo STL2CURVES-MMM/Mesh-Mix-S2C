@@ -157,6 +157,96 @@ def _smooth_ok(shape, body, tol):
 
 RECONVERTED = "part converted again with another method"
 
+# flat faces exactly like the mesh, as the last resort, only up to this many
+# triangles (bigger meshes would give huge files that CAD programs choke on)
+FACETED_MAX_TRIANGLES = 20_000
+# a second, denser smooth fit is only tried up to this many triangles
+DENSER_MAX_TRIANGLES = 200_000
+
+
+def flat_share(body, tol):
+    """Share of the surface in big flat regions, flat within ``tol``."""
+    tot = flat = 0.0
+    for s in body:
+        normals, areas = face_normals_areas(s.V, s.F)
+        labels, _ = planar_regions(s.V, s.F, s.topo, normals, areas, tol)
+        ar = np.bincount(labels, weights=areas)
+        a_tot = areas.sum()
+        flat += ar[ar >= 0.01 * a_tot].sum()
+        tot += a_tot
+    return flat / max(tot, 1e-30)
+
+
+def _diag(body):
+    P = np.vstack([s.V for s in body])
+    return float(np.linalg.norm(P.max(0) - P.min(0)))
+
+
+class _Candidate:
+    """One way a body was converted, and how good it is."""
+
+    def __init__(self, shape, kind, valid, verdict):
+        self.shape = shape
+        self.kind = kind
+        self.valid = valid
+        self.verdict = verdict
+
+    @property
+    def good(self):
+        return self.valid and self.verdict.ok
+
+    def rank(self):
+        # following the mesh comes first (a valid but wrinkled shape is
+        # useless), then validity, then how closely it follows
+        return (self.verdict.ok, self.valid, self.verdict.score)
+
+
+def _judge(shape, body, tol, kind, validate, report):
+    """Validity (after general healing if needed) and closeness to the mesh."""
+    from .fidelity import judge
+
+    valid = stepio.is_valid(shape) if validate else True
+    if not valid:
+        fixed = fix_shape(shape, tol)
+        if stepio.is_valid(fixed):
+            shape, valid = fixed, True
+    if not validate:
+        from .fidelity import Verdict
+
+        return _Candidate(shape, kind, True, Verdict({"empty": False, "to_shape": {"p99": 0.0}, "to_mesh": {"p99": 0.0},
+                                                      "wrong_way": 0.0, "wrong_way_shape": 0.0, "within": 1.0,
+                                                      "within2": 1.0, "worst_distance": 0.0, "worst": [0, 0, 0]}, tol))
+    try:
+        verdict = judge(shape, body, tol)
+    except Exception as e:  # the check itself must never stop a conversion
+        from .fidelity import Verdict
+
+        report.log(f"The shape couldn't be compared with the mesh ({e})")
+        verdict = Verdict({"empty": True}, tol)
+    return _Candidate(shape, kind, valid, verdict)
+
+
+def fidelity_summary(items):
+    """One verdict for several bodies or parts (the worst of each measure),
+    or None when none was measured."""
+    items = [v for v in items if v and not v.get("empty")]
+    if not items:
+        return None
+    return {
+        "ok": all(v["ok"] for v in items),
+        "tolerance": max(v["tolerance"] for v in items),
+        "within": min(v["within"] for v in items),
+        "within2": min(v["within2"] for v in items),
+        "p99": max(v["p99"] for v in items),
+        "max": max(v["max"] for v in items),
+        "wrong_way": max(v["wrong_way"] for v in items),
+    }
+
+
+def _best(cands):
+    cands = [c for c in cands if c is not None]
+    return max(cands, key=lambda c: c.rank()) if cands else None
+
 
 def _broken(check):
     """The saved file has problems that need fixing (a wrong volume means
@@ -284,11 +374,11 @@ def auto_tolerance(diag, preset, quality=0.7):
 def convert(input_path, output_path, opts=None, report=NULL):
     opts = opts or Options()
     t0 = time.time()
-    report.stage("Reading mesh", 0.0, 0.08)
-    bodies, info = load_and_prepare(
-        input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout,
-        merge=opts.merge_overlaps, touching=opts.touching_parts,
-    )
+    with report.section(0.0, 0.08):
+        bodies, info = load_and_prepare(
+            input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout,
+            merge=opts.merge_overlaps, touching=opts.touching_parts,
+        )
     diag = info.diag
     # 3MF files store their unit, and the reader turns it into millimetres;
     # other formats have none, so their numbers are in the chosen unit
@@ -316,16 +406,29 @@ def convert(input_path, output_path, opts=None, report=NULL):
     shape_bodies = []
     used_presets = []
     stats_extra = {}
+    # how closely each body's shape follows its mesh (by body index)
+    verdicts = {}
     body_names = info.body_names or [None] * len(bodies)
     n_bodies = len(bodies)
 
     def looks_mechanical(body):
         """CAD faces only make sense as a fallback for mechanical parts (on
-        organic shapes they're slow and no better)."""
-        return choose_preset_body(body, body_tol(body, "cad"), q, NULL)[0] == "cad"
+        organic shapes they're slow and no better). A scanned mechanical
+        part has no exactly flat faces (the noise hides them), but much of
+        it is flat within the fit tolerance."""
+        if choose_preset_body(body, body_tol(body, "cad"), q, NULL)[0] == "cad":
+            return True
+        return flat_share(body, body_tol(body, "cad")) >= 0.3
 
     def convert_one(bi, body, lo, hi, label):
-        """Convert one body; returns (shape or None, preset used)."""
+        """Convert one body; returns (shape or None, preset used).
+
+        Every result is judged by how closely it follows the mesh (see
+        fidelity.py) as well as by being a valid solid. When the first
+        method's result falls short, the others are tried, and the best
+        result wins: one that follows the mesh beats one that is merely
+        valid, so a part is never saved as a wrinkled or dented shape when a
+        closer one was made."""
         preset = req
         segs = None
         body_opts = opts
@@ -345,66 +448,116 @@ def convert(input_path, output_path, opts=None, report=NULL):
                 preset = kind
             report.log(f"Using {PRESETS[preset]['label']}" + (f" for {body_names[bi]}" if n_bodies > 1 and body_names[bi] else ""))
         btol = body_tol(body, preset)
-        if preset in ("cad", "precise"):
+        name = (body_names[bi] if n_bodies > 1 and body_names[bi] else None)
+        tried = []
+
+        def attempt(kind, make, how=None):
+            """Build one candidate and judge it; None if it couldn't be built."""
+            try:
+                shape = make()
+            except ConversionError:
+                raise
+            except Exception as e:
+                report.log(f"{how or kind} didn't work ({e})")
+                return None
+            if shape is None:
+                return None
+            c = _judge(shape, body, btol, kind, opts.validate, report)
+            tried.append(c)
+            return c
+
+        def cad(tol_kind="cad"):
             from .cad import convert_body_cad
 
-            report.stage(("Recognising CAD features" if preset == "cad" else "Fitting precise surfaces") + label, lo, hi)
-            shape = convert_body_cad(B, body, btol, body_opts, report, segs=segs)
-            if shape is not None and opts.validate and not stepio.is_valid(shape):
-                # Try smooth surfaces as an alternative, but only take them if
-                # they are valid *and* accurate; otherwise the (nearly valid)
-                # CAD model is the more useful result.
-                from .smooth import convert_body_smooth
+            return convert_body_cad(B, body, body_tol(body, tol_kind), body_opts, report,
+                                    segs=segs if tol_kind == preset else None)
 
-                report.log("CAD model of this part needs healing; trying smooth surfaces as an alternative")
-                report.stage("Fitting smooth surfaces" + label, lo, hi)
-                try:
-                    alt = convert_body_smooth(B, body, btol, body_opts, report)
-                except Exception as e:
-                    alt = None
-                    report.log(f"Smooth surfaces didn't work either ({e})")
-                mesh_vol = sum(sh.volume for sh in body if sh.closed)
-                ok_alt = False
-                if alt is not None and stepio.is_valid(alt) and abs(mesh_vol) > 0:
-                    ok_alt = abs(stepio.volume(alt) / mesh_vol - 1.0) <= 0.02
-                if ok_alt:
-                    shape = alt
-                    preset = "smooth"
-                    report.warn("One part was saved with smooth surfaces instead of CAD faces, because its CAD model had errors.")
-                else:
-                    report.log("Smooth surfaces weren't better, so the CAD model was kept (the saved file is checked and repaired if needed).")
-        elif preset == "smooth":
+        def smooth(o=None):
             from .smooth import convert_body_smooth
 
-            report.stage("Fitting smooth surfaces" + label, lo, hi)
-            shape = convert_body_smooth(B, body, btol, body_opts, report)
-            if shape is not None and opts.validate and not _smooth_ok(shape, body, btol) and looks_mechanical(body):
-                # Only when the smooth surfaces came out broken (mechanical
-                # parts with thin walls and sharp holes can do that): CAD
-                # faces for this part instead, if they are valid *and*
-                # accurate. Otherwise the smooth result stays.
-                from .cad import convert_body_cad
+            return convert_body_smooth(B, body, btol, o or body_opts, report)
 
-                report.log("The smooth surfaces of this part have errors; trying CAD faces as an alternative")
-                report.stage("Recognising CAD features" + label, lo, hi)
-                try:
-                    alt = convert_body_cad(B, body, body_tol(body, "cad"), body_opts, report)
-                except Exception as e:
-                    alt = None
-                    report.log(f"CAD faces didn't work either ({e})")
-                if alt is not None and stepio.is_valid(alt) and _volume_ratio(alt, body) is not None \
-                        and abs(_volume_ratio(alt, body) - 1.0) <= 0.02:
-                    shape, preset = alt, "cad"
-                    report.warn("One part was saved with CAD faces instead of smooth surfaces, because its smooth surfaces had errors.")
+        if preset in ("cad", "precise"):
+            report.stage(("Recognising CAD features" if preset == "cad" else "Fitting precise surfaces") + label, lo, hi)
+            first = attempt(preset, lambda: cad(preset))
+            plan = [("smooth", "Fitting smooth surfaces", lambda: smooth())]
+        elif preset == "smooth":
+            report.stage("Fitting smooth surfaces" + label, lo, hi)
+            first = attempt("smooth", lambda: smooth())
+            plan = []
+            if looks_mechanical(body):
+                plan.append(("cad", "Recognising CAD features", lambda: cad("cad")))
+            denser = min(1.0, body_opts.quality + 0.2)
+            # (on very big meshes a second, denser fit takes far too long)
+            if denser > body_opts.quality and sum(len(s.F) for s in body) <= DENSER_MAX_TRIANGLES:
+                dense_opts = Options(**{**opts.__dict__, "quality": denser})
+                dense_opts.max_faces = opts.max_faces
+                plan.append(("smooth", "Fitting denser smooth surfaces", lambda: smooth(dense_opts)))
         else:
             raise ValueError(f"unknown preset {preset}")
-        return shape, preset
+        if first is not None and first.good:
+            verdicts[bi] = first.verdict.as_dict()
+            return first.shape, first.kind
+        if opts.validate and first is not None and first.verdict.ok and not _broken(_check_shape(first.shape, body, report)):
+            # it follows the mesh and its small errors disappear once saved
+            # and read back (as CAD programs read it): nothing to gain
+            verdicts[bi] = first.verdict.as_dict()
+            return first.shape, first.kind
+        if opts.validate:
+            if first is not None:
+                report.log(f"Check against the mesh: {first.verdict.summary(unit)}"
+                           + ("" if first.verdict.ok else ", which isn't close enough")
+                           + ("" if first.valid else "; the shape also has errors") + ".")
+            for kind, stage, make in plan:
+                report.log(f"Trying {stage[0].lower() + stage[1:]} instead")
+                report.stage(stage + label, lo, hi)
+                c = attempt(kind, make, stage)
+                if c is not None and c.good:
+                    break
+            if not any(c.good for c in tried):
+                # the faceted shape follows the mesh exactly: the last resort
+                # when nothing smoother does (only for meshes small enough
+                # to give a file of reasonable size)
+                n_tri = sum(len(s.F) for s in body)
+                if n_tri <= FACETED_MAX_TRIANGLES:
+                    report.stage("Building flat faces" + label, lo, hi)
+                    attempt("faceted", lambda: convert_body_exact(B, body, auto_tolerance(_diag(body), "exact", q), report),
+                            "Flat faces")
+        best = _best(tried)
+        if best is None:
+            return None, preset
+        if best is not first:
+            what = {"smooth": "smooth surfaces", "cad": "CAD faces", "precise": "precise CAD faces",
+                    "faceted": "flat faces (exactly like the mesh)"}[best.kind]
+            report.warn(("One part was" if name is None else f"“{name}” was")
+                        + f" saved with {what}, because they follow the mesh more closely"
+                        + ("." if first is None or first.valid else " and have no errors."))
+        if not best.verdict.ok:
+            report.warn(("The" if name is None else f"“{name}”:") + " converted shape doesn't follow the mesh everywhere: "
+                        + best.verdict.summary(unit) + ". Try a higher quality, or another preset.")
+        verdicts[bi] = best.verdict.as_dict()
+        return best.shape, best.kind
 
     def convert_alt(bi, preset):
         """One body with another method: smooth surfaces instead of CAD
         faces; CAD faces instead of smooth surfaces for mechanical parts;
         denser smooth surfaces for organic ones (thin walls and lattices
-        need them). Returns (shape or None, preset, how it was made)."""
+        need them). Returns (shape or None, preset, how it was made); None
+        also when the new shape doesn't follow the mesh closely enough (a
+        valid but wrinkled shape is worse than one with small errors)."""
+        shape, kind, how = _alt_shape(bi, preset)
+        if shape is None or not opts.validate:
+            return shape, kind, how
+        body = bodies[bi]
+        c = _judge(shape, body, body_tol(body, kind if kind != "faceted" else "cad"), kind, True, report)
+        if not c.verdict.ok:
+            report.log(f"The other method doesn't follow the mesh closely enough ({c.verdict.summary(unit)}), "
+                       "so the first version was kept.")
+            return None, preset, ""
+        verdicts[bi] = c.verdict.as_dict()
+        return c.shape, kind, how
+
+    def _alt_shape(bi, preset):
         from .cad import convert_body_cad
         from .smooth import convert_body_smooth
 
@@ -434,7 +587,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
             return None, preset, ""
 
     if opts.split and info.parts > 1 and len(info.body_part) == n_bodies:
-        return _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt)
+        return _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt, verdicts)
 
     for bi, body in enumerate(bodies):
         lo = 0.1 + 0.75 * bi / n_bodies
@@ -518,6 +671,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
         "repaired": repaired,
     }
     res.update(stats_extra)
+    res["fidelity"] = fidelity_summary(list(verdicts.values()))
     report.result(res)
     return res
 
@@ -541,7 +695,7 @@ def _part_output_path(output_path, name, used):
     return path
 
 
-def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt):
+def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt, verdicts=None):
     """3MF "split to parts": every slicer part becomes its own STEP file
     (parts made of several separate solids keep them together)."""
     unit = "mm" if input_path.lower().endswith(".3mf") else opts.unit
@@ -626,6 +780,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
             "file_size": os.path.getsize(out),
             "seconds": round(time.time() - t_part, 2),
             "triangles": info.part_triangles[p] if p < len(info.part_triangles) else 0,
+            "fidelity": fidelity_summary([verdicts[bi] for bi in groups[p] if verdicts and bi in verdicts]),
             "checked": check["checked"],
             "check_ok": check["ok"],
             "checks": check["issues"],
@@ -658,6 +813,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
         "check_ok": all(r["check_ok"] for r in results),
         "checks": [{**i, "message": f"{r['name']}: {i['message']}"} for r in results for i in r["checks"]],
         "repaired": repair_steps(results),
+        "fidelity": fidelity_summary([r["fidelity"] for r in results if r.get("fidelity")]),
     }
     report.result(res)
     return res

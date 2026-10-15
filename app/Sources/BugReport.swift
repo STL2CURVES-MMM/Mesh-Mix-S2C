@@ -188,6 +188,10 @@ enum BugReport {
         if let r = job.result {
             add("  Preset used: \(r.presetTitle); faces \(grouped(r.faces)); solids \(r.solids); shells \(r.shells); "
                 + "STEP \(size(r.fileSize)); \(String(format: "%.1f", r.seconds)) s")
+            if let f = r.fidelity {
+                add("  Compared with the mesh: \(f.summary(unit: s.unit.rawValue))"
+                    + (f.ok ? "" : " (doesn't follow it closely everywhere)"))
+            }
             if r.checked {
                 let repaired = r.repaired.isEmpty ? "" : " (repaired automatically: " + r.repaired.joined(separator: ", ") + ")"
                 add("  STEP file read back and checked" + repaired)

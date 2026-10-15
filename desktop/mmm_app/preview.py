@@ -480,6 +480,15 @@ class JobPreview(QWidget):
             return theme.BAD if r.has_errors else (theme.WARN if r.has_issues else theme.GOOD)
         return theme.TEXT_DIM
 
+    def _unit(self):
+        # 3MF files carry their own unit (the engine saves them in mm)
+        return "mm" if self.job.extension == "3mf" else self.settings.unit
+
+    def _fit_line(self, r):
+        if r.fidelity is None:
+            return ""
+        return "\nCompared with the mesh: " + r.fidelity.summary(self._unit()) + "."
+
     # badges
     def _refresh_badges(self):
         j = self.job
@@ -495,15 +504,22 @@ class JobPreview(QWidget):
         elif r.checks:
             n = len(r.checks)
             pill.set("1 thing to check" if n == 1 else f"{n} things to check", theme.WARN, "exclamation")
-            pill.setToolTip(repair_note(r) + "\n".join(c.message for c in r.checks))
+            pill.setToolTip(repair_note(r) + "\n".join(c.message for c in r.checks) + self._fit_line(r))
+            pill.show()
+        elif r.off_mesh:
+            pill.set("Doesn't match the mesh everywhere", theme.WARN, "exclamation")
+            pill.setToolTip("The shape was compared with the mesh: " + r.fidelity.summary(self._unit())
+                            + ".\nNo method followed it closely everywhere; this is the closest result. "
+                              "A higher quality, or another preset, may do better.")
             pill.show()
         elif r.checked and r.repaired:
             pill.set("Repaired automatically", theme.GOOD, "check")
-            pill.setToolTip(REPAIRED_TIP)
+            pill.setToolTip(REPAIRED_TIP + self._fit_line(r))
             pill.show()
         elif r.checked:
             pill.set("File checked", theme.GOOD, "check")
-            pill.setToolTip("The STEP file was read back and checked: it is a valid solid and matches the mesh.")
+            pill.setToolTip("The STEP file was read back and checked: it is a valid solid with the mesh's volume."
+                            + self._fit_line(r))
             pill.show()
         elif r.valid is not None:
             pill.set("Valid solid" if r.valid else "Has small errors", theme.GOOD if r.valid else theme.WARN,
@@ -767,7 +783,7 @@ class JobPreview(QWidget):
             else:
                 ph.show_state("cube-transparent", theme.TEXT_FAINT, text="Convert to see the STEP result")
         elif j.status == JobStatus.INSPECTING:
-            ph.show_state(busy=True, text="Reading the file…")
+            ph.show_state(busy=True, title="Checking the mesh", text=(j.stage + "…") if j.stage else "Reading the file…")
         elif not j.readable:
             ph.show_state("warning-line", theme.BAD, title="This file can't be read", text=j.error or "")
         elif self.in_path():

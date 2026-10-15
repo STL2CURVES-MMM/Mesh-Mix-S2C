@@ -863,11 +863,17 @@ def _merge_once(bodies, groups, diag, report):
 # ----------------------------------------------------------------------------
 
 
-def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=False):
+def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=False, label=""):
     """Check and fix one part. Returns (bodies, info, issues).
     repair: "off" (only check, plus the basic clean-up every conversion
-    needs), "auto" or "aggressive" (MeshFix for every open shell)."""
+    needs), "auto" or "aggressive" (MeshFix for every open shell).
+    Each step is reported as a stage (with ``label`` after its name), so the
+    app can show what is being checked and fixed."""
     fixing = repair != "off"
+
+    def step(name, a, b):
+        report.step(name + label, a, b)
+
     issues = []
     info = MeshInfo()
     tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
@@ -875,6 +881,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     report.log(f"Read {len(tris):,} triangles")
 
     # 1. broken numbers
+    step("Checking for broken and squashed triangles", 0.0, 0.08)
     finite = np.isfinite(tris).all(axis=(1, 2))
     n_bad = int((~finite).sum())
     if n_bad:
@@ -909,6 +916,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
 
     # 3. zero-thickness internal walls (closed flat pieces, and pairs of
     # sheets glued face to face)
+    step("Looking for hidden internal walls", 0.08, 0.22)
     n_walls = n_wall_tris = 0
     for _ in range(4):
         topo = EdgeTopology(V, F)
@@ -930,6 +938,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
 
     # 4. tiny cracks
     if fixing:
+        step("Joining tiny cracks", 0.22, 0.28)
         V, F, n_cracks = close_cracks(V, F, diag)
         if n_cracks:
             issues.append(_issue("cracks", n_cracks, "fixed",
@@ -937,6 +946,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
                                  "Joined them."))
 
     # 5. flipped triangles
+    step("Checking which way the triangles face", 0.28, 0.34)
     topo = EdgeTopology(V, F)
     F, conflicts, n_flipped = fix_winding(V, F, topo, count_flips=True)
     if n_flipped:
@@ -948,6 +958,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
                              "its inside and outside can't be told apart", "Left as it is."))
 
     # 6. pinched points
+    step("Checking for pinched points", 0.34, 0.38)
     topo = EdgeTopology(V, F)
     if fixing:
         V, F, n_pinch = split_pinched(V, F, topo)
@@ -966,6 +977,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
 
     # 7. debris
     if remove_debris and len(shells) > 1:
+        step("Removing loose debris", 0.38, 0.40)
         areas = [face_normals_areas(s.V, s.F)[1].sum() for s in shells]
         amax = max(areas)
         biggest = int(np.argmax(areas))
@@ -987,6 +999,8 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     big_holes = 0
     holes_left = tangled_left = 0
     fixed = []
+    if any(not s.closed for s in shells):
+        step("Filling holes and untangling edges" if fixing else "Checking for holes", 0.40, 0.52)
     for s in shells:
         if s.closed:
             fixed.append(s)
@@ -1053,6 +1067,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     many = False  # too many crossings in a shell to repair them
     crossing = {}  # id(shell) -> crossings left in it
     out = []
+    step("Looking for surfaces that pass through themselves", 0.52, 0.70)
     for s in shells:
         if not s.closed:
             out.append(s)
@@ -1065,6 +1080,8 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
         n_cross += k
         if too_many_crossings(k, s.n_faces):
             many = True
+        if fixing and not too_many_crossings(k, s.n_faces):
+            step("Fixing surfaces that pass through themselves", 0.70, 0.84)
         s2 = fix_self_intersections(s, report) if fixing and not too_many_crossings(k, s.n_faces) else None
         if s2 is not None:
             parts = split_shells(s2.V, s2.F)
@@ -1093,10 +1110,13 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     def broken(body):
         return any(id(sh) in crossing for sh in body)
 
+    if len(bodies) > 1:
+        step("Checking for overlapping pieces", 0.84, 0.92)
     groups = overlapping_bodies(bodies)
     if groups:
         n = sum(len(g) for g in groups)
         if merge:
+            step("Merging overlapping pieces", 0.92, 1.0)
             clean = overlapping_bodies(bodies, exclude=broken)
             bodies, _, _ = merge_overlaps(bodies, clean, diag, report, exclude=broken)
             # what still overlaps after merging

@@ -215,9 +215,11 @@ class JobRow(Clickable):
         self.sub.set_color(theme.with_alpha(theme.accent(), 0.85) if j.needs_export else theme.TEXT_FAINT)
         self.sub.extra_tooltip = None
         conv = j.status == JobStatus.CONVERTING
-        self.progress.setVisible(conv or j.status == JobStatus.INSPECTING)
-        self.progress.set_value(j.progress if conv else 0, indeterminate=j.status == JobStatus.INSPECTING)
-        self.stage.setVisible(conv)
+        reading = j.status == JobStatus.INSPECTING
+        self.progress.setVisible(conv or reading)
+        # reading: the bar moves once the engine says how far the check is
+        self.progress.set_value(j.progress if conv or reading else 0, indeterminate=reading and j.progress <= 0)
+        self.stage.setVisible(conv or (reading and bool(j.stage)))
         self.stage.setText(j.stage)
         failed = j.status == JobStatus.FAILED and bool(j.error)
         self.error.setVisible(failed)

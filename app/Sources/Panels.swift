@@ -173,7 +173,10 @@ struct JobPreview: View {
                 }
             } else if job.status == .inspecting {
                 ProgressView().tint(settings.accent.color)
-                Text("Reading the file…").foregroundStyle(Theme.textDim).font(.system(size: 12))
+                Text("Checking the mesh").foregroundStyle(Theme.text).font(.system(size: 13, weight: .semibold))
+                Text(job.stage.isEmpty ? "Reading the file…" : job.stage + "…")
+                    .foregroundStyle(Theme.textDim).font(.system(size: 12))
+                    .multilineTextAlignment(.center).frame(maxWidth: 380)
             } else if !job.readable {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 30, weight: .light)).foregroundStyle(Theme.bad)
                 Text("This file can't be read").foregroundStyle(Theme.text).font(.system(size: 13, weight: .semibold))
@@ -317,6 +320,16 @@ struct JobPreview: View {
         r.repaired.isEmpty ? "" : "The app repaired what it could automatically; this is left:\n"
     }
 
+    /// 3MF files carry their own unit (the engine saves them in mm)
+    private var modelUnit: String {
+        job.url.pathExtension.lowercased() == "3mf" ? "mm" : settings.unit.rawValue
+    }
+
+    private func fitLine(_ r: ConversionResult) -> String {
+        guard let f = r.fidelity else { return "" }
+        return "\nCompared with the mesh: \(f.summary(unit: modelUnit))."
+    }
+
     @ViewBuilder func checkBadge(_ r: ConversionResult) -> some View {
         if r.hasErrors {
             Pill(text: "Problem found", color: Theme.bad, icon: "xmark")
@@ -325,15 +338,19 @@ struct JobPreview: View {
         } else if !r.checks.isEmpty {
             Pill(text: r.checks.count == 1 ? "1 thing to check" : "\(r.checks.count) things to check", color: Theme.warn, icon: "exclamationmark")
                 .fixedSize()
-                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n"))
+                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n") + fitLine(r))
+        } else if let f = r.fidelity, !f.ok {
+            Pill(text: "Doesn't match the mesh everywhere", color: Theme.warn, icon: "exclamationmark")
+                .fixedSize()
+                .help("The shape was compared with the mesh: \(f.summary(unit: modelUnit)).\nNo method followed it closely everywhere; this is the closest result. A higher quality, or another preset, may do better.")
         } else if r.checked && !r.repaired.isEmpty {
             Pill(text: "Repaired automatically", color: Theme.good, icon: "checkmark")
                 .fixedSize()
-                .help("Reading the STEP file back found small errors, so the app repaired them automatically, the way CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a valid solid and matches the mesh.")
+                .help("Reading the STEP file back found small errors, so the app repaired them automatically, the way CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a valid solid with the mesh's volume." + fitLine(r))
         } else if r.checked {
             Pill(text: "File checked", color: Theme.good, icon: "checkmark")
                 .fixedSize()
-                .help("The STEP file was read back and checked: it is a valid solid and matches the mesh.")
+                .help("The STEP file was read back and checked: it is a valid solid with the mesh's volume." + fitLine(r))
         } else if let v = r.valid {
             Pill(text: v ? "Valid solid" : "Has small errors", color: v ? Theme.good : Theme.warn, icon: v ? "checkmark" : "exclamationmark")
                 .fixedSize()

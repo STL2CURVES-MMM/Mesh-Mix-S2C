@@ -579,3 +579,27 @@ def test_debris_setting_rechecks_files(model, settings, meshes, tmp_path, monkey
     assert wait_until(lambda: job.status == JobStatus.READY and len(log.read_text().splitlines()) >= 2)
     last = json.loads(log.read_text().splitlines()[-1])
     assert last[0] == "inspect" and "--keep-debris" in last
+
+
+def test_reading_shows_what_the_check_is_doing(model, meshes):
+    model.add([meshes["slowread.stl"]])
+    (job,) = model.jobs
+    # the engine's current step is shown while the file is read, and the bar moves
+    assert wait_until(lambda: job.status == JobStatus.INSPECTING and job.stage == "Looking for hidden internal walls")
+    assert wait_until(lambda: job.progress > 0.35)
+    assert wait_until(lambda: job.status == JobStatus.READY)
+    assert job.stage == "" and job.progress == 0.0
+
+
+
+def test_conversion_reports_how_closely_it_follows_the_mesh(model, settings, meshes):
+    from mmm_app import bugreport
+
+    good, rough = add_and_read(model, meshes["one.stl"], meshes["rough.stl"])
+    model.convert_all()
+    assert wait_until(lambda: good.status == JobStatus.DONE and rough.status == JobStatus.DONE)
+    assert good.result.fidelity.ok and not good.result.off_mesh and not good.result.has_issues
+    assert rough.result.off_mesh and rough.result.has_issues
+    assert "99.8% of the surface is within 0.1 mm" in good.result.fidelity.summary()
+    text = bugreport.build(rough, settings)
+    assert "Compared with the mesh" in text and "doesn't follow it closely everywhere" in text

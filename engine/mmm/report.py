@@ -37,6 +37,32 @@ class Reporter:
         self._stage, self._lo, self._hi = name, lo, hi
         self._emit({"event": "stage", "stage": name, "progress": lo})
 
+    # Nested progress: section(a, b) narrows the slice that step() calls
+    # share to [a, b] of the current one, so a routine can report its steps
+    # without knowing where it sits in the whole job.
+    _window = (0.0, 1.0)
+
+    def section(self, a, b):
+        rep = self
+
+        class _Section:
+            def __enter__(self):
+                lo, hi = rep._window
+                self.saved = rep._window
+                rep._window = (lo + a * (hi - lo), lo + b * (hi - lo))
+                return rep
+
+            def __exit__(self, *exc):
+                rep._window = self.saved
+                return False
+
+        return _Section()
+
+    def step(self, name, a, b):
+        """A stage covering [a, b] of the current section."""
+        lo, hi = self._window
+        self.stage(name, lo + a * (hi - lo), lo + b * (hi - lo))
+
     def progress(self, frac):
         """Fractional progress within the current stage (rate limited)."""
         now = time.time()

@@ -154,6 +154,28 @@ class MeshCheck:
 
 
 @dataclass
+class Fidelity:
+    """How closely the STEP shape follows the mesh (engine/mmm/fidelity.py)."""
+
+    ok: bool = True
+    tolerance: float = 0.0
+    within2: float = 1.0  # share of the surface within twice the tolerance
+    p99: float = 0.0
+    max: float = 0.0
+
+    @classmethod
+    def from_event(cls, d):
+        if not isinstance(d, dict):
+            return None
+        return cls(ok=d.get("ok") is not False, tolerance=_float(d.get("tolerance")),
+                   within2=_float(d.get("within2"), 1.0), p99=_float(d.get("p99")), max=_float(d.get("max")))
+
+    def summary(self, unit="mm"):
+        return (f"{100 * self.within2:.1f}% of the surface is within {2 * self.tolerance:.2g} {unit} of the mesh; "
+                f"the largest gap is {self.max:.2g} {unit}")
+
+
+@dataclass
 class ConversionResult:
     preset: str = ""
     valid: object = None  # True / False / None (not reported)
@@ -170,6 +192,8 @@ class ConversionResult:
     checks: list = field(default_factory=list)
     # repair steps the engine took because the first check found problems
     repaired: list = field(default_factory=list)
+    # how closely the shape follows the mesh (None: not measured)
+    fidelity: object = None
 
     @classmethod
     def from_event(cls, ev):
@@ -188,6 +212,7 @@ class ConversionResult:
         )
         r.checked = ev.get("checked") is True
         r.repaired = [str(x) for x in ev.get("repaired") or [] if isinstance(x, str)]
+        r.fidelity = Fidelity.from_event(ev.get("fidelity"))
         for c in ev.get("checks") or []:
             if isinstance(c, dict):
                 r.checks.append(CheckIssue(str(c.get("code", "")), str(c.get("level", "warning")),
@@ -203,8 +228,13 @@ class ConversionResult:
         return any(c.is_error for c in self.checks)
 
     @property
+    def off_mesh(self):
+        """The shape doesn't follow the mesh everywhere."""
+        return self.fidelity is not None and not self.fidelity.ok
+
+    @property
     def has_issues(self):
-        return bool(self.checks) or self.valid is False
+        return bool(self.checks) or self.valid is False or self.off_mesh
 
 
 @dataclass
@@ -642,6 +672,8 @@ class AppModel(QObject):
 
     def _inspect(self, job):
         job.status = JobStatus.INSPECTING
+        job.stage = ""
+        job.progress = 0.0
         self._inspect_waiting.append(job)
         self._pump_inspect()
 
@@ -681,7 +713,17 @@ class AppModel(QObject):
 
         def on_event(ev):
             kind = ev.get("event")
-            if kind == "result":
+            if kind == "stage":
+                # what the mesh check is doing right now
+                job.stage = str(ev.get("stage") or "")
+                if isinstance(ev.get("progress"), (int, float)):
+                    job.progress = max(job.progress, float(ev["progress"]))
+                job.touch()
+            elif kind == "progress":
+                if isinstance(ev.get("progress"), (int, float)):
+                    job.progress = max(job.progress, float(ev["progress"]))
+                    job.touch()
+            elif kind == "result":
                 tri = ev.get("triangles", ev.get("input_triangles"))
                 job.triangles = _int(tri, None) if tri is not None else None
                 job.bodies = _int(ev.get("bodies"), None)
@@ -714,6 +756,8 @@ class AppModel(QObject):
 
         def on_exit(code, _stderr):
             job.task = None
+            job.stage = ""
+            job.progress = 0.0
             if job not in self.jobs:
                 self.discard_previews([prev, part_dir])
                 self._pump_inspect()

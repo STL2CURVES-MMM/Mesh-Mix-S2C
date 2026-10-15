@@ -261,8 +261,38 @@ struct ConversionResult {
     /// Repair steps the engine took because the first check found problems
     var repaired: [String] = []
 
+    /// How closely the shape follows the mesh (nil: not measured)
+    var fidelity: Fidelity?
+
     var hasErrors: Bool { checks.contains { $0.isError } }
-    var hasIssues: Bool { !checks.isEmpty || valid == false }
+    /// The shape doesn't follow the mesh everywhere
+    var offMesh: Bool { fidelity.map { !$0.ok } ?? false }
+    var hasIssues: Bool { !checks.isEmpty || valid == false || offMesh }
+}
+
+/// How closely the STEP shape follows the mesh (engine/mmm/fidelity.py).
+struct Fidelity {
+    var ok = true
+    var tolerance = 0.0
+    /// Share of the surface within twice the tolerance
+    var within2 = 1.0
+    var p99 = 0.0
+    var max = 0.0
+
+    init?(event value: Any?) {
+        guard let d = value as? [String: Any] else { return nil }
+        ok = (d["ok"] as? Bool) != false
+        tolerance = d["tolerance"] as? Double ?? 0
+        within2 = d["within2"] as? Double ?? 1
+        p99 = d["p99"] as? Double ?? 0
+        max = d["max"] as? Double ?? 0
+    }
+
+    func summary(unit: String) -> String {
+        let pct = String(format: "%.1f", 100 * within2)
+        return "\(pct)% of the surface is within \(String(format: "%.2g", 2 * tolerance)) \(unit) of the mesh; "
+            + "the largest gap is \(String(format: "%.2g", max)) \(unit)"
+    }
 }
 
 /// One problem found when the saved STEP file was checked.
@@ -356,6 +386,7 @@ extension ConversionResult {
         )
         checked = ev["checked"] as? Bool ?? false
         repaired = ev["repaired"] as? [String] ?? []
+        fidelity = Fidelity(event: ev["fidelity"])
         checks = (ev["checks"] as? [[String: Any]] ?? []).map {
             CheckIssue(code: $0["code"] as? String ?? "", level: $0["level"] as? String ?? "warning",
                        message: $0["message"] as? String ?? "")
@@ -694,9 +725,17 @@ final class AppModel: ObservableObject {
             return
         }
         job.task = t
+        job.stage = ""
+        job.progress = 0
         t.onEvent = { [weak self, weak job] ev in
             guard let self, let job else { return }
-            if ev["event"] as? String == "result" {
+            if ev["event"] as? String == "stage" {
+                // what the mesh check is doing right now
+                job.stage = ev["stage"] as? String ?? ""
+                if let p = ev["progress"] as? Double { job.progress = Swift.max(job.progress, p) }
+            } else if ev["event"] as? String == "progress" {
+                if let p = ev["progress"] as? Double { job.progress = Swift.max(job.progress, p) }
+            } else if ev["event"] as? String == "result" {
                 job.triangles = ev["triangles"] as? Int ?? ev["input_triangles"] as? Int
                 job.bodies = ev["bodies"] as? Int
                 job.openShells = ev["open_shells"] as? Int
@@ -734,6 +773,8 @@ final class AppModel: ObservableObject {
                 return
             }
             job.task = nil
+            job.stage = ""
+            job.progress = 0
             if status == 0 && !t.cancelled {
                 job.inputPreview = prev
                 job.status = .ready

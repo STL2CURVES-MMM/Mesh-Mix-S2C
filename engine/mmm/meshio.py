@@ -672,16 +672,22 @@ def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layou
     """
     from .meshcheck import summarize, touching_issue, touching_parts, union_parts, verify_bodies as verify_part
 
+    report.step("Reading the file", 0.0, 0.08)
     parts = read_parts_framed(path, report, layout)
     recs = []
-    for name, tris, frame in parts:
-        b, pi, issues = _prepare_part(tris, repair, remove_debris, report, merge)
+    n_parts = len(parts)
+    for k, (name, tris, frame) in enumerate(parts):
+        label = f" ({name})" if n_parts > 1 and name else ""
+        with report.section(0.08 + 0.8 * k / n_parts, 0.08 + 0.8 * (k + 1) / n_parts):
+            b, pi, issues = _prepare_part(tris, repair, remove_debris, report, merge, label)
         recs.append({"name": name, "frame": frame, "bodies": b, "info": pi, "issues": issues})
     info = MeshInfo()
     for r in recs:
         info.input_triangles += r["info"].input_triangles
         info.removed_debris += r["info"].removed_debris
         info.repaired += r["info"].repaired
+    if len(recs) > 1:
+        report.step("Checking which parts touch", 0.88, 0.92)
     groups = touching_parts([r["bodies"] for r in recs], [r["frame"] for r in recs]) if len(recs) > 1 else []
     info.touching = [{"parts": g, "names": [recs[k]["name"] for k in g]} for g in groups]
     extra = []
@@ -689,6 +695,7 @@ def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layou
         names = [r["name"] for r in recs]
         merged_any = False
         if touching == "merge":
+            report.step("Merging the touching parts", 0.92, 0.95)
             used, out = set(), []
             for g in groups:
                 lo = np.min([recs[k]["info"].bbox[0] for k in g], 0)
@@ -714,6 +721,7 @@ def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layou
     all_issues, unready = [], []
     lo = np.full(3, np.inf)
     hi = np.full(3, -np.inf)
+    report.step("Checking the fixed mesh again", 0.95, 1.0)
     for pidx, r in enumerate(recs):
         name, b, pi, issues = r["name"], r["bodies"], r["info"], r["issues"]
         if len(recs) > 1 or len(parts) > 1:
@@ -750,11 +758,11 @@ def load_and_prepare(path, repair="auto", remove_debris=True, report=NULL, layou
     return bodies, info
 
 
-def _prepare_part(tris, repair, remove_debris, report, merge=False):
+def _prepare_part(tris, repair, remove_debris, report, merge=False, label=""):
     """Check and fix one part (see meshcheck.prepare_part)."""
     from .meshcheck import prepare_part
 
-    bodies, info, issues = prepare_part(tris, repair, remove_debris, report, merge)
+    bodies, info, issues = prepare_part(tris, repair, remove_debris, report, merge, label)
     return bodies, info, issues
 
 

@@ -83,7 +83,16 @@ class Segmenter:
         """Estimate the chordal deflection the mesh was tessellated with.
 
         Across a smoothly curved edge with dihedral angle theta between
-        triangles of height h, the sagitta is about h * theta / 8."""
+        triangles of height h, the sagitta is about h * theta / 8.
+
+        Shallow creases are not curvature: where the long facets of a groove
+        meet the small triangles of its sloped end, the dihedral angle is
+        large but the surface isn't coarsely curved. Counted like curvature,
+        such creases made a part faceted to 0.006 mm look like a 0.3 mm
+        tessellation, which let wrong surfaces through (a torus can then pass
+        through both ends of a straight strip). So each edge uses the
+        smaller of its two triangle heights, and the percentiles are
+        weighted by edge length (a crease often has only a few tiny edges)."""
         nf = len(self.F)
         twin = self.topo.twin
         h = np.nonzero(twin >= 0)[0]
@@ -101,8 +110,11 @@ class Segmenter:
         L = np.linalg.norm(self.V[b] - self.V[a], axis=1)
         hf = 2 * self.fa[f] / np.maximum(L, 1e-30)
         hg = 2 * self.fa[g] / np.maximum(L, 1e-30)
-        sag = 0.5 * (hf + hg) * th / 8.0
-        return float(np.percentile(sag[smooth], 95)), float(np.percentile(sag[smooth], 99.5))
+        # the smaller height of the two triangles: on a curved surface they
+        # are alike, but where a long facet meets a tiny triangle at a crease
+        # (the end of a groove) the long one says nothing about curvature
+        sag = np.minimum(hf, hg) * th / 8.0
+        return _weighted_percentile(sag[smooth], L[smooth], 95), _weighted_percentile(sag[smooth], L[smooth], 99.5)
 
     def _new_stamp(self):
         self._stamp_id += 1
@@ -382,6 +394,9 @@ class Segmenter:
                 hyps.append((fa[reg].sum(), prim.rank, prim, sense, reg))
                 if explains_all and nbh.size >= 3 * faces.size:
                     break  # a simpler surface already explains everything
+        ext_h = self._extrusion_hypothesis(faces)
+        if ext_h is not None:
+            hyps.append(ext_h)
         if hyps:
             # Hypotheses that match the mesh much worse between vertices than
             # a competitor of similar size are dropped; then the largest area
@@ -406,6 +421,75 @@ class Segmenter:
         self.regions.append(Region(prim, reg, sense, weak))
         self.label[reg] = rid
         return True
+
+    def _extrusion_hypothesis(self, faces, min_aspect=3.0, min_facets=3):
+        """A cylinder for coarse prism-like facets (OpenSCAD cylinders and
+        grooves): long, thin flat strips side by side along one direction.
+        Their few vertices sit only at the strips' ends, so the usual
+        neighbourhood has to grow far (into a groove's sloped ends, say)
+        before it holds enough points, and the fit gets spoiled. Here the
+        strips are gathered across the edges that run along their length,
+        and a cylinder along that direction is fitted to them alone.
+        Returns a hypothesis tuple like _process_seed's, or None."""
+        V, F, fa, fn = self.V, self.F, self.fa, self.fn
+        T = V[F[faces]]
+        E = np.concatenate([T[:, 1] - T[:, 0], T[:, 2] - T[:, 1], T[:, 0] - T[:, 2]])
+        L = np.linalg.norm(E, axis=1)
+        k = int(np.argmax(L))
+        lmax = float(L[k])
+        if lmax <= 0:
+            return None
+        d = E[k] / lmax
+        width = float(fa[faces].sum()) / lmax
+        if lmax < min_aspect * max(width, 1e-12):
+            return None
+        sin_par = np.sin(np.radians(1.0))
+        sin_perp = np.sin(np.radians(2.0))
+        if np.abs(fn[faces] @ d).max() > sin_perp:
+            return None
+        topo = self.topo
+        stamp = self._new_stamp()
+        st = self._stamp
+        st[faces] = stamp
+        strip = [faces]
+        frontier = faces
+        while frontier.size:
+            he = (3 * frontier[:, None] + np.arange(3)[None]).reshape(-1)
+            tw = topo.twin[he]
+            ok = tw >= 0
+            he, tw = he[ok], tw[ok]
+            g = tw // 3
+            a, b = V[topo.he_from[he]], V[topo.he_to[he]]
+            e = b - a
+            el = np.maximum(np.linalg.norm(e, axis=1), 1e-30)
+            parallel = np.linalg.norm(np.cross(e / el[:, None], d), axis=1) <= sin_par
+            coplanar = (fn[he // 3] * fn[g]).sum(1) >= np.cos(np.radians(0.5))
+            m = (parallel | coplanar) & (self.label[g] < 0) & (st[g] != stamp) & (np.abs(fn[g] @ d) <= sin_perp)
+            new = np.unique(g[m])
+            if not new.size:
+                break
+            st[new] = stamp
+            strip.append(new)
+            frontier = new
+        strip = np.concatenate(strip)
+        # at least a few distinct facets around the axis
+        ang = np.round(np.degrees(np.arctan2(*(fn[strip] @ np.stack(perp_basis(d), 1)).T[::-1])), 0)
+        if len(np.unique(ang)) < min_facets:
+            return None
+        P, N, okn, W = self.region_points(strip, True)
+        try:
+            prim = Cylinder.fit(P[okn], N[okn], ext=self.ext, W=W[okn], d=d)
+        except Exception:
+            return None
+        if prim is None or prim.degenerate(self.ext):
+            return None
+        sense = self.sense_of(prim, strip)
+        if not self.accept(prim, sense, strip).all():
+            return None
+        reg, prim = self.grow(prim, sense, faces)
+        if reg.size <= faces.size:
+            return None
+        return (fa[reg].sum(), prim.rank, prim, sense, reg)
 
     SIMPLER = {
         "torus": ("plane", "cylinder", "sphere", "cone"),
@@ -670,6 +754,15 @@ class Segmenter:
             newlab[r.faces] = i
         self.regions = out
         self.label = newlab
+
+
+def _weighted_percentile(x, w, q):
+    order = np.argsort(x)
+    x, w = x[order], np.maximum(w[order], 0.0)
+    cw = np.cumsum(w)
+    if cw[-1] <= 0:
+        return float(np.percentile(x, q))
+    return float(x[min(len(x) - 1, int(np.searchsorted(cw, q / 100.0 * cw[-1])))])
 
 
 def _cluster_components(faces, nb):
@@ -1710,10 +1803,13 @@ def segment_shell(shell, tol, report=NULL):
     return seg, regions
 
 
-def build_cad_shell(shell, tol, report=NULL, max_rounds=4, detail=0.6, seg=None):
-    """Segment + build. Analytic faces that cannot be built validly are
+def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=0.6, seg=None):
+    """Segment + build. Analytic faces that cannot be built validly, or that
+    don't follow the mesh (checked in the first ``fit_rounds`` rounds), are
     replaced by fitted freeform (B-spline) faces and the shell is rebuilt;
-    freeform faces that fail are split into smaller cells."""
+    freeform faces that fail are split into smaller cells. The later rounds
+    only clean up faces that are still invalid (often tiny slivers left by
+    the splitting, which go to a neighbouring face)."""
     from OCP.BRepCheck import BRepCheck_Analyzer
 
     if seg is None or abs(seg.tol - tol) > 1e-12 * max(1.0, tol):
@@ -1724,7 +1820,9 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=4, detail=0.6, seg=None)
         regions = seg.regions
     labels = seg.label.copy()
     replaced = 0
-    for rnd in range(max_rounds):
+    inaccurate = 0
+
+    def build(labels, regions):
         labels, regions = split_pinched_regions(seg, labels, regions)
         rg = RegionGraph(shell.V, shell.F, labels, shell.topo)
         asm = CADAssembler(shell.V, rg, regions, tol, report)
@@ -1734,16 +1832,85 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=4, detail=0.6, seg=None)
         for r, f in asm.region_faces.items():
             if not BRepCheck_Analyzer(f).IsValid():
                 bad.add(r)
+        return labels, regions, asm, faces, bad
+
+    for rnd in range(max_rounds):
+        labels, regions, asm, faces, bad = build(labels, regions)
+        if rnd < min(fit_rounds, max_rounds - 1):
+            # valid faces that still don't follow their part of the mesh (a
+            # surface that bulges between the mesh's vertices, a face whose
+            # edges tear it away from the mesh) are replaced the same way
+            off = _inaccurate_regions(seg, labels, asm, tol) - bad
+            if off:
+                report.log(f"{len(off)} surface(s) don't follow the mesh closely enough and are fitted again")
+                inaccurate += len(off)
+                bad |= off
+        else:
+            off = set()
         if not bad or rnd == max_rounds - 1:
             break
         replaced += len(bad)
-        labels, regions = _demote(seg, labels, regions, bad, split_more=rnd > 0)
+        # a freeform face that still strays from the mesh becomes flat faces
+        flat = {r for r in off if r < len(regions) and regions[r].kind == "freeform"}
+        labels, regions = _demote(seg, labels, regions, bad - flat, split_more=rnd > 0, facet=flat)
+    # Splitting freeform faces can leave slivers too small to be valid faces;
+    # those still broken at the end go to a neighbouring face (no new faces
+    # are made, so this can't leave new slivers) and the shell is built once more.
+    tiny = {r for r in bad if r < len(regions) and _too_small_for_face(seg, labels, regions[r].faces)}
+    if tiny:
+        labels2, regions2 = _demote(seg, labels, regions, tiny)
+        labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
+        if len(bad2) < len(bad):
+            labels, regions, asm, faces, bad = labels2, regions2, asm2, faces2, bad2
     if replaced:
         report.log(f"{replaced} surface(s) rebuilt as freeform (B-spline) faces")
     bad_faces = [f for f in faces if not BRepCheck_Analyzer(f).IsValid()]
     if bad_faces:
         faces = _heal_faces(asm, faces, bad_faces, tol, report)
     return asm, faces, regions
+
+
+def _inaccurate_regions(seg, labels, asm, tol, bad_k=3.0, share=0.01, worst_k=8.0):
+    """Regions whose built face strays from the mesh triangles it stands
+    for, found by measuring both ways (see fidelity.py): points of the face
+    far from the mesh (bulges, flaps, torn edges) and points of the region's
+    triangles far from the shape (dents, missing material). A region is
+    inaccurate when more than ``share`` of either lies beyond ``bad_k``
+    tolerances, or any of it beyond ``worst_k`` tolerances."""
+    from .fidelity import Surface, sample, tessellate_faces
+
+    items = [(r, f) for r, f in asm.region_faces.items()]
+    if not items:
+        return set()
+    rng = np.random.default_rng(0)
+    V, F = seg.V, seg.F
+    SV, SF, owner = tessellate_faces([f for _, f in items], tol * 0.25)
+    if len(SF) == 0:
+        return set()
+    own_region = np.array([r for r, _ in items], dtype=np.int64)[owner]
+    area = float(seg.fa.sum())
+    spacing = max(np.sqrt(area / 5e5), tol * 0.5)
+    mesh = Surface(V, F, spacing, rng)
+    shape = Surface(SV, SF, spacing, rng)
+    n = int(min(200_000, max(30_000, area / spacing ** 2 * 0.1)))
+    out = set()
+    # face -> mesh
+    Q, qt = sample(SV, SF, n, rng)
+    dq, _ = mesh.nearest(Q)
+    # mesh -> shape (by the region the triangle belongs to)
+    P, pt = sample(V, F, n, rng)
+    dp, _ = shape.nearest(P)
+    for reg_of, d in ((own_region[qt], dq), (labels[pt], dp)):
+        ok = reg_of >= 0
+        reg_of, d = reg_of[ok], d[ok]
+        cnt = np.bincount(reg_of)
+        far = np.bincount(reg_of, weights=(d > bad_k * tol).astype(float), minlength=len(cnt))
+        worst = np.zeros(len(cnt))
+        np.maximum.at(worst, reg_of, d)
+        for r in np.nonzero(cnt)[0]:
+            if far[r] > max(share * cnt[r], 2) or worst[r] > worst_k * tol:
+                out.add(int(r))
+    return out
 
 
 def _heal_faces(asm, faces, bad_faces, tol, report):
@@ -1851,12 +2018,15 @@ def _settle_tolerances(shape, tol):
         pass
 
 
-def _demote(seg, labels, regions, bad, split_more=False):
+def _demote(seg, labels, regions, bad, split_more=False, facet=()):
     """Replace regions in ``bad`` by freeform B-spline cells. Tiny ones
     (about the size of the tolerance, too small for a valid face of their
     own) hand their triangles to the neighbouring surface that fits them
-    best instead."""
-    bad = set(bad)
+    best instead. Regions in ``facet`` (freeform cells that still don't
+    follow the mesh) become flat faces made from their own triangles, which
+    follow it exactly."""
+    bad = set(bad) | set(facet)
+    facet = set(facet)
     tiny = {r for r in bad if _too_small_for_face(seg, labels, regions[r].faces)}
     keep = [r for r in range(len(regions)) if r not in bad]
     new_regions = [regions[r] for r in keep]
@@ -1894,6 +2064,11 @@ def _demote(seg, labels, regions, bad, split_more=False):
         rest.append(None)
     for r in rest:
         faces = regions[r].faces if r is not None else np.asarray(pending, dtype=np.int64)
+        if r in facet:
+            for cell in _flat_facets(seg, faces):
+                new_labels[cell.faces] = len(new_regions)
+                new_regions.append(cell)
+            continue
         cells = fit_freeform_cells(seg, faces)
         if split_more and len(cells) == 1 and len(faces) > 2:
             from .freeform import _geodesic_split
@@ -1906,6 +2081,45 @@ def _demote(seg, labels, regions, bad, split_more=False):
             new_labels[cell.faces] = len(new_regions)
             new_regions.append(cell)
     return new_labels, new_regions
+
+
+def _flat_facets(seg, faces, max_deg=0.5):
+    """The triangles of ``faces`` as flat faces: neighbouring triangles that
+    lie in one plane (within ``max_deg`` and a tenth of the tolerance)
+    share a face. Exactly the mesh, so always a faithful last resort."""
+    from .fitting import Plane
+
+    faces = np.asarray(faces, dtype=np.int64)
+    member = np.zeros(len(seg.F), dtype=bool)
+    member[faces] = True
+    group = np.full(len(seg.F), -1, dtype=np.int64)
+    cos_max = np.cos(np.radians(max_deg))
+    out = []
+    for f0 in faces:
+        if group[f0] >= 0:
+            continue
+        gid = len(out)
+        group[f0] = gid
+        stack, comp = [int(f0)], [int(f0)]
+        n0 = seg.fn[f0]
+        c0 = seg.V[seg.F[f0]].mean(0)
+        while stack:
+            f = stack.pop()
+            for g in seg.nb[f]:
+                if g < 0 or not member[g] or group[g] >= 0:
+                    continue
+                if seg.fn[g] @ n0 < cos_max:
+                    continue
+                if np.abs((seg.V[seg.F[g]] - c0) @ n0).max() > 0.1 * seg.tol:
+                    continue
+                group[g] = gid
+                stack.append(int(g))
+                comp.append(int(g))
+        comp = np.array(comp, dtype=np.int64)
+        P = seg.V[np.unique(seg.F[comp])]
+        n = (seg.fn[comp] * seg.fa[comp, None]).sum(0)
+        out.append(Region(Plane(P.mean(0), n if np.linalg.norm(n) > 0 else n0), comp, 1.0, False))
+    return out
 
 
 def _too_small_for_face(seg, labels, faces, area_k=25.0, width_k=6.0):

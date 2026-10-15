@@ -160,6 +160,9 @@ def build(job, settings):
     if r is not None:
         add(f"  Preset used: {preset_title(r.preset)}; faces {r.faces:,}; solids {r.solids}; shells {r.shells}; "
             f"STEP {_size(r.file_size)}; {r.seconds:.1f} s")
+        if r.fidelity is not None:
+            add(f"  Compared with the mesh: {r.fidelity.summary(s.unit)}"
+                + ("" if r.fidelity.ok else " (doesn't follow it closely everywhere)"))
         if r.checked:
             add("  STEP file read back and checked" + (" (repaired automatically: " + ", ".join(r.repaired) + ")"
                                                       if r.repaired else ""))
