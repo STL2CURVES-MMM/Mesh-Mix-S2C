@@ -35,7 +35,16 @@ class Reporter:
     def stage(self, name, lo, hi):
         """Start a stage that covers the [lo, hi] slice of overall progress."""
         self._stage, self._lo, self._hi = name, lo, hi
+        self._p = lo
         self._emit({"event": "stage", "stage": name, "progress": lo})
+
+    _p = 0.0
+
+    def note(self, name):
+        """Say what the current stage is doing now (progress stays where it
+        is): a check of the result, a second check, another method."""
+        self._stage = name
+        self._emit({"event": "stage", "stage": name, "progress": self._p})
 
     # Nested progress: section(a, b) narrows the slice that step() calls
     # share to [a, b] of the current one, so a routine can report its steps
@@ -70,6 +79,7 @@ class Reporter:
             return
         self._last_emit = now
         p = self._lo + (self._hi - self._lo) * max(0.0, min(1.0, frac))
+        self._p = max(self._p, p)
         if self.json_mode:
             self._emit({"event": "progress", "stage": self._stage, "progress": p})
 

@@ -614,6 +614,9 @@ def test_fidelity_summary_never_overstates():
     assert text.startswith("99.9% of the surface") and "2.0% of it faces another way" in text
     assert "faces another way" not in Fidelity.from_event({"tolerance": 0.05, "wrong_way": 0.001}).summary()
     assert Fidelity.from_event({"ok": False}).summary() == "the details weren't reported"
+    s = Fidelity.from_event({"tolerance": 0.05, "mesh_kind": "scan", "rechecked": True}).summary()
+    assert "noisy scan" in s and "checked twice" in s
+    assert "scan" not in Fidelity.from_event({"tolerance": 0.05, "mesh_kind": "coarse"}).summary()
     assert Fidelity.from_event(None) is None and Fidelity.from_event("x") is None
 
 

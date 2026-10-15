@@ -164,6 +164,8 @@ class Fidelity:
     p99: float = 0.0
     max: float = 0.0
     wrong_way: float = 0.0  # share of the surface facing another way than the mesh
+    scan: bool = False  # judged as a noisy scan (its noise is allowed for)
+    rechecked: bool = False  # the first check was close, so it was checked again
 
     # the engine's limit for wrong_way (engine/mmm/fidelity.py, Verdict)
     WRONG_WAY_MAX = 0.005
@@ -174,7 +176,8 @@ class Fidelity:
             return None
         return cls(ok=d.get("ok") is not False, tolerance=_float(d.get("tolerance")),
                    within2=_float(d.get("within2"), 1.0), p99=_float(d.get("p99")), max=_float(d.get("max")),
-                   wrong_way=_float(d.get("wrong_way")))
+                   wrong_way=_float(d.get("wrong_way")), scan=d.get("mesh_kind") == "scan",
+                   rechecked=d.get("rechecked") is True)
 
     def summary(self, unit="mm"):
         if not self.tolerance > 0:
@@ -185,6 +188,10 @@ class Fidelity:
                 f"the largest gap is {self.max:.2g} {unit}")
         if self.wrong_way > self.WRONG_WAY_MAX:
             text += f"; {100 * self.wrong_way:.1f}% of it faces another way than the mesh (wrinkles or dents)"
+        if self.scan:
+            text += " (the mesh is a noisy scan, so its noise is allowed for)"
+        if self.rechecked:
+            text += " (checked twice, as the first check was close)"
         return text
 
 

@@ -30,26 +30,47 @@ WRONG_WAY_DEG = 30.0
 
 
 def tessellate(shape, deflection, angle=0.25):
-    """The shape's faces as triangles: (V, F, face index of each triangle)."""
+    """The shape's faces as triangles: (V, F, face index of each triangle).
+
+    OpenCASCADE never meshes a face finer than its tolerance, and converted
+    faces carry the fit tolerance: a sphere asked for 0.005 mm came out
+    0.03 mm inside its surface, so correct faces looked like they missed
+    the mesh. A copy with the smallest tolerances is meshed instead (which
+    also leaves no fine mesh on the shape itself for the 3D preview to
+    reuse); faces that copy can't mesh are meshed from the shape."""
     from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.ShapeFix import ShapeFix_ShapeTolerance
     from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
     from OCP.BRepTools import BRepTools
 
-    BRepTools.Clean_s(shape)
-    BRepMesh_IncrementalMesh(shape, max(float(deflection), 1e-7), False, angle, True)
+    deflection = max(float(deflection), 1e-7)
+    copy = BRepBuilderAPI_Copy(shape).Shape()
+    ShapeFix_ShapeTolerance().SetTolerance(copy, 1e-7)
+    BRepMesh_IncrementalMesh(copy, deflection, False, angle, True)
+    retry = []
     Vs, Fs, ids = [], [], []
     base = 0
-    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    exp = TopExp_Explorer(copy, TopAbs_FACE)
+    orig = TopExp_Explorer(shape, TopAbs_FACE)
     fi = 0
     while exp.More():
         face = TopoDS.Face(exp.Current())
         exp.Next()
         loc = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(face, loc)
+        if tri is None or tri.NbTriangles() == 0:
+            # mesh the face as it is (at its own tolerance) instead
+            face = TopoDS.Face(orig.Current())
+            BRepTools.Clean_s(face)
+            BRepMesh_IncrementalMesh(face, deflection, False, angle, True)
+            tri = BRep_Tool.Triangulation_s(face, loc)
+            retry.append(face)
+        orig.Next()
         if tri is not None and tri.NbTriangles() > 0:
             trsf = loc.Transformation()
             n = tri.NbNodes()
@@ -69,9 +90,10 @@ def tessellate(shape, deflection, angle=0.25):
             ids.append(np.full(m, fi, dtype=np.int64))
             base += n
         fi += 1
-    # drop the fine triangulation again: it would stay on the shape, and the
-    # 3D preview (and anything else that meshes it) would reuse it
-    BRepTools.Clean_s(shape)
+    # (a fine triangulation would stay on the shape, and the 3D preview, or
+    # anything else that meshes it, would reuse it)
+    for face in retry:
+        BRepTools.Clean_s(face)
     if not Vs:
         return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64)
     return np.vstack(Vs), np.vstack(Fs), np.concatenate(ids)
@@ -96,6 +118,155 @@ def _tri_normals(V, F):
     n = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
     area = np.linalg.norm(n, axis=1)
     return n / np.maximum(area, 1e-300)[:, None], 0.5 * area
+
+
+def weighted_percentile(x, w, q):
+    order = np.argsort(x)
+    x, w = x[order], np.maximum(w[order], 0.0)
+    cw = np.cumsum(w)
+    if cw[-1] <= 0:
+        return float(np.percentile(x, q))
+    return float(x[min(len(x) - 1, int(np.searchsorted(cw, q / 100.0 * cw[-1])))])
+
+
+def chord_deflection(N, A, f, g, L, tiny=None):
+    """How far a mesh's flat triangles stand off the curved surfaces they
+    approximate (the chordal deflection it was tessellated with), from the
+    bends between neighbouring triangles ``f`` and ``g`` across edges of
+    length ``L``: across a smoothly curved edge with dihedral angle theta
+    between triangles of height h, the sagitta is about h * theta / 8.
+
+    Shallow creases are not curvature: where the long facets of a groove
+    meet the small triangles of its sloped end, the dihedral angle is large
+    but the surface isn't coarsely curved. Counted like curvature, such
+    creases made a part faceted to 0.006 mm look like a 0.3 mm
+    tessellation. So each edge uses the smaller of its two triangle heights
+    (on a curved surface they are alike; where a long facet meets a tiny
+    triangle the long one says nothing about curvature), and the
+    percentiles are weighted by edge length (a crease often has only a few
+    tiny edges).
+
+    Returns (typical, high): the 95th and 99.5th percentiles."""
+    th = np.arccos(np.clip((N[f] * N[g]).sum(1), -1, 1))
+    smooth = (th > np.radians(1.0)) & (th < np.radians(40.0))
+    if tiny is not None:
+        smooth &= ~tiny[f] & ~tiny[g]
+    if smooth.sum() < 10:
+        return 0.0, 0.0
+    Ls = np.maximum(L, 1e-30)
+    sag = np.minimum(2 * A[f] / Ls, 2 * A[g] / Ls) * th / 8.0
+    return (weighted_percentile(sag[smooth], L[smooth], 95),
+            weighted_percentile(sag[smooth], L[smooth], 99.5))
+
+
+def mesh_deflection(V, F):
+    """chord_deflection of a triangle list (vertices at the same position
+    are joined first)."""
+    if len(F) < 2:
+        return 0.0, 0.0
+    W = _welded(V, F)
+    e = np.stack([W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]], axis=1).reshape(-1, 2)
+    e.sort(axis=1)
+    key = e[:, 0].astype(np.int64) * (int(W.max()) + 1) + e[:, 1]
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    # edges with exactly two triangles
+    same = ks[1:] == ks[:-1]
+    lone = np.ones(len(same), dtype=bool)
+    lone[1:] &= ~same[:-1]
+    lone[:-1] &= ~same[1:]
+    pair = same & lone
+    a, b = order[:-1][pair], order[1:][pair]
+    N, A = _tri_normals(V, F)
+    L = np.linalg.norm(V[F.reshape(-1)[a]] - V[F[a // 3, (a % 3 + 1) % 3]], axis=1)
+    ext = float(np.linalg.norm(V.max(0) - V.min(0)))
+    return chord_deflection(N, A, a // 3, b // 3, L, tiny=A < 1e-10 * ext ** 2)
+
+
+def mesh_noise(V, F, n_v=5000, cap=40, sharp_deg=40.0, seed=0):
+    """How far the mesh's vertices scatter around the smooth surface they
+    lie on (the noise of a 3D scan). Each of up to ``n_v`` vertices is
+    compared with a quadric fitted through its neighbours up to two edges
+    away (the vertex itself left out), so curvature doesn't count; vertices
+    within two edges of a sharp or open edge are skipped, so edges and small
+    features (a groove, a rib) don't count either. Returns the median; 0
+    when too few vertices qualify (a part made of flat faces and sharp edges
+    has nothing to measure, and isn't a scan)."""
+    import scipy.sparse as sp
+
+    if len(F) < 2:
+        return 0.0
+    W = _welded(V, F)
+    nv = int(W.max()) + 1
+    P = np.zeros((nv, 3))
+    P[W.reshape(-1)] = V[F.reshape(-1)]
+    N, _ = _tri_normals(V, F)
+    adj = _edge_neighbours(W)
+    sharp = np.zeros(nv, dtype=bool)
+    cos_s = np.cos(np.radians(sharp_deg))
+    for j in range(3):
+        g = adj[:, j]
+        bad = (g < 0) | ((N * N[np.maximum(g, 0)]).sum(1) < cos_s)
+        sharp[W[bad, j]] = True
+        sharp[W[bad, (j + 1) % 3]] = True
+    e = np.concatenate([W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]])
+    A1 = sp.coo_matrix((np.ones(len(e), np.float32), (e[:, 0], e[:, 1])), shape=(nv, nv)).tocsr()
+    A1 = ((A1 + A1.T) > 0).astype(np.float32)
+    A2 = ((A1 + A1 @ A1) > 0).astype(np.float32).tocsr()
+    near_sharp = (A2 @ sharp.astype(np.float32)) > 0
+    cand = np.nonzero(~near_sharp)[0]
+    if len(cand) < 50:
+        return 0.0
+    rng = np.random.default_rng(seed)
+    pick = rng.choice(cand, min(n_v, len(cand)), replace=False)
+    rows = A2[pick].tocoo()
+    r, c = rows.row, rows.col
+    keep = c != pick[r]
+    r, c = r[keep], c[keep]
+    # at most ``cap`` neighbours each, picked at random
+    order = np.lexsort((rng.random(len(r)), r))
+    r, c = r[order], c[order]
+    start = np.searchsorted(r, np.arange(len(pick)))
+    rank = np.arange(len(r)) - start[r]
+    sel = rank < cap
+    r, c, rank = r[sel], c[sel], rank[sel]
+    m = len(pick)
+    X = np.zeros((m, cap, 3))
+    mask = np.zeros((m, cap))
+    X[r, rank] = P[c]
+    mask[r, rank] = 1.0
+    cnt = mask.sum(1)
+    ok = cnt >= 8
+    X, mask, cnt, pv = X[ok], mask[ok], cnt[ok], P[pick[ok]]
+    if not len(X):
+        return 0.0
+    cen = (X * mask[..., None]).sum(1) / cnt[:, None]
+    D = (X - cen[:, None]) * mask[..., None]
+    _, U = np.linalg.eigh(np.einsum("mki,mkj->mij", D, D))
+    loc = np.einsum("mki,mij->mkj", D, U)  # (normal, tangent, tangent)
+    z, x, y = loc[..., 0], loc[..., 1], loc[..., 2]
+    sc = np.sqrt((mask * (x * x + y * y)).sum(1) / cnt)[:, None] + 1e-30
+    x, y = x / sc, y / sc
+    Mq = np.stack([x * x, x * y, y * y, x, y, np.ones_like(x)], axis=2) * mask[..., None]
+    AtA = np.einsum("mki,mkj->mij", Mq, Mq) + 1e-9 * np.eye(6)
+    coef = np.linalg.solve(AtA, np.einsum("mki,mk->mi", Mq, z)[..., None])[..., 0]
+    q = np.einsum("mi,mij->mj", pv - cen, U)
+    qx, qy = q[:, 1] / sc[:, 0], q[:, 2] / sc[:, 0]
+    zq = (np.stack([qx * qx, qx * qy, qy * qy, qx, qy, np.ones_like(qx)], axis=1) * coef).sum(1)
+    return float(np.median(np.abs(q[:, 0] - zq)))
+
+
+def thin_share(V, F, noise, k=4.0):
+    """The share of the surface made of triangles thinner than ``k`` times
+    the noise: their directions are mostly noise (a scan re-meshed into
+    slivers can have whole patches of them, some flipped over)."""
+    if noise <= 0 or len(F) == 0:
+        return 0.0
+    _, A = _tri_normals(V, F)
+    T = V[F]
+    L = np.linalg.norm(T - np.roll(T, -1, axis=1), axis=2).max(1)
+    h = 2 * A / np.maximum(L, 1e-30)
+    return float(A[h < k * noise].sum() / max(A.sum(), 1e-30))
 
 
 def sample(V, F, n, rng):
@@ -204,12 +375,22 @@ class Surface:
         # vertices on their edges: merge them so neighbours across an edge
         # of the shape are found too
         self.adj = _edge_neighbours(_welded(V, F))
+        self.spacing = float(spacing)
+        self._pc = None
 
-    def nearest(self, P, k=8, chunk=100_000):
+    def nearest(self, P, k=8, chunk=100_000, exact_above=0.0):
         """Exact distance from each point to the surface, and the triangle
-        it is nearest to. The candidates are the triangles of the nearest
-        sample points and their neighbours (near a corner the nearest samples
-        can all lie on other triangles than the thin wedge the point is on)."""
+        it is nearest to.
+
+        First a quick guess: the triangles of the nearest sample points and
+        their neighbours (near a corner the nearest samples can all lie on
+        other triangles than the thin wedge the point is on). The guess can
+        miss: next to long, thin triangles (a cylinder meshed in strips) it
+        made a point 0.016 mm from the shape look 0.18 mm away. So then
+        every triangle that could be closer than the guess is measured too
+        (see _refine), which makes the result exact. Only for points the
+        guess puts further than ``exact_above`` away: closer ones are off
+        by less than that at most."""
         dist = np.empty(len(P))
         tri = np.empty(len(P), dtype=np.int64)
         V, F = self.V, self.F
@@ -237,7 +418,93 @@ class Surface:
             best = order[first]
             dist[s:s + chunk] = d[best]
             tri[s:s + chunk] = c[best]
+        far = np.nonzero(dist > exact_above)[0]
+        if len(far):
+            d, t = dist[far], tri[far]
+            self._refine(P[far], d, t)
+            dist[far], tri[far] = d, t
         return dist, tri
+
+    def _pieces(self):
+        """The triangles cut into small pieces (see _subdivide), for the
+        exact search: (KD-tree of the pieces' centres, their corners, the
+        triangle each came from, the largest centre-to-corner distance)."""
+        if self._pc is None:
+            area = float(self.area)
+            # pieces about as big as the sample spacing, but not more than
+            # about a million of them
+            r_max = max(self.spacing, np.sqrt(area / 1e6), 1e-12)
+            A, B, C, parent = _subdivide(self.V, self.F, r_max)
+            cen = (A + B + C) / 3.0
+            R = np.sqrt(np.max([((X - cen) ** 2).sum(1) for X in (A, B, C)], axis=0)) if len(cen) else np.zeros(0)
+            self._pc = (cKDTree(cen), A, B, C, parent, float(R.max()) if len(R) else 0.0)
+        return self._pc
+
+    def _refine(self, P, dist, tri, max_pairs=4_000_000):
+        """Makes the distances exact. A triangle closer to a point than the
+        distance found so far has a piece within that distance of the point,
+        so that piece's centre is within the distance plus the piece's size:
+        all those pieces are measured."""
+        import itertools
+
+        if not len(P) or not len(self.F):
+            return
+        tree, A, B, C, parent, rp = self._pieces()
+        r = dist + rp * (1 + 1e-9) + 1e-12
+        counts = tree.query_ball_point(P, r, return_length=True)
+        cum = np.cumsum(counts)
+        start = 0
+        while start < len(P):
+            # points in runs of at most max_pairs candidate pairs
+            before = cum[start - 1] if start else 0
+            end = min(len(P), max(start + 1, int(np.searchsorted(cum, before + max_pairs, side="right"))))
+            if end - start == 1 and counts[start] > max_pairs:
+                start = end  # (a point far from everything: the first answer stays)
+                continue
+            res = tree.query_ball_point(P[start:end], r[start:end], return_sorted=False)
+            lens = np.fromiter((len(x) for x in res), dtype=np.int64, count=len(res))
+            if lens.sum():
+                k = np.fromiter(itertools.chain.from_iterable(res), dtype=np.int64, count=int(lens.sum()))
+                pi = np.repeat(np.arange(start, end), lens)
+                d, _ = point_triangle_distance(P[pi], A[k], B[k], C[k])
+                closer = d < dist[pi]
+                if closer.any():
+                    pi, k, d = pi[closer], k[closer], d[closer]
+                    order = np.lexsort((d, pi))
+                    first = np.ones(len(order), dtype=bool)
+                    first[1:] = pi[order][1:] != pi[order][:-1]
+                    best = order[first]
+                    dist[pi[best]] = d[best]
+                    tri[pi[best]] = parent[k[best]]
+            start = end
+
+
+def _subdivide(V, F, r_max):
+    """The triangles, each cut in two across its longest edge until no
+    piece reaches further than r_max from its centre: (corners A, B, C of
+    the pieces, the triangle each piece came from). The pieces cover
+    exactly the triangles, so the nearest piece is the nearest triangle."""
+    A, B, C = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    parent = np.arange(len(F))
+    out = []
+    for _ in range(64):
+        cen = (A + B + C) / 3.0
+        R2 = np.max([((X - cen) ** 2).sum(1) for X in (A, B, C)], axis=0) if len(cen) else np.zeros(0)
+        big = R2 > r_max * r_max
+        out.append((A[~big], B[~big], C[~big], parent[~big]))
+        if not big.any():
+            break
+        a, b, c, p = A[big], B[big], C[big], parent[big]
+        e = np.argmax([((a - b) ** 2).sum(1), ((b - c) ** 2).sum(1), ((c - a) ** 2).sum(1)], axis=0)[:, None]
+        # the longest edge as a2-b2
+        a2 = np.where(e == 0, a, np.where(e == 1, b, c))
+        b2 = np.where(e == 0, b, np.where(e == 1, c, a))
+        c2 = np.where(e == 0, c, np.where(e == 1, a, b))
+        m = 0.5 * (a2 + b2)
+        A, B, C, parent = np.vstack([a2, m]), np.vstack([m, b2]), np.vstack([c2, c2]), np.concatenate([p, p])
+    else:
+        out.append((A, B, C, parent))
+    return tuple(np.concatenate([o[i] for o in out]) for i in range(4))
 
 
 class Verdict:
@@ -252,12 +519,20 @@ class Verdict:
     P999_K = 8.0
     WRONG_WAY_MAX = 0.005
 
+    # within this share of a limit (either side), a verdict is uncertain
+    MARGIN = 0.25
+    # below this certainty, a second, finer check decides
+    RECHECK_BELOW = 0.5
+
     def __init__(self, r, tol):
         self.r = r
         self.tol = tol
+        self.rechecked = False
+        self.certainty, self.doubt = 1.0, ""
         if r.get("unknown"):
             # the comparison itself failed: neither good nor bad
             self.ok, self.score = True, -3.0
+            self.certainty, self.doubt = 0.0, "it couldn't be compared with the mesh"
             return
         if r.get("empty"):
             self.ok, self.score = False, -1e9
@@ -269,6 +544,19 @@ class Verdict:
         # higher is better: tight fit, no far-off spots, few points facing
         # the wrong way
         self.score = -p99 - 0.25 * p999 - 200.0 * ww
+        self.certainty, self.doubt = self._certainty(p99, p999, ww)
+
+    def _certainty(self, p99, p999, ww):
+        """How sure the verdict is (0 to 1), and why not (in words)."""
+        r = self.r
+        # how far each measure is from its limit, as a share of the limit
+        margin = min(abs(p99 - self.P99_K) / self.P99_K, abs(p999 - self.P999_K) / self.P999_K,
+                     abs(ww - self.WRONG_WAY_MAX) / self.WRONG_WAY_MAX)
+        c, doubt = min(1.0, margin / self.MARGIN), "it is close to the limit"
+        # a scan's own surface is uncertain
+        if r.get("mesh_kind") == "scan" and c > 0.7:
+            c, doubt = 0.7, "the mesh is noisy"
+        return c, doubt
 
     def summary(self, unit="mm"):
         r = self.r
@@ -293,15 +581,34 @@ class Verdict:
             "max": r["worst_distance"],
             "worst": r["worst"],
             "wrong_way": max(r["wrong_way"], r["wrong_way_shape"]),
+            "mesh_kind": r.get("mesh_kind", "clean"),
+            "certainty": round(float(self.certainty), 3),
+            "rechecked": bool(self.rechecked),
         }
 
 
-def judge(shape, shells, tol, n_points=None):
+def judge(shape, shells, tol, n_points=None, recheck=True, on_recheck=None):
     """Verdict for a converted shape against the mesh shells (objects with
-    V and F) it was made from."""
-    r = compare(shape, [(s.V, s.F) for s in shells], tol, n_points=n_points)
+    V and F) it was made from.
+
+    When the verdict is uncertain (see Verdict._certainty), a second check
+    decides: three times as many points, other ones, and the shape cut into
+    finer triangles. ``on_recheck(reason)`` is called first, so the user
+    can be told why it takes longer."""
+    meshes = [(s.V, s.F) for s in shells]
+    r = compare(shape, meshes, tol, n_points=n_points)
     r.pop("points", None)
-    return Verdict(r, max(float(tol), 1e-9))
+    v = Verdict(r, max(float(r.get("allow", tol)), 1e-9))
+    if not recheck or r.get("empty") or v.certainty >= Verdict.RECHECK_BELOW:
+        return v
+    if on_recheck is not None:
+        on_recheck(v.doubt)
+    n = int(min(3 * r.get("n_points", 50_000), 450_000))
+    r2 = compare(shape, meshes, tol, n_points=n, seed=1, fine=True)
+    r2.pop("points", None)
+    v2 = Verdict(r2, max(float(r2.get("allow", tol)), 1e-9))
+    v2.rechecked = True
+    return v2
 
 
 def _welded(V, F):
@@ -358,6 +665,12 @@ def mesh_surface(V, F):
     # across sharp edges): a scan's noisy triangles point every which way,
     # but a smooth surface through them is what a conversion should give
     MN = smoothed_normals(M.normals, area, M.adj)
+    # what kind of mesh it is (see mesh_kind)
+    M.deflection = mesh_deflection(V, F)[0]
+    M.noise = mesh_noise(V, F)
+    M.thin = thin_share(V, F, M.noise)
+    T = V[F]
+    M.edge = float(np.median(np.linalg.norm(T - np.roll(T, -1, axis=1), axis=2).max(1))) if len(F) else 0.0
     _MESH_CACHE.clear()  # one mesh at a time (they can be big)
     _MESH_CACHE[key] = (M, MN, spacing)
     return M, MN, spacing
@@ -383,17 +696,58 @@ def _angle_deg(a, b):
     return np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", a, b), -1.0, 1.0)))
 
 
-def compare(shape, meshes, tol, n_points=None, seed=0):
+def mesh_kind(M, tol):
+    """Which rules a mesh is judged by:
+
+    clean   a CAD export or a sculpt: the checks as they are.
+    coarse  a true curve stands off the mesh's flat triangles by up to its
+            chordal deflection (an OpenSCAD 16-gon, a low-detail export),
+            so the tolerance grows to that.
+    scan    noisy: a smooth surface through the noise is right, so the
+            tolerance grows to the noise; and where the mesh is made of
+            triangles thinner than the noise, their directions are noise
+            too, so only patches facing the wrong way count, not lone
+            points (see _coherent)."""
+    if M.noise > 0.5 * tol or M.thin > Verdict.WRONG_WAY_MAX:
+        return "scan"
+    if M.deflection > tol:
+        return "coarse"
+    return "clean"
+
+
+def _coherent(P, flags, rho, k=48):
+    """flags of points that most points within rho of them share: lone
+    flagged points (noise) drop out, patches (a real wrinkle) stay."""
+    if not flags.any():
+        return flags
+    tree = cKDTree(P)
+    _, idx = tree.query(P[flags], k=min(k, len(P)), distance_upper_bound=rho)
+    idx = np.atleast_2d(idx)
+    valid = idx < len(P)
+    hit = np.where(valid, flags[np.minimum(idx, len(P) - 1)], False)
+    out = np.zeros_like(flags)
+    out[np.nonzero(flags)[0]] = hit.sum(1) > 0.5 * valid.sum(1)
+    return out
+
+
+def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     """Compares a converted shape with the mesh pieces it came from
     (``meshes``: list of (V, F) with outward-facing triangles).
 
     Returns a dict:
       to_shape: distances from mesh points to the shape (p50, p99, max)
       to_mesh: distances from shape points to the mesh (p99, max)
-      within: share of the mesh surface within ``tol`` of the shape
+      within: share of the mesh surface within ``allow`` of the shape
       wrong_way: share of the mesh surface whose direction differs from
           the shape's by more than WRONG_WAY_DEG
       worst: a point where the shape is furthest from the mesh
+      allow: the tolerance the shape is judged by: ``tol``, or more for a
+          coarse mesh (a true curve stands off its flat triangles by up to
+          the mesh's own chordal deflection) or a noisy one (see mesh_kind)
+      mesh_kind: clean, coarse or scan
+
+    ``fine`` cuts the shape into finer triangles (a second check, when a
+    result is close to a limit).
     """
     rng = np.random.default_rng(seed)
     if n_points is None:
@@ -405,37 +759,53 @@ def compare(shape, meshes, tol, n_points=None, seed=0):
     MF = np.vstack([F + o for (_, F), o in zip(meshes, off)])
     diag = float(np.linalg.norm(MV.max(0) - MV.min(0))) if len(MV) else 1.0
     tol = max(float(tol), 1e-9)
-    SV, SF, _ = tessellate(shape, tol * 0.25)
+    M, MN, spacing = mesh_surface(MV, MF)
+    kind = mesh_kind(M, tol)
+    allow = max(tol, M.deflection, M.noise)
+    SV, SF, _ = tessellate(shape, tol * (0.125 if fine else 0.25))
     if len(SF) == 0:
         return {"empty": True}
-    M, MN, spacing = mesh_surface(MV, MF)
     S = Surface(SV, SF, spacing, rng)
     # mesh -> shape: distances and directions
     P, ptri = sample(MV, MF, n_points, rng)
-    d_ms, stri = S.nearest(P)
+    # (distances under half the tolerance needn't be exact: they count as
+    # close either way)
+    d_ms, stri = S.nearest(P, exact_above=0.5 * allow)
     ang = _angle_deg(MN[ptri], S.normals[stri])
     # shape -> mesh
     Q, qtri = sample(SV, SF, n_points, rng)
-    d_sm, mtri = M.nearest(Q)
+    d_sm, mtri = M.nearest(Q, exact_above=0.5 * allow)
     ang_sm = _angle_deg(S.normals[qtri], MN[mtri])
     # a direction that is off only because the point lies right at a sharp
     # edge (its nearest point is on the neighbouring face) doesn't count
-    near_edge = d_ms > 0.5 * tol
-    wrong = (ang > WRONG_WAY_DEG) & ~(near_edge & (d_ms < 2 * tol))
-    wrong_sm = (ang_sm > WRONG_WAY_DEG) & (d_sm < 2 * tol)
+    near_edge = d_ms > 0.5 * allow
+    wrong = (ang > WRONG_WAY_DEG) & ~(near_edge & (d_ms < 2 * allow))
+    wrong_sm = (ang_sm > WRONG_WAY_DEG) & (d_sm < 2 * allow)
+    if M.thin > Verdict.WRONG_WAY_MAX:
+        # the mesh's own directions are noise in places (see mesh_kind):
+        # patches about a triangle across count, lone points don't
+        step = np.sqrt(M.area / max(len(P), 1))
+        rho = float(np.clip(M.edge, 2.5 * step, 6.0 * step))
+        wrong = _coherent(P, wrong, rho)
+        wrong_sm = _coherent(Q, wrong_sm, rho)
     k = int(np.argmax(d_ms)) if len(d_ms) else 0
     k2 = int(np.argmax(d_sm)) if len(d_sm) else 0
     worst, worst_d = (P[k], float(d_ms[k])) if d_ms[k] >= d_sm[k2] else (Q[k2], float(d_sm[k2]))
     return {
         "empty": False,
         "tol": tol,
+        "allow": allow,
+        "mesh_kind": kind,
+        "noise": M.noise,
+        "deflection": M.deflection,
+        "n_points": int(len(P)),
         "diag": diag,
         "to_shape": {"p50": float(np.median(d_ms)), "p99": float(np.percentile(d_ms, 99)),
                      "p999": float(np.percentile(d_ms, 99.9)), "max": float(d_ms.max())},
         "to_mesh": {"p99": float(np.percentile(d_sm, 99)), "p999": float(np.percentile(d_sm, 99.9)),
                     "max": float(d_sm.max())},
-        "within": float(np.mean(d_ms <= tol)),
-        "within2": float(np.mean(np.maximum(d_ms, 0) <= 2 * tol)),
+        "within": float(np.mean(d_ms <= allow)),
+        "within2": float(np.mean(np.maximum(d_ms, 0) <= 2 * allow)),
         "wrong_way": float(np.mean(wrong)),
         "wrong_way_shape": float(np.mean(wrong_sm)),
         "worst": [float(x) for x in worst],

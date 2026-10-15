@@ -80,41 +80,17 @@ class Segmenter:
 
     # --- helpers --------------------------------------------------------
     def _estimate_deflection(self):
-        """Estimate the chordal deflection the mesh was tessellated with.
+        """The chordal deflection the mesh was tessellated with (see
+        fidelity.chord_deflection): (typical, high)."""
+        from .fidelity import chord_deflection
 
-        Across a smoothly curved edge with dihedral angle theta between
-        triangles of height h, the sagitta is about h * theta / 8.
-
-        Shallow creases are not curvature: where the long facets of a groove
-        meet the small triangles of its sloped end, the dihedral angle is
-        large but the surface isn't coarsely curved. Counted like curvature,
-        such creases made a part faceted to 0.006 mm look like a 0.3 mm
-        tessellation, which let wrong surfaces through (a torus can then pass
-        through both ends of a straight strip). So each edge uses the
-        smaller of its two triangle heights, and the percentiles are
-        weighted by edge length (a crease often has only a few tiny edges)."""
-        nf = len(self.F)
         twin = self.topo.twin
         h = np.nonzero(twin >= 0)[0]
         t = twin[h]
         m = h < t
         h, t = h[m], t[m]
-        f, g = h // 3, t // 3
-        cs = np.clip((self.fn[f] * self.fn[g]).sum(1), -1, 1)
-        th = np.arccos(cs)
-        smooth = (th > np.radians(1.0)) & (th < np.radians(40.0)) & ~self.tiny[f] & ~self.tiny[g]
-        if smooth.sum() < 10:
-            return 0.0, 0.0
-        a = self.topo.he_from[h]
-        b = self.topo.he_to[h]
-        L = np.linalg.norm(self.V[b] - self.V[a], axis=1)
-        hf = 2 * self.fa[f] / np.maximum(L, 1e-30)
-        hg = 2 * self.fa[g] / np.maximum(L, 1e-30)
-        # the smaller height of the two triangles: on a curved surface they
-        # are alike, but where a long facet meets a tiny triangle at a crease
-        # (the end of a groove) the long one says nothing about curvature
-        sag = np.minimum(hf, hg) * th / 8.0
-        return _weighted_percentile(sag[smooth], L[smooth], 95), _weighted_percentile(sag[smooth], L[smooth], 99.5)
+        L = np.linalg.norm(self.V[self.topo.he_to[h]] - self.V[self.topo.he_from[h]], axis=1)
+        return chord_deflection(self.fn, self.fa, h // 3, t // 3, L, tiny=self.tiny)
 
     def _new_stamp(self):
         self._stamp_id += 1
@@ -764,15 +740,6 @@ class Segmenter:
             newlab[r.faces] = i
         self.regions = out
         self.label = newlab
-
-
-def _weighted_percentile(x, w, q):
-    order = np.argsort(x)
-    x, w = x[order], np.maximum(w[order], 0.0)
-    cw = np.cumsum(w)
-    if cw[-1] <= 0:
-        return float(np.percentile(x, q))
-    return float(x[min(len(x) - 1, int(np.searchsorted(cw, q / 100.0 * cw[-1])))])
 
 
 def _cluster_components(faces, nb):
@@ -1882,14 +1849,23 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     return asm, faces, regions
 
 
-def _inaccurate_regions(seg, labels, asm, tol, bad_k=3.0, share=0.01, worst_k=8.0, skip=()):
+def _inaccurate_regions(seg, labels, asm, tol, share=0.05, count=3, far_count=None, skip=()):
     """Regions whose built face strays from the mesh triangles it stands
     for, found by measuring both ways (see fidelity.py): points of the face
     far from the mesh (bulges, flaps, torn edges) and points of the region's
-    triangles far from the shape (dents, missing material). A region is
-    inaccurate when more than ``share`` of either lies beyond ``bad_k``
-    tolerances, or any of it beyond ``worst_k`` tolerances."""
-    from .fidelity import Surface, mesh_surface, sample, tessellate_faces
+    triangles far from the shape (dents, missing material).
+
+    Distances are in units of the tolerance the result is judged by
+    (fidelity.Verdict): ``tol``, or the mesh's own chordal deflection when
+    it is coarser (a true cylinder stands off the flat sides of a coarse
+    mesh's 16-gon, and that is right). A region is inaccurate when at least
+    ``count`` of its points are beyond Verdict.P999_K tolerances (a bulge
+    or a flap), or more than ``share`` of them beyond Verdict.P99_K. When the
+    shell as a whole would still fail the final check (too many far points
+    spread thinly over many faces), the faces holding most of them count
+    too, until it would pass: fixing those beats losing the whole CAD
+    result, and the rest stay as they are."""
+    from .fidelity import Surface, Verdict, mesh_surface, sample, tessellate_faces
 
     # (faces already known to be broken are replaced anyway; meshing them
     # can fail)
@@ -1903,25 +1879,37 @@ def _inaccurate_regions(seg, labels, asm, tol, bad_k=3.0, share=0.01, worst_k=8.
         return set()
     own_region = np.array([r for r, _ in items], dtype=np.int64)[owner]
     mesh, _, spacing = mesh_surface(V, F)
+    # (the tolerance the result is judged by: see fidelity.mesh_kind)
+    allow = max(tol, mesh.deflection, mesh.noise)
     shape = Surface(SV, SF, max(spacing, tol * 0.5), rng)
     n = int(np.clip(20 * len(F), 20_000, 150_000))
-    out = set()
     # face -> mesh
     Q, qt = sample(SV, SF, n, rng)
-    dq, _ = mesh.nearest(Q)
+    dq, _ = mesh.nearest(Q, exact_above=0.5 * allow)
     # mesh -> shape (by the region the triangle belongs to)
     P, pt = sample(V, F, n, rng)
-    dp, _ = shape.nearest(P)
+    dp, _ = shape.nearest(P, exact_above=0.5 * allow)
+    near, far = Verdict.P99_K * allow, Verdict.P999_K * allow
+    out = set()
     for reg_of, d in ((own_region[qt], dq), (labels[pt], dp)):
         ok = reg_of >= 0
         reg_of, d = reg_of[ok], d[ok]
+        if not len(d):
+            continue
         cnt = np.bincount(reg_of)
-        far = np.bincount(reg_of, weights=(d > bad_k * tol).astype(float), minlength=len(cnt))
-        worst = np.zeros(len(cnt))
-        np.maximum.at(worst, reg_of, d)
-        for r in np.nonzero(cnt)[0]:
-            if far[r] > max(share * cnt[r], 2) or worst[r] > worst_k * tol:
-                out.add(int(r))
+        n_near = np.bincount(reg_of, weights=(d > near).astype(float), minlength=len(cnt))
+        n_far = np.bincount(reg_of, weights=(d > far).astype(float), minlength=len(cnt))
+        out |= {int(r) for r in np.nonzero((n_far >= (far_count or count)) | (n_near > np.maximum(share * cnt, count)))[0]}
+        # the whole shell: at most 1% of the points beyond P99_K, 0.1%
+        # beyond P999_K (with a little margin)
+        for nk, limit in ((n_near, 0.008 * len(d)), (n_far, 0.0008 * len(d))):
+            left = nk.sum() - sum(nk[r] for r in out if r < len(nk))
+            for r in np.argsort(-nk):
+                if left <= limit or nk[r] <= 0:
+                    break
+                if int(r) not in out:
+                    out.add(int(r))
+                    left -= nk[r]
     return out
 
 

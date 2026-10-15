@@ -202,6 +202,11 @@ class _Candidate:
         return (v is None or v.ok, self.valid, 0.0 if v is None else v.score)
 
 
+# when two results both follow the mesh, the other method's replaces the
+# first only when it is this much closer (in Verdict.score: about one
+# tolerance of the 99th-percentile gap)
+CLEARLY_CLOSER = 1.0
+
 KIND_WORDS = {"smooth": "smooth surfaces", "cad": "CAD faces", "precise": "precise CAD faces",
               "faceted": "flat faces (exactly like the mesh)"}
 
@@ -215,8 +220,15 @@ def _judge(shape, body, tol, kind, report):
         fixed = fix_shape(shape, tol)
         if stepio.is_valid(fixed):
             shape, valid = fixed, True
+    report.note(f"Comparing the {KIND_WORDS[kind].split(' (')[0]} with the mesh")
+
+    def again(why):
+        report.note(f"Checking again, more closely: {why}")
+        report.log(f"The first check of the {KIND_WORDS[kind].split(' (')[0]} was not clear-cut ({why}), "
+                   "so it is checked again with more points and finer detail.")
+
     try:
-        verdict = judge(shape, body, tol)
+        verdict = judge(shape, body, tol, on_recheck=again)
     except MemoryError:
         raise
     except Exception as e:  # the check itself must never stop a conversion
@@ -239,6 +251,9 @@ def fidelity_summary(items):
         "p99": max(v["p99"] for v in items),
         "max": max(v["max"] for v in items),
         "wrong_way": max(v["wrong_way"] for v in items),
+        "mesh_kind": "scan" if any(v.get("mesh_kind") == "scan" for v in items) else items[0].get("mesh_kind", "clean"),
+        "certainty": min(v.get("certainty", 1.0) for v in items),
+        "rechecked": any(v.get("rechecked") for v in items),
     }
 
 
@@ -518,23 +533,34 @@ def convert(input_path, output_path, opts=None, report=NULL):
             if first is None and errors:
                 raise errors[0]
             return (first.shape, first.kind) if first is not None else (None, preset)
-        if first is not None and first.good:
+        borderline = first is not None and first.good and first.verdict.certainty < first.verdict.RECHECK_BELOW
+        if first is not None and first.good and not borderline:
             _record(bi, first)
             return first.shape, first.kind
-        if first is not None and first.verdict.ok and not _broken(_check_shape(first.shape, body, report)):
+        if (first is not None and first.verdict.ok and not borderline
+                and not _broken(_check_shape(first.shape, body, report))):
             # it follows the mesh and its small errors disappear once saved
             # and read back (as CAD programs read it): nothing to gain
             _record(bi, first)
             return first.shape, first.kind
-        if first is not None:
+        if borderline:
+            # it passes, but only just: the other way is tried as well, and
+            # the closer one is kept
+            report.log(f"The {KIND_WORDS[first.kind].split(' (')[0]} follow the mesh, but only just "
+                       f"({first.verdict.doubt}), so another method is tried as well and the closer result is kept.")
+        elif first is not None:
             report.log(f"Check against the mesh: {first.verdict.summary(unit)}"
                        + ("" if first.verdict.ok else ", which isn't close enough")
                        + ("" if first.valid else "; the shape also has errors") + ".")
         for kind, stage, make in plan():
-            report.log(f"Trying {stage[0].lower() + stage[1:]} instead")
-            report.stage(stage + label, lo, hi)
+            if borderline:
+                report.log(f"Also trying {stage[0].lower() + stage[1:]}, to keep whichever follows the mesh better")
+                report.stage(f"{stage} too (the first result only just passed)" + label, lo, hi)
+            else:
+                report.log(f"Trying {stage[0].lower() + stage[1:]} instead")
+                report.stage(stage + label, lo, hi)
             c = attempt(kind, make, stage)
-            if c is not None and c.good:
+            if c is not None and c.good and not borderline:
                 break
         if not any(c.good for c in tried):
             # the faceted shape follows the mesh exactly: the last resort
@@ -546,6 +572,11 @@ def convert(input_path, output_path, opts=None, report=NULL):
                 attempt("faceted", lambda: convert_body_exact(B, body, auto_tolerance(_diag(body), "exact", q), report),
                         "Flat faces")
         best = _best(tried)
+        if borderline and best is not first and best.good and best.verdict.score < first.verdict.score + CLEARLY_CLOSER:
+            # both follow the mesh: the kind Auto chose for this part (true
+            # CAD faces for a mechanical part) stays, unless the other is
+            # clearly closer
+            best = first
         if best is None:
             if errors:
                 raise errors[0]  # a fault in the converter, not in the file

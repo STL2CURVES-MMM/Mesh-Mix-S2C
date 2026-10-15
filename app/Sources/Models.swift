@@ -280,6 +280,10 @@ struct Fidelity {
     var largestGap = 0.0
     /// Share of the surface facing another way than the mesh
     var wrongWay = 0.0
+    /// Judged as a noisy scan (its noise is allowed for)
+    var scan = false
+    /// The first check was close, so it was checked again
+    var rechecked = false
 
     /// The engine's limit for wrongWay (engine/mmm/fidelity.py, Verdict)
     static let wrongWayMax = 0.005
@@ -292,6 +296,8 @@ struct Fidelity {
         p99 = d["p99"] as? Double ?? 0
         largestGap = d["max"] as? Double ?? 0
         wrongWay = d["wrong_way"] as? Double ?? 0
+        scan = (d["mesh_kind"] as? String) == "scan"
+        rechecked = (d["rechecked"] as? Bool) == true
     }
 
     func summary(unit: String) -> String {
@@ -303,6 +309,8 @@ struct Fidelity {
         if wrongWay > Self.wrongWayMax {
             text += "; \(String(format: "%.1f", 100 * wrongWay))% of it faces another way than the mesh (wrinkles or dents)"
         }
+        if scan { text += " (the mesh is a noisy scan, so its noise is allowed for)" }
+        if rechecked { text += " (checked twice, as the first check was close)" }
         return text
     }
 }
