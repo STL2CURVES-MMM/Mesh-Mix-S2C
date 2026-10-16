@@ -599,6 +599,10 @@ class Verdict:
         # a scan's own surface is uncertain
         if r.get("mesh_kind") == "scan" and c > 0.7:
             c, doubt = 0.7, "the mesh is noisy"
+        # the two ways of counting wrong-facing points disagree (on a scan
+        # they always do: its noise-tilted triangles are lone points)
+        elif r.get("wrong_way_points", 0.0) > self.WRONG_WAY_MAX >= ww and c > 0.4:
+            c, doubt = 0.4, "some spots face another way than the mesh, but only scattered ones"
         return c, doubt
 
     def summary(self, unit="mm"):
@@ -824,13 +828,17 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     near_edge = d_ms > 0.5 * allow
     wrong = (ang > WRONG_WAY_DEG) & ~(near_edge & (d_ms < 2 * allow))
     wrong_sm = (ang_sm > WRONG_WAY_DEG) & (d_sm < 2 * allow)
-    if M.thin > Verdict.WRONG_WAY_MAX:
-        # the mesh's own directions are noise in places (see mesh_kind):
-        # patches about a triangle across count, lone points don't
-        step = np.sqrt(M.area / max(len(P), 1))
-        rho = float(np.clip(M.edge, 2.5 * step, 6.0 * step))
-        wrong = _coherent(P, wrong, rho)
-        wrong_sm = _coherent(Q, wrong_sm, rho)
+    # Two ways of counting, each blind to something: every point that
+    # faces the wrong way (lone points sit at sharp edges, where the nearest
+    # point of the shape is on the neighbouring face, or on noise-tilted
+    # triangles), or only patches about a triangle across (a wrinkle, a
+    # dent, a saw-tooth). Patches decide; when the two disagree the verdict
+    # is uncertain (see Verdict._certainty).
+    raw_ww = max(float(np.mean(wrong)), float(np.mean(wrong_sm))) if len(P) else 0.0
+    step = np.sqrt(M.area / max(len(P), 1))
+    rho = float(np.clip(M.edge, 2.5 * step, 6.0 * step))
+    wrong = _coherent(P, wrong, rho)
+    wrong_sm = _coherent(Q, wrong_sm, rho)
     k = int(np.argmax(d_ms)) if len(d_ms) else 0
     k2 = int(np.argmax(d_sm)) if len(d_sm) else 0
     worst, worst_d = (P[k], float(d_ms[k])) if d_ms[k] >= d_sm[k2] else (Q[k2], float(d_sm[k2]))
@@ -851,6 +859,7 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
         "within2": float(np.mean(np.maximum(d_ms, 0) <= 2 * allow)),
         "wrong_way": float(np.mean(wrong)),
         "wrong_way_shape": float(np.mean(wrong_sm)),
+        "wrong_way_points": raw_ww,
         "worst": [float(x) for x in worst],
         "worst_distance": worst_d,
         "points": {"mesh": P, "mesh_dist": d_ms, "mesh_angle": ang,
