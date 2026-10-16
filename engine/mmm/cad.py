@@ -305,6 +305,12 @@ class Segmenter:
         self._absorb_slivers()
         self._make_freeform()
         self._fix_apex_cones()
+        if self.scan:
+            # on a scan the later steps leave pieces that fit a neighbour
+            # (a piece next to another piece had no big neighbour yet)
+            for _ in range(3):
+                if not self._absorb_slivers():
+                    break
         return self.regions
 
     def _fix_apex_cones(self):
@@ -607,9 +613,18 @@ class Segmenter:
         lab = self.label
         changed = False
         cos_relaxed = np.cos(np.radians(60.0))
+        if self.scan:
+            # (noise splits a scan into pieces of many small triangles)
+            max_tris = max(max_tris, 50)
         areas = np.array([self.fa[r.faces].sum() for r in regs])
         big = areas[np.array([len(r.faces) > max_tris for r in regs], dtype=bool)]
         small_area = 0.02 * (np.median(big) if len(big) else areas.max())
+        if self.scan:
+            # on a scan most regions are small pieces, so their median says
+            # nothing about what is small: hundreds of 1-3 triangle pieces
+            # stayed, each punching a hole in the face around it (a scanned
+            # plate's top face got 334 holes and was invalid)
+            small_area = max(small_area, 1e-4 * float(self.fa.sum()))
         for ri, r in enumerate(regs):
             if not (len(r.faces) <= max_tris and (r.weak or areas[ri] <= small_area)):
                 continue
@@ -622,7 +637,9 @@ class Segmenter:
                     if rj == ri or regs[rj].weak or len(regs[rj].faces) <= max_tris:
                         continue
                     d, cs = self.face_error(regs[rj].prim, regs[rj].sense, np.array([f]))
-                    if cs[0] < cos_relaxed and not (self.unsure[f] or self.needle[f]):
+                    # (on a scan a piece this small that sits on a surface
+                    # is noise, whichever way its triangles point)
+                    if cs[0] < cos_relaxed and not (self.unsure[f] or self.needle[f] or self.scan):
                         continue
                     if d[0] <= tol_factor * self.tol and d[0] < best_e:
                         best, best_e = rj, d[0]
@@ -631,6 +648,7 @@ class Segmenter:
                     changed = True
         if changed:
             self._rebuild_regions()
+        return changed
 
     def _make_freeform(self, smooth_deg=35.0):
         """Clusters of facet-like leftovers become freeform B-spline cells.
@@ -1829,6 +1847,12 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         _settle_tolerances(asm.shell_from_faces(faces), tol)
         bad = set(r for r, _ in asm.failed_regions)
         for r, f in asm.region_faces.items():
+            if not BRepCheck_Analyzer(f).IsValid():
+                # an edge can be left with no tolerance at all (a scanned
+                # plate's counterbore circle: both its faces were invalid
+                # only because of it); settling the face's own tolerances
+                # once more fixes that, instead of replacing the face
+                _settle_tolerances(f, tol)
             # (a face whose surface blew up passes the validity check)
             if not BRepCheck_Analyzer(f).IsValid() or face_blown_up(f):
                 bad.add(r)
