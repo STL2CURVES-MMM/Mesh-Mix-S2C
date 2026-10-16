@@ -633,3 +633,45 @@ def test_result_unit(model, settings, meshes):
     settings.unit = "mm"  # changed after converting: the result is still in inches
     assert result_unit(stl, settings) == "in"
     assert "within 0.1 in of the mesh" in bugreport.build(stl, settings)
+
+
+def test_two_versions_to_choose_from(model, settings, meshes):
+    """When no method follows the mesh, the engine offers a valid second
+    version: the closest one stays the default, and picking the other one
+    changes what is exported (and both are cleaned up)."""
+    from mmm_app import bugreport
+
+    (job,) = add_and_read(model, meshes["rough_twoways.stl"])
+    model.convert_all()
+    assert wait_until(lambda: job.status == JobStatus.DONE)
+    r = job.result
+    a = r.alternative
+    assert a is not None and a.output.endswith(".valid.step") and os.path.exists(a.output)
+    assert a.preview and os.path.exists(a.preview) and a.valid is True and a.faces == 420
+    assert a.preset == r.preset and a.seconds == r.seconds and a.fidelity.within2 == 0.9 and not a.fidelity.ok
+    assert r.chosen is r and r.has_errors and not a.has_errors
+    assert job.result_files == [(job.output_path, None)]
+    r.use_alternative = True
+    assert r.chosen is a and job.result_files == [(a.output, None)]
+    text = bugreport.build(job, settings)
+    assert "Second (valid) version offered" in text and "the user picked it" in text
+    files = model.preview_files(job)
+    assert a.output in files and a.preview in files
+    assert a.output in job.clear_results()
+
+
+def test_two_versions_per_part(model, meshes):
+    (job,) = add_and_read(model, meshes["twoways_parts.3mf"])
+    assert job.is_split
+    model.convert_all()
+    assert wait_until(lambda: job.status == JobStatus.DONE)
+    left, right = job.part_list
+    assert left.result.alternative is None and right.result.alternative is not None
+    right.result.use_alternative = True
+    assert job.result_files == [(left.output_path, 0), (right.result.alternative.output, 1)]
+
+
+def test_alternative_needs_its_file():
+    # an alternative whose file is missing is never offered
+    r = ConversionResult.from_event({"alternative": {"output": "/nonexistent/x.valid.step", "valid": True}})
+    assert r.alternative is None and r.extra_files == []

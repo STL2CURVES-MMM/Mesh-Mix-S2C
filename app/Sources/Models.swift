@@ -264,10 +264,35 @@ struct ConversionResult {
     /// How closely the shape follows the mesh (nil: not measured)
     var fidelity: Fidelity?
 
+    /// When no method made a shape that follows the mesh, the engine saves
+    /// the closest one and offers a valid one too: the user picks which to export
+    var alternative: AlternativeVersion?
+    var useAlternative = false
+    /// The version the user picked (this one unless they picked the alternative)
+    var chosen: ConversionResult { useAlternative ? alternative?.result ?? self : self }
+    /// The STEP file to export for the version the user picked
+    func chosenFile(_ url: URL?) -> URL? { useAlternative ? alternative?.output ?? url : url }
+    /// The STEP preview of the version the user picked
+    func chosenPreview(_ url: URL?) -> URL? { useAlternative && alternative != nil ? alternative?.preview : url }
+    /// The alternative's files (to delete with the result)
+    var extraFiles: [URL] { alternative.map { [$0.output] + ($0.preview.map { [$0] } ?? []) } ?? [] }
+
     var hasErrors: Bool { checks.contains { $0.isError } }
     /// The shape doesn't follow the mesh everywhere
     var offMesh: Bool { fidelity.map { !$0.ok } ?? false }
     var hasIssues: Bool { !checks.isEmpty || valid == false || offMesh }
+}
+
+/// A valid second version of a conversion (see ConversionResult.alternative).
+final class AlternativeVersion {
+    let result: ConversionResult
+    let output: URL
+    let preview: URL?
+    init(result: ConversionResult, output: URL, preview: URL?) {
+        self.result = result
+        self.output = output
+        self.preview = preview
+    }
 }
 
 /// How closely the STEP shape follows the mesh (engine/mmm/fidelity.py).
@@ -420,6 +445,17 @@ extension ConversionResult {
             CheckIssue(code: $0["code"] as? String ?? "", level: $0["level"] as? String ?? "warning",
                        message: $0["message"] as? String ?? "")
         }
+        if var alt = ev["alternative"] as? [String: Any], let o = alt["output"] as? String,
+           FileManager.default.fileExists(atPath: o) {
+            alt.removeValue(forKey: "alternative")
+            var a = ConversionResult(event: alt)
+            a.preset = preset
+            a.seconds = seconds
+            a.meshVolume = meshVolume
+            a.tolerance = tolerance
+            let pv = (alt["preview"] as? String).flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+            alternative = AlternativeVersion(result: a, output: URL(fileURLWithPath: o), preview: pv)
+        }
     }
 }
 
@@ -559,9 +595,11 @@ final class Job: ObservableObject, Identifiable {
     /// The converted STEP files waiting in the temporary folder (part index for split 3MFs)
     var resultFiles: [(source: URL, part: Int?)] {
         if isSplit {
-            return partList.indices.compactMap { i in partList[i].outputURL.map { ($0, i) } }
+            return partList.indices.compactMap { i in
+                partList[i].outputURL.map { (partList[i].result?.chosenFile($0) ?? $0, i) }
+            }
         }
-        return outputURL.map { [($0, nil)] } ?? []
+        return outputURL.map { [(result?.chosenFile($0) ?? $0, nil)] } ?? []
     }
     /// Every STEP file the user exported from this job
     var exportedFiles: [URL] {
@@ -574,10 +612,11 @@ final class Job: ObservableObject, Identifiable {
     /// Drops the results of a previous conversion and returns the temporary
     /// files to delete (exported files stay where they are).
     func clearResults() -> [URL] {
-        var old: [URL] = []
+        var old: [URL] = result?.extraFiles ?? []
         if let o = outputPreview { old.append(o) }
         if let o = outputURL { old.append(o) }
         for i in partList.indices {
+            old += partList[i].result?.extraFiles ?? []
             if let o = partList[i].outputPreview { old.append(o) }
             if let o = partList[i].outputURL { old.append(o) }
             partList[i].outputPreview = nil
@@ -1197,7 +1236,9 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             guard let job, self.jobs.contains(where: { $0 === job }) else {
                 // removed while converting: nothing will show these files
-                self.discardPreviews([resultDir, prev] + partPreviews)
+                // and the valid second versions' previews, if any (pipeline.alternative_version)
+                let extra = ([prev] + partPreviews).map { $0.deletingPathExtension().appendingPathExtension("valid.mmmp") }
+                self.discardPreviews([resultDir, prev] + partPreviews + extra)
                 self.pump()
                 return
             }
@@ -1288,8 +1329,8 @@ final class AppModel: ObservableObject {
     }
 
     private static func previewFiles(of job: Job) -> [URL?] {
-        [job.inputPreview, job.outputPreview, job.outputURL]
-            + job.partList.flatMap { [$0.inputPreview, $0.outputPreview, $0.outputURL] }
+        [job.inputPreview, job.outputPreview, job.outputURL] + (job.result?.extraFiles ?? [])
+            + job.partList.flatMap { [$0.inputPreview, $0.outputPreview, $0.outputURL] + ($0.result?.extraFiles ?? []) }
     }
 
     func clearFinished() {

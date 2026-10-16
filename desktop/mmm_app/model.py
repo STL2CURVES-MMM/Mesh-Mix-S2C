@@ -223,6 +223,13 @@ class ConversionResult:
     repaired: list = field(default_factory=list)
     # how closely the shape follows the mesh (None: not measured)
     fidelity: object = None
+    # When no method made a shape that follows the mesh, the engine saves
+    # the closest one and offers a valid one too (a ConversionResult whose
+    # output and preview are that file's): the user picks which to export
+    alternative: object = None
+    output: str = ""
+    preview: str = ""
+    use_alternative: bool = False
 
     @classmethod
     def from_event(cls, ev):
@@ -246,7 +253,27 @@ class ConversionResult:
             if isinstance(c, dict):
                 r.checks.append(CheckIssue(str(c.get("code", "")), str(c.get("level", "warning")),
                                            str(c.get("message", ""))))
+        alt = ev.get("alternative")
+        if isinstance(alt, dict) and isinstance(alt.get("output"), str) and os.path.exists(alt["output"]):
+            a = cls.from_event({k: v for k, v in alt.items() if k != "alternative"})
+            a.preset, a.seconds, a.mesh_volume, a.tolerance = r.preset, r.seconds, r.mesh_volume, r.tolerance
+            a.output = alt["output"]
+            pv = alt.get("preview")
+            a.preview = pv if isinstance(pv, str) and os.path.exists(pv) else ""
+            r.alternative = a
         return r
+
+    @property
+    def chosen(self):
+        """The version the user picked (this one unless they picked the
+        alternative)."""
+        return self.alternative if self.use_alternative and self.alternative is not None else self
+
+    @property
+    def extra_files(self):
+        """The alternative's files (to delete with the result)."""
+        a = self.alternative
+        return [f for f in (a.output, a.preview) if f] if a is not None else []
 
     @property
     def preset_title(self):
@@ -264,6 +291,13 @@ class ConversionResult:
     @property
     def has_issues(self):
         return bool(self.checks) or self.valid is False or self.off_mesh
+
+
+def _chosen_file(result, path):
+    """The STEP file to export: the alternative when the user picked it."""
+    if result is not None and result.use_alternative and result.alternative is not None:
+        return result.alternative.output
+    return path
 
 
 @dataclass
@@ -362,8 +396,8 @@ class Job(QObject):
         """The converted STEP files waiting in the temporary folder, as
         (source, part index) — the part index is None unless split."""
         if self.is_split:
-            return [(p.output_path, i) for i, p in enumerate(self.part_list) if p.output_path]
-        return [(self.output_path, None)] if self.output_path else []
+            return [(_chosen_file(p.result, p.output_path), i) for i, p in enumerate(self.part_list) if p.output_path]
+        return [(_chosen_file(self.result, self.output_path), None)] if self.output_path else []
 
     @property
     def exported_files(self):
@@ -384,9 +418,9 @@ class Job(QObject):
     def clear_results(self):
         """Drops the results of a previous conversion and returns the
         temporary files to delete (exported files stay where they are)."""
-        old = [self.output_preview, self.output_path]
+        old = [self.output_preview, self.output_path] + (self.result.extra_files if self.result else [])
         for p in self.part_list:
-            old += [p.output_preview, p.output_path]
+            old += [p.output_preview, p.output_path] + (p.result.extra_files if p.result else [])
             p.output_preview = p.output_path = p.exported_path = p.result = None
         self.result = None
         self.output_preview = self.output_path = self.exported_path = None
@@ -1125,7 +1159,8 @@ class AppModel(QObject):
             if job not in self.jobs:
                 # removed while converting: nothing will show these files
                 parts = [os.path.join(self.preview_dir, f"{job.id}-part{p.index}-out-{stamp}.mmmp") for p in job.part_list]
-                self.discard_previews([result_dir, prev] + parts)
+                extra = [f for r in [job.result] + [p.result for p in job.part_list] if r for f in r.extra_files]
+                self.discard_previews([result_dir, prev] + parts + extra)
                 self._pump()
                 return
             if t.cancelled:
@@ -1206,9 +1241,9 @@ class AppModel(QObject):
 
     @staticmethod
     def preview_files(job):
-        files = [job.input_preview, job.output_preview, job.output_path]
+        files = [job.input_preview, job.output_preview, job.output_path] + (job.result.extra_files if job.result else [])
         for p in job.part_list:
-            files += [p.input_preview, p.output_preview, p.output_path]
+            files += [p.input_preview, p.output_preview, p.output_path] + (p.result.extra_files if p.result else [])
         return [f for f in files if f]
 
     def clear_finished(self):

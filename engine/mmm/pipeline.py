@@ -429,6 +429,9 @@ def convert(input_path, output_path, opts=None, report=NULL):
     # replaces it once the saved file is checked (by body index)
     tried_by_body = {}
     pending = {}
+    # a valid second version of a body, offered when no method follows its
+    # mesh (by body index; see alternative_version)
+    offered = {}
 
     def on_swap(bi):
         """Body bi's alternative made it into the file."""
@@ -618,6 +621,10 @@ def convert(input_path, output_path, opts=None, report=NULL):
         if c.verdict is not None and not c.verdict.ok:
             report.log(f"The other method doesn't follow the mesh closely enough ({c.verdict.summary(unit)}), "
                        "so the first version was kept.")
+            if c.valid:
+                # neither follows the mesh: the closer one is saved, and this
+                # valid one is offered as a second version to choose from
+                offered[bi] = c
             return None, preset, ""
         if c.verdict is not None:
             pending[bi] = c
@@ -654,7 +661,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
 
     if opts.split and info.parts > 1 and len(info.body_part) == n_bodies:
         return _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt,
-                              verdicts, on_swap)
+                              verdicts, on_swap, offered)
 
     for bi, body in enumerate(bodies):
         lo = 0.1 + 0.75 * bi / n_bodies
@@ -741,8 +748,55 @@ def convert(input_path, output_path, opts=None, report=NULL):
     }
     res.update(stats_extra)
     res["fidelity"] = fidelity_summary(list(verdicts.values()))
+    if offered:
+        item_bodies = shape_bodies if len(items) == len(shape_bodies) else []
+        res["alternative"] = alternative_version(items, item_bodies, offered, verdicts, output_path, opts.preview,
+                                                 write, verify, diag, report)
     report.result(res)
     return res
+
+
+def alternative_version(items, item_bodies, offered, verdicts, path, preview, write, verify, diag, report):
+    """When no method makes a body that follows its mesh, the closer result
+    is saved, and the valid one (that some programs open more readily) is
+    saved next to it, for the user to choose: "<name>.valid.step". Returns
+    what the app shows about it, or None."""
+    alt = list(items)
+    marks = {}
+    for k, bi in enumerate(item_bodies):
+        if bi in offered:
+            alt[k] = (offered[bi].shape, items[k][1])
+            marks[bi] = offered[bi].verdict.as_dict()
+    if not marks:
+        return None
+    alt_path = os.path.splitext(path)[0] + ".valid.step"
+    try:
+        write(alt, alt_path)
+        check = verify(alt_path)
+        shape = alt[0][0] if len(alt) == 1 else make_compound([sh for sh, _ in alt])
+        st = stepio.shape_stats(shape)
+        alt_preview = None
+        if preview:
+            alt_preview = os.path.splitext(preview)[0] + ".valid.mmmp"
+            stepio.export_preview(shape, alt_preview, diag)
+    except Exception as e:
+        report.log(f"The second version couldn't be saved ({e})")
+        return None
+    report.log("No method made a shape that follows the mesh everywhere, so two versions were saved to choose "
+               "from: the closest one, and a valid one that is less close.")
+    return {
+        "output": alt_path,
+        "preview": alt_preview,
+        "valid": check.get("valid"),
+        "checked": check.get("checked", False),
+        "checks": check.get("issues", []),
+        "solids": st["solids"],
+        "shells": st["shells"],
+        "faces": st["faces"],
+        "volume": check.get("volume", 0.0),
+        "file_size": os.path.getsize(alt_path),
+        "fidelity": fidelity_summary([marks.get(bi) or verdicts.get(bi) for bi in item_bodies if bi in marks or bi in verdicts]),
+    }
 
 
 def _safe_name(name):
@@ -765,7 +819,7 @@ def _part_output_path(output_path, name, used):
 
 
 def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol, convert_one, convert_alt, verdicts=None,
-                   on_swap=None):
+                   on_swap=None, offered=None):
     """3MF "split to parts": every slicer part becomes its own STEP file
     (parts made of several separate solids keep them together)."""
     unit = "mm" if input_path.lower().endswith(".3mf") else opts.unit
@@ -856,6 +910,11 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
             "checks": check["issues"],
             "repaired": repaired,
         }
+        if offered and any(bi in offered for bi in groups[p]):
+            P = np.vstack([s.V for bi in groups[p] for s in bodies[bi]])
+            r["alternative"] = alternative_version(
+                items, part_bodies if len(items) == len(part_bodies) else [], offered, verdicts or {}, out, prev,
+                write, verify, float(np.linalg.norm(P.max(0) - P.min(0))), report)
         report.part(r)
         results.append(r)
     if not results:

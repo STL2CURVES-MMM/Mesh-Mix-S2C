@@ -58,6 +58,13 @@ def repair_note(r):
     return "The app repaired what it could automatically; this is left:\n" if r.repaired else ""
 
 
+def _chosen_preview(result, path):
+    """The STEP preview of the version the user picked."""
+    if result is not None and result.use_alternative and result.alternative is not None:
+        return result.alternative.preview or None
+    return path
+
+
 class MeshCache(QObject):
     """Loads preview files in the background and keeps the last few."""
 
@@ -274,6 +281,20 @@ class JobPreview(QWidget):
         self.error_card.lay.addLayout(err_head)
         self.error_card.lay.addWidget(self.error_reason)
         self.error_card.lay.addLayout(hbox(None, self.report_btn2))
+        # two versions to choose from (no method followed the mesh everywhere)
+        self.choice_card = Card(padding=10, spacing=6)
+        self.choice_title = Label("Two versions were made", 12, SEMIBOLD)
+        self.choice_text = Label("", 11.5, color=theme.TEXT_DIM, wrap=True)
+        self.closest_btn = GhostButton("Closest to the mesh", "scope", checkable=True)
+        self.valid_btn = GhostButton("Valid solid", "check-circle", checkable=True)
+        for b, alt in ((self.closest_btn, False), (self.valid_btn, True)):
+            b.setFont(theme.font(11.5, MEDIUM))
+            b.clicked.connect(lambda _=False, a=alt: self._choose_version(a))
+        choice_head = hbox(IconLabel("split", theme.WARN, 13), self.choice_title, spacing=7)
+        choice_head.setStretch(1, 1)
+        self.choice_card.lay.addLayout(choice_head)
+        self.choice_card.lay.addWidget(self.choice_text)
+        self.choice_card.lay.addLayout(hbox(None, self.closest_btn, self.valid_btn, spacing=8))
         self.issues = Card(padding=10, spacing=6)
         self.log_card = Card(padding=10, spacing=0)
         self.log_scroll = QScrollArea()
@@ -313,7 +334,7 @@ class JobPreview(QWidget):
         row = hbox(self.chip_area, self.log_btn, self.report_btn, self.reveal_btn, self.export_again_btn,
                    self.export_btn, spacing=8)
         row.setStretch(0, 1)
-        self.bottom.setLayout(vbox(self.mesh_card, self.error_card, self.issues, self.log_card, row, spacing=8,
+        self.bottom.setLayout(vbox(self.mesh_card, self.error_card, self.choice_card, self.issues, self.log_card, row, spacing=8,
                                    margins=(12, 12, 12, 12)))
 
         cache.loaded.connect(self._mesh_loaded)
@@ -381,10 +402,11 @@ class JobPreview(QWidget):
             return None
         if j.is_split:
             p = self._part()
-            return p.output_preview if p else None
-        return j.output_preview
+            return _chosen_preview(p.result, p.output_preview) if p else None
+        return _chosen_preview(j.result, j.output_preview)
 
-    def shown_result(self):
+    def base_result(self):
+        """The result as the engine saved it (with any alternative)."""
         j = self.job
         if j is None:
             return None
@@ -392,6 +414,11 @@ class JobPreview(QWidget):
             p = self._part()
             return p.result if p else None
         return j.result
+
+    def shown_result(self):
+        """The version the user picked."""
+        r = self.base_result()
+        return r.chosen if r is not None else None
 
     def refresh(self):
         j = self.job
@@ -469,13 +496,13 @@ class JobPreview(QWidget):
 
     def _tab_icon(self, p):
         if p.result is not None:
-            return "exclamation-circle" if p.result.has_issues else "check-circle"
+            return "exclamation-circle" if p.result.chosen.has_issues else "check-circle"
         if self.job.status in (JobStatus.CONVERTING, JobStatus.QUEUED):
             return "clock"
         return "cube"
 
     def _tab_color(self, p):
-        r = p.result
+        r = p.result.chosen if p.result is not None else None
         if r is not None:
             return theme.BAD if r.has_errors else (theme.WARN if r.has_issues else theme.GOOD)
         return theme.TEXT_DIM
@@ -671,6 +698,7 @@ class JobPreview(QWidget):
         r = self.shown_result()
         self._refresh_mesh_card()
         self._refresh_error_card()
+        self._refresh_choice_card()
         clear_layout(self.issues.lay)
         if r is not None and r.checks and self.mode == "result":
             for c in r.checks:
@@ -715,6 +743,36 @@ class JobPreview(QWidget):
         self.export_btn.setToolTip(f"Choose where to save the STEP {'files' if j.is_split else 'file'} ({system.MOD}+E)")
         self.export_btn.updateGeometry()
         self._refresh_chips()
+
+    def _refresh_choice_card(self):
+        base = self.base_result()
+        if base is None or base.alternative is None or self.mode != "result":
+            self.choice_card.hide()
+            return
+        unit = self._unit()
+
+        def about(r):
+            fit = r.fidelity.summary(unit) if r.fidelity is not None else "not measured"
+            return ("a valid solid" if r.valid is True and not r.has_errors else "has errors that some programs "
+                    "may not open") + f"; compared with the mesh: {fit}"
+
+        self.choice_text.setText(
+            "No method made a shape that follows the mesh everywhere, so both are kept for you to pick.\n"
+            f"• Closest to the mesh: {about(base)}.\n"
+            f"• Valid solid: {about(base.alternative)}.\n"
+            "The one you pick is shown here and exported."
+            + (" It was already exported: export again to save this one." if self.job.is_exported else ""))
+        self.closest_btn.setChecked(not base.use_alternative)
+        self.valid_btn.setChecked(base.use_alternative)
+        self.choice_card.show()
+
+    def _choose_version(self, alt):
+        base = self.base_result()
+        if base is not None and base.alternative is not None:
+            base.use_alternative = alt
+            self._chips_key = None
+            self._tabs_key = None
+            self.job.touch()
 
     def _refresh_chips(self):
         j = self.job

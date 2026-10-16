@@ -327,3 +327,27 @@ def test_auto_used_mark_only_for_auto_runs(window, meshes):
     panel.refresh()
     assert [c.preset.value for c in panel.preset_cards if c.auto_picked] == ["cad"]
 
+
+
+def test_choosing_the_valid_version(window, meshes):
+    m = window.model
+    m.add([meshes["rough_twoways.stl"], meshes["one.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    m.convert_all()
+    assert wait_until(lambda: m.is_idle)
+    jp = window.preview.preview
+    job = next(j for j in m.jobs if j.file_name == "rough_twoways.stl")
+    m.select(job.id)
+    assert wait_until(lambda: jp.choice_card.isVisible())
+    assert "Two versions" in jp.choice_title.text() and "Valid solid" in jp.choice_text.text()
+    assert jp.closest_btn.isChecked() and not jp.valid_btn.isChecked()
+    assert jp.check_pill._text == "Problem found" and jp.out_path() == job.output_preview
+    jp.valid_btn.click()
+    assert job.result.use_alternative and jp.valid_btn.isChecked() and not jp.closest_btn.isChecked()
+    assert jp.out_path() == job.result.alternative.preview
+    assert wait_until(lambda: jp.check_pill._text != "Problem found")
+    jp.closest_btn.click()
+    assert not job.result.use_alternative
+    # a file with nothing to choose shows no choice
+    m.select(next(j for j in m.jobs if j.file_name == "one.stl").id)
+    assert wait_until(lambda: not jp.choice_card.isVisible())

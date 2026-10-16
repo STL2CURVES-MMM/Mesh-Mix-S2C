@@ -168,6 +168,24 @@ def main():
                          "wrong_way": 0.001}}
     if "repaired" in name:
         base["repaired"] = ["read back and saved again"]
+
+    def alternative(out, pv):
+        """No method followed the mesh: a valid second version to choose from."""
+        if "twoways" not in name:
+            return {}
+        alt = os.path.splitext(out)[0] + ".valid.step"
+        with open(alt, "w", encoding="utf-8") as fh:
+            fh.write("ISO-10303-21; valid version\n")
+        alt_pv = os.path.splitext(pv)[0] + ".valid.mmmp" if pv else None
+        preview(alt_pv, 50)
+        return {"alternative": {"output": alt, "preview": alt_pv, "valid": True, "checked": True, "checks": [],
+                                "solids": 1, "shells": 1, "faces": 420, "file_size": os.path.getsize(alt),
+                                "fidelity": {"ok": False, "tolerance": 0.05, "within": 0.85, "within2": 0.9,
+                                             "p99": 0.6, "max": 1.5, "wrong_way": 0.002}}}
+
+    if "twoways" in name:
+        base["valid"] = False
+        base["checks"] = [{"code": "bad_faces", "level": "error", "message": "2 faces have errors."}]
     if args.split:
         for k, out in enumerate(args.part_output):
             with open(out, "w", encoding="utf-8") as fh:
@@ -175,12 +193,13 @@ def main():
             pv = args.part_preview[k] if k < len(args.part_preview) else None
             preview(pv, k * 20)
             emit({"event": "part", "part": k, "name": ["Left", "Right"][k % 2], "output": out, "preview": pv,
-                  "file_size": os.path.getsize(out), **base})
+                  "file_size": os.path.getsize(out), **base, **(alternative(out, pv) if k == 1 else {})})
     else:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write("ISO-10303-21; fake\n")
     preview(args.preview)
     emit({"event": "result", "output": args.output, "file_size": os.path.getsize(args.output), **base,
+          **({} if args.split else alternative(args.output, args.preview)),
           "mesh_check": mesh_check(name, args.merge_overlaps, getattr(args, "touching_parts", "ask"))})
     return 0
 

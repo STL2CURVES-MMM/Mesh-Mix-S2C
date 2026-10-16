@@ -465,6 +465,45 @@ def test_a_result_that_only_just_passes_is_compared_with_another_method(tmp_path
     assert any("too (the first result only just passed)" in t for t in rep.said)
 
 
+def test_when_nothing_follows_the_mesh_both_versions_are_offered(tmp_path, monkeypatch):
+    """No method follows the mesh, and the closest result's file has errors:
+    it is saved, and the valid (less close) one is saved next to it, so
+    the user can choose."""
+    from mmm import stepio
+    from mmm.pipeline import Options, convert
+
+    class Bad(_FakeVerdict):
+        def __init__(self, score):
+            super().__init__(score, 1.0)
+            self.ok = False
+
+        def as_dict(self):
+            return {**super().as_dict(), "ok": False}
+
+    scores = iter([-5.0, -9.0, -9.0, -9.0])
+    monkeypatch.setattr(fidelity, "judge", lambda *a, **k: Bad(next(scores, -9.0)))
+    out = str(tmp_path / "box.step")
+    real = stepio.verify_step
+
+    def verify(path, **kw):
+        r = real(path, **kw)
+        # the closest version's file has errors no repair fixes (the part
+        # checked on its own, and the valid version, are fine)
+        if not path.endswith(".valid.step") and "mmm-part-" not in os.path.basename(path):
+            r = {**r, "ok": False, "issues": r["issues"] + [{"code": "bad_faces", "level": "error", "message": "x"}]}
+        return r
+
+    monkeypatch.setattr(stepio, "verify_step", verify)
+    V, F = _box_mesh((20, 10, 5))
+    path = str(tmp_path / "box.stl")
+    trimesh.Trimesh(V, F).export(path)
+    res = convert(path, out, Options(preset="auto", quality=0.7, preview=str(tmp_path / "box.mmmp")), NULL)
+    alt = res["alternative"]
+    assert alt and alt["output"].endswith("box.valid.step") and os.path.exists(alt["output"])
+    assert alt["valid"] and os.path.exists(alt["preview"])
+    assert alt["fidelity"]["ok"] is False
+
+
 def test_reading_reports_each_step(tmp_path):
     from mmm.report import Reporter
 

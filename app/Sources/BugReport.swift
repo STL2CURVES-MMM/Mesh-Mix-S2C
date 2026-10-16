@@ -199,6 +199,14 @@ enum BugReport {
             for c in r.checks {
                 add("  - \(c.level): \(c.message)")
             }
+            if let a = r.alternative?.result {
+                add("  Second (valid) version offered: valid \(a.valid.map { String($0) } ?? "nil"); faces \(grouped(a.faces))"
+                    + (a.fidelity.map { "; compared with the mesh: \($0.summary(unit: job.resultUnit(s)))" } ?? "")
+                    + (r.useAlternative ? "; the user picked it" : "; the user kept the closest one"))
+                for c in a.checks {
+                    add("    - \(c.level): \(c.message)")
+                }
+            }
         }
         if let e = job.error {
             add("  What went wrong: \(e)")

@@ -97,8 +97,14 @@ struct JobPreview: View {
     /// The selected tab's part when a 3MF is split into parts.
     private var part: JobPart? { job.currentPart }
     private var inURL: URL? { part?.inputPreview ?? job.inputPreview }
-    private var outURL: URL? { job.isSplit ? part?.outputPreview : job.outputPreview }
-    private var shownResult: ConversionResult? { job.isSplit ? part?.result : job.result }
+    private var outURL: URL? {
+        let url = job.isSplit ? part?.outputPreview : job.outputPreview
+        return baseResult.map { $0.chosenPreview(url) } ?? url
+    }
+    /// The result as the engine saved it (with any alternative)
+    private var baseResult: ConversionResult? { job.isSplit ? part?.result : job.result }
+    /// The version the user picked
+    private var shownResult: ConversionResult? { baseResult?.chosen }
     private var previewKey: String { "\(inURL?.path ?? "")|\(outURL?.path ?? "")" }
 
     var body: some View {
@@ -305,13 +311,13 @@ struct JobPreview: View {
     }
 
     private func tabIcon(for p: JobPart) -> String {
-        if let r = p.result { return r.hasIssues ? "exclamationmark.circle.fill" : "checkmark.circle.fill" }
+        if let r = p.result?.chosen { return r.hasIssues ? "exclamationmark.circle.fill" : "checkmark.circle.fill" }
         if job.status == .converting || job.status == .queued { return "clock" }
         return "cube"
     }
 
     private func tabColor(for p: JobPart) -> Color {
-        if let r = p.result { return r.hasErrors ? Theme.bad : (r.hasIssues ? Theme.warn : Theme.good) }
+        if let r = p.result?.chosen { return r.hasErrors ? Theme.bad : (r.hasIssues ? Theme.warn : Theme.good) }
         return Theme.textDim
     }
 
@@ -556,6 +562,54 @@ struct JobPreview: View {
         return trouble && !showsErrorCard
     }
 
+    private func chooseVersion(_ alt: Bool) {
+        if job.isSplit {
+            if job.partList.indices.contains(job.selectedPart) {
+                job.partList[job.selectedPart].result?.useAlternative = alt
+            }
+        } else {
+            job.result?.useAlternative = alt
+        }
+    }
+
+    private func aboutVersion(_ r: ConversionResult) -> String {
+        (r.valid == true && !r.hasErrors ? "a valid solid" : "has errors that some programs may not open")
+            + "; compared with the mesh: " + (r.fidelity?.summary(unit: modelUnit) ?? "not measured")
+    }
+
+    /// No method followed the mesh everywhere: the closest version and a
+    /// valid one were both saved, and the user picks which to export.
+    @ViewBuilder var choiceCard: some View {
+        if mode == .result, let base = baseResult, let alt = base.alternative {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 7) {
+                    Image(systemName: "square.split.2x1").font(.system(size: 12)).foregroundStyle(Theme.warn)
+                    Text("Two versions were made").font(.system(size: 12, weight: .semibold))
+                }
+                Text("No method made a shape that follows the mesh everywhere, so both are kept for you to pick.\n"
+                     + "• Closest to the mesh: \(aboutVersion(base)).\n"
+                     + "• Valid solid: \(aboutVersion(alt.result)).\n"
+                     + "The one you pick is shown here and exported."
+                     + (job.isExported ? " It was already exported: export again to save this one." : ""))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Picker("", selection: Binding(get: { base.useAlternative }, set: { chooseVersion($0) })) {
+                        Text("Closest to the mesh").tag(false)
+                        Text("Valid solid").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(padding: 10)
+        }
+    }
+
     /// What the check of the saved STEP file found, in plain words.
     @ViewBuilder var issuesCard: some View {
         if mode == .result, let r = shownResult, !r.checks.isEmpty {
@@ -582,6 +636,7 @@ struct JobPreview: View {
         VStack(alignment: .leading, spacing: 8) {
             meshCard
             errorCard
+            choiceCard
             issuesCard
             if showLog && (!job.log.isEmpty || !job.warnings.isEmpty) {
                 ScrollView {
