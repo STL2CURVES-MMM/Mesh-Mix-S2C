@@ -109,11 +109,17 @@ def tessellate(shape, deflection, angle=0.25):
             copied.Next()
             tri = BRep_Tool.Triangulation_s(face, loc)
         if tri is None or tri.NbTriangles() == 0:
-            # mesh the face as it is (at its own tolerance) instead
+            # mesh the face as it is (at its own tolerance) instead, coarser
+            # each time if need be: a face read back from a STEP file has
+            # almost no tolerance, and OpenCASCADE can fail to mesh it finely
+            # (a missing face would count as a gap the size of the face)
             face = orig
-            BRepTools.Clean_s(face)
-            BRepMesh_IncrementalMesh(face, deflection, False, angle, True)
-            tri = BRep_Tool.Triangulation_s(face, loc)
+            for k in range(6):
+                BRepTools.Clean_s(face)
+                BRepMesh_IncrementalMesh(face, deflection * 4 ** k, False, angle, True)
+                tri = BRep_Tool.Triangulation_s(face, loc)
+                if tri is not None and tri.NbTriangles() > 0:
+                    break
             retry.append(face)
         if tri is not None and tri.NbTriangles() > 0:
             trsf = loc.Transformation()
@@ -224,6 +230,41 @@ def mesh_deflection(V, F):
     L = np.linalg.norm(V[F.reshape(-1)[a]] - V[F[a // 3, (a % 3 + 1) % 3]], axis=1)
     ext = float(np.linalg.norm(V.max(0) - V.min(0)))
     return chord_deflection(N, A, a // 3, b // 3, L, tiny=A < 1e-10 * ext ** 2)
+
+
+def local_deflection(V, F):
+    """How far a true curved surface may stand off each of the mesh's flat
+    triangles, from the bends across its edges to smoothly curved
+    neighbours. A spot where the shape is further from
+    the mesh than this (and than the tolerance) is a real miss, not the
+    mesh's own coarseness: a coarse sphere's big pole triangles may stand
+    0.2 mm off, a CAD export's fine fillet triangles only 0.01 mm."""
+    out = np.zeros(len(F))
+    if len(F) < 2:
+        return out
+    W = _welded(V, F)
+    e = np.stack([W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]], axis=1).reshape(-1, 2)
+    e.sort(axis=1)
+    key = e[:, 0].astype(np.int64) * (int(W.max()) + 1) + e[:, 1]
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    same = ks[1:] == ks[:-1]
+    lone = np.ones(len(same), dtype=bool)
+    lone[1:] &= ~same[:-1]
+    lone[:-1] &= ~same[1:]
+    pair = same & lone
+    a, b = order[:-1][pair], order[1:][pair]
+    f, g = a // 3, b // 3
+    N, A = _tri_normals(V, F)
+    th = np.arccos(np.clip((N[f] * N[g]).sum(1), -1.0, 1.0))
+    th = np.where((th > np.radians(1.0)) & (th < np.radians(40.0)), th, 0.0)
+    # a flat triangle's centre stands off a curve bending by th along it by
+    # about its longest edge * th / 6 (more than an edge's sagitta)
+    T = V[F]
+    Lmax = np.linalg.norm(T - np.roll(T, -1, axis=1), axis=2).max(1)
+    np.maximum.at(out, f, Lmax[f] * th / 6.0)
+    np.maximum.at(out, g, Lmax[g] * th / 6.0)
+    return out
 
 
 def mesh_noise(V, F, n_v=5000, cap=40, sharp_deg=40.0, seed=0):
@@ -561,6 +602,13 @@ class Verdict:
     P99_K = 3.0
     P999_K = 8.0
     WRONG_WAY_MAX = 0.005
+    # a spot further from the mesh than this many times what the mesh's own
+    # coarseness there explains (see local_deflection) is too small to move
+    # the percentiles but may be a real miss (a notch, a rounded-off tip):
+    # the verdict is then uncertain, so the finer check and the other
+    # method run. On the test models good results stay below 2.6; a 0.3 mm
+    # notch measured 4.7.
+    LOCAL_K = 3.5
 
     # within this share of a limit (either side), a verdict is uncertain
     MARGIN = 0.25
@@ -586,7 +634,8 @@ class Verdict:
         self.ok = p99 <= self.P99_K and p999 <= self.P999_K and ww <= self.WRONG_WAY_MAX
         # higher is better: tight fit, no far-off spots, few points facing
         # the wrong way
-        self.score = -p99 - 0.25 * p999 - 200.0 * ww
+        self.local = float(r.get("local_max", 0.0))
+        self.score = -p99 - 0.25 * p999 - 200.0 * ww - 0.25 * max(0.0, self.local - self.LOCAL_K)
         self.certainty, self.doubt = self._certainty(p99, p999, ww)
 
     def _certainty(self, p99, p999, ww):
@@ -603,6 +652,8 @@ class Verdict:
         # they always do: its noise-tilted triangles are lone points)
         elif r.get("wrong_way_points", 0.0) > self.WRONG_WAY_MAX >= ww and c > 0.4:
             c, doubt = 0.4, "some spots face another way than the mesh, but only scattered ones"
+        if self.local > self.LOCAL_K and c > 0.4:
+            c, doubt = 0.4, "one small spot is further from the mesh than the rest"
         return c, doubt
 
     def summary(self, unit="mm"):
@@ -630,6 +681,7 @@ class Verdict:
             "wrong_way": max(r["wrong_way"], r["wrong_way_shape"]),
             "mesh_kind": r.get("mesh_kind", "clean"),
             "certainty": round(float(self.certainty), 3),
+            "local_max": round(self.local, 3),
             "rechecked": bool(self.rechecked),
         }
 
@@ -718,6 +770,7 @@ def mesh_surface(V, F):
     M.thin = thin_share(V, F, M.noise)
     T = V[F]
     M.edge = float(np.median(np.linalg.norm(T - np.roll(T, -1, axis=1), axis=2).max(1))) if len(F) else 0.0
+    M.local_dev = local_deflection(V, F)
     _MESH_CACHE.clear()  # one mesh at a time (they can be big)
     _MESH_CACHE[key] = (M, MN, spacing)
     return M, MN, spacing
@@ -839,6 +892,10 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     rho = float(np.clip(M.edge, 2.5 * step, 6.0 * step))
     wrong = _coherent(P, wrong, rho)
     wrong_sm = _coherent(Q, wrong_sm, rho)
+    # each spot judged against the mesh's own coarseness there
+    loc_ms = d_ms / np.maximum(allow, M.local_dev[ptri])
+    loc_sm = d_sm / np.maximum(allow, M.local_dev[mtri])
+    local_max = float(max(loc_ms.max() if len(loc_ms) else 0.0, loc_sm.max() if len(loc_sm) else 0.0))
     k = int(np.argmax(d_ms)) if len(d_ms) else 0
     k2 = int(np.argmax(d_sm)) if len(d_sm) else 0
     worst, worst_d = (P[k], float(d_ms[k])) if d_ms[k] >= d_sm[k2] else (Q[k2], float(d_sm[k2]))
@@ -860,8 +917,9 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
         "wrong_way": float(np.mean(wrong)),
         "wrong_way_shape": float(np.mean(wrong_sm)),
         "wrong_way_points": raw_ww,
+        "local_max": local_max,
         "worst": [float(x) for x in worst],
         "worst_distance": worst_d,
-        "points": {"mesh": P, "mesh_dist": d_ms, "mesh_angle": ang,
-                   "shape": Q, "shape_dist": d_sm},
+        "points": {"mesh": P, "mesh_dist": d_ms, "mesh_angle": ang, "mesh_tri": ptri,
+                   "shape": Q, "shape_dist": d_sm, "shape_mesh_tri": mtri},
     }

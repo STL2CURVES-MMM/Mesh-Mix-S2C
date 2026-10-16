@@ -627,3 +627,23 @@ def test_a_wrapped_face_touching_itself_is_cut_into_half_turns():
     reg = cad.Region(Cylinder([0, 0, 0], [0, 0, 1], 13.0), np.arange(len(a)), 1)
     parts = cad._half_turns(reg, np.array([13.0, 0.0, 5.0]), cen)
     assert parts is not None and sorted(len(p) for p in parts) == [36, 36]
+
+
+def test_a_small_deep_notch_makes_the_verdict_uncertain():
+    """A notch too small to move the percentiles (the mount's 0.3 mm notch
+    covered 0.04% of its surface) still makes the verdict uncertain, so the
+    finer check and the other method run; the same shape without it stays
+    certain."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    V, F = _box_mesh((10, 8, 6))
+    good = fidelity.Verdict(_strip(fidelity.compare(_box_shape((10, 8, 6)), [(V, F)], 0.01)), 0.01)
+    notch = BRepPrimAPI_MakeBox(gp_Pnt(4.9, 3.9, 5.94), 0.25, 0.25, 0.1).Shape()
+    shape = BRepAlgoAPI_Cut(_box_shape((10, 8, 6)), notch).Shape()
+    v = fidelity.Verdict(_strip(fidelity.compare(shape, [(V, F)], 0.01)), 0.01)
+    assert good.certainty == 1.0 and good.local < 1.0
+    assert v.ok and v.local > fidelity.Verdict.LOCAL_K
+    assert v.certainty <= 0.4 and "small spot" in v.doubt
+    assert v.score < good.score

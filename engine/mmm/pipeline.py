@@ -254,6 +254,7 @@ def fidelity_summary(items):
         "mesh_kind": "scan" if any(v.get("mesh_kind") == "scan" for v in items) else items[0].get("mesh_kind", "clean"),
         "certainty": min(v.get("certainty", 1.0) for v in items),
         "rechecked": any(v.get("rechecked") for v in items),
+        "local_max": max(v.get("local_max", 0.0) for v in items),
     }
 
 
