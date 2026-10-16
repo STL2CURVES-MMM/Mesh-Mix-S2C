@@ -737,7 +737,9 @@ class Segmenter:
         cands = []
         for k in range(len(starts) - 1):
             faces = order[starts[k]:starts[k + 1]]
-            if len(faces) < 30 or fa[faces].sum() < 1e-3 * total:
+            # (no limit on area: a ring gear's flanks are each a tiny share
+            # of the part)
+            if len(faces) < 12 or fa[faces].sum() < 1e-5 * total:
                 continue
             regs = np.unique(lab[faces])
             if len(regs) < min_regions:
@@ -772,6 +774,11 @@ class Segmenter:
                 hyps.append(fit_on(swept_like))
             big = sorted((i for i in left if own[i] is not None), key=lambda i: -area[i])[:20]
             hyps += [own[i] for i in big]
+            # a thin flank alone can't tell its motion for sure (its normals
+            # barely vary), but it can propose one: kept only when other
+            # patches agree, and then refitted on all of them
+            unsure = sorted((i for i in left if own[i] is None), key=lambda i: -area[i])[:20]
+            hyps += [fit_motion(cen[cands[i]], fn[cands[i]], fa[cands[i]], min_gap=1.2) for i in unsure]
             best, best_area = None, 0.0
             for h in hyps:
                 if h is None:
@@ -782,7 +789,13 @@ class Segmenter:
                     best, best_area, group = h, ga, g
             if best is None:
                 break
-            ref = fit_on(group) or best
+            ref = fit_on(group)
+            if ref is None:
+                # the group together must be sure of it (a proposal from a
+                # thin patch alone is not enough)
+                for i in group:
+                    left.discard(i)
+                continue
             group = agree(ref) or group
             for i in group:
                 motion[i] = ref

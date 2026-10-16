@@ -969,6 +969,37 @@ def convert_body_exact(B, body, tol, report):
     return assemble_body(B, built, flags, tol, report)
 
 
+def swept_share(curved, max_tris=60_000, max_deg=3.0):
+    """Share of curved area (list of (centres, normals, areas)) whose
+    normals are square to one rigid motion (see sweep.py)."""
+    from .sweep import fit_motion
+
+    C = np.vstack([c for c, _, _ in curved]) if curved else np.zeros((0, 3))
+    N = np.vstack([n for _, n, _ in curved]) if curved else np.zeros((0, 3))
+    A = np.concatenate([a for _, _, a in curved]) if curved else np.zeros(0)
+    if len(C) < 50 or A.sum() <= 0:
+        return 0.0
+    idx = np.arange(len(C))
+    if len(idx) > max_tris:
+        idx = np.random.default_rng(0).choice(len(C), max_tris, replace=False, p=A / A.sum())
+    # a robust fit: parts that aren't swept (a gear's tabs, its holes)
+    # pull a plain fit off, so the triangles that agree are kept and the
+    # motion fitted again on them
+    sel = idx
+    ok = None
+    for _ in range(4):
+        mot = fit_motion(C[sel], N[sel], A[sel], min_gap=1.0, max_rms=90.0)
+        if mot is None:
+            return 0.0
+        V = mot.velocity(C)
+        sp = np.maximum(np.linalg.norm(V, axis=1), 1e-30)
+        ok = np.abs((N * V).sum(1)) / sp <= np.sin(np.radians(max_deg))
+        sel = np.intersect1d(idx, np.nonzero(ok)[0])
+        if len(sel) < 50:
+            return 0.0
+    return float(A[ok].sum() / A.sum())
+
+
 def choose_preset_body(body, tol, quality, report, big=400_000):
     """CAD for parts made of planes/cylinders/etc., Smooth for organic ones.
 
@@ -978,18 +1009,32 @@ def choose_preset_body(body, tol, quality, report, big=400_000):
     (preset, None)."""
     tot = 0.0
     planar = 0.0
+    curved = []  # (centres, normals, areas) of the triangles not on big flats
     for s in body:
         normals, areas = face_normals_areas(s.V, s.F)
         d = max(1e-9, float(np.linalg.norm(s.V.max(0) - s.V.min(0))))
         labels, planes = planar_regions(s.V, s.F, s.topo, normals, areas, 2e-5 * d)
         ar = np.bincount(labels, weights=areas)
         a_tot = areas.sum()
-        planar += ar[ar >= 0.002 * a_tot].sum()
+        flat = ar >= 0.002 * a_tot
+        planar += ar[flat].sum()
         tot += a_tot
+        rest = ~flat[labels]
+        curved.append((s.V[s.F[rest]].mean(1), normals[rest], areas[rest]))
     frac = planar / max(tot, 1e-30)
     report.log(f"Flat faces cover {frac:.0%} of the surface")
     if frac >= 0.15:
         return "cad", None
+    # Gear teeth, threads, a turned profile: few flats, but most of the
+    # curved surface is swept along one motion (all teeth screw about the
+    # gear's axis), which organic shapes never are
+    from . import cad as _cad
+
+    if _cad.FIND_SWEEPS:
+        share = swept_share(curved)
+        if share >= 0.6:
+            report.log(f"{share:.0%} of the curved surface is swept along one motion (like gear teeth or a thread)")
+            return "cad", None
     # Pure analytic shapes without flats (a ball, a ring, a pin, a hollow
     # sphere) are still CAD parts: one primitive explains each shell.
     from .fitting import Cone, Cylinder, Sphere, Torus

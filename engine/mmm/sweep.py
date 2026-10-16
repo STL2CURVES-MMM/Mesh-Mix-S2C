@@ -122,9 +122,10 @@ def copy_motion(mot):
     return m
 
 
-def fit_motion(P, N, W=None):
+def fit_motion(P, N, W=None, min_gap=MIN_GAP, max_rms=None):
     """The rigid motion that leaves the surface through points P with unit
-    normals N unchanged, or None when there is no single clear one."""
+    normals N unchanged, or None when there is no single clear one (a lower
+    ``min_gap`` lets a thin patch propose one for a group to confirm)."""
     P = np.asarray(P, float)
     N = np.asarray(N, float)
     if len(P) < 12:
@@ -160,7 +161,7 @@ def fit_motion(P, N, W=None):
     mot.rms_deg = rms
     # sure when the normals are square to it and nothing else fits nearly as well
     mot.sureness = float(np.clip(min(1.0 - rms / MAX_RMS_DEG, (gap - MIN_GAP) / MIN_GAP), 0.0, 1.0))
-    if rms > MAX_RMS_DEG or gap < MIN_GAP:
+    if rms > (MAX_RMS_DEG if max_rms is None else max_rms) or gap < min_gap:
         return None
     return set_phi0(mot, P)
 
