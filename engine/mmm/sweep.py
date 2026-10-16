@@ -38,6 +38,7 @@ class Motion:
         self.sureness = float(sureness)
         self.rms_deg = float(rms_deg)
         self.phi0 = 0.0
+        self.z0 = 0.0
 
     def describe(self):
         if self.kind == "extrusion":
@@ -53,14 +54,26 @@ class Motion:
         return np.cross(self.d, rel) + self.pitch * self.d
 
     def to_profile(self, P):
-        """(profile coordinates (n, 2), sweep parameter (n,)) of points."""
+        """(profile coordinates (n, 2), sweep parameter (n,)) of points.
+
+        An extrusion's profile is its cross-section; a revolution's lies in
+        a plane through the axis, (radius, height); a helix's is its
+        cross-section across the axis at height z0 (the way a helical gear
+        or a twisted extrusion is drawn: a flank with corners only at its
+        ends is then a straight line, as drawn, and meets the end faces in
+        the straight edge they have), and the sweep parameter is the turn
+        that brings a point there."""
         rel = np.asarray(P, float) - self.a
         if self.kind == "extrusion":
             return np.c_[rel @ self.u, rel @ self.v], rel @ self.d
         z = rel @ self.d
         x, y = rel @ self.u, rel @ self.v
+        if self.kind == "helix":
+            t = (z - self.z0) / self.pitch
+            c, s = np.cos(t), np.sin(t)
+            return np.c_[c * x + s * y, -s * x + c * y], t
         phi = np.mod(np.arctan2(y, x) - self.phi0 + np.pi, 2 * np.pi) - np.pi
-        return np.c_[np.hypot(x, y), z - self.pitch * phi], phi
+        return np.c_[np.hypot(x, y), z], phi
 
     def from_profile(self, Q, t):
         """Points of profile coordinates Q moved by sweep parameter t."""
@@ -68,9 +81,14 @@ class Motion:
         t = np.broadcast_to(np.asarray(t, float), (len(Q),))
         if self.kind == "extrusion":
             return self.a + np.outer(Q[:, 0], self.u) + np.outer(Q[:, 1], self.v) + np.outer(t, self.d)
+        if self.kind == "helix":
+            c, s = np.cos(t), np.sin(t)
+            x, y = c * Q[:, 0] - s * Q[:, 1], s * Q[:, 0] + c * Q[:, 1]
+            return (self.a + np.outer(self.z0 + self.pitch * t, self.d)
+                    + np.outer(x, self.u) + np.outer(y, self.v))
         phi = t + self.phi0
-        r, w = Q[:, 0], Q[:, 1]
-        return (self.a + np.outer(w + self.pitch * t, self.d)
+        r, z = Q[:, 0], Q[:, 1]
+        return (self.a + np.outer(z, self.d)
                 + np.outer(r * np.cos(phi), self.u) + np.outer(r * np.sin(phi), self.v))
 
 
@@ -87,7 +105,10 @@ def motion_rms(mot, P, N, W=None):
 
 
 def set_phi0(mot, P):
-    """Angles measured from the middle of these points (no wrap inside)."""
+    """Angles measured from the middle of these points (no wrap inside); a
+    helix's profile taken at their middle height."""
+    if mot.kind == "helix":
+        mot.z0 = float(((np.asarray(P) - mot.a) @ mot.d).mean())
     if mot.kind != "extrusion":
         rel = np.asarray(P) - mot.a
         ang = np.arctan2(rel @ mot.v, rel @ mot.u)
@@ -97,7 +118,7 @@ def set_phi0(mot, P):
 
 def copy_motion(mot):
     m = Motion(mot.kind, mot.a, mot.d, mot.pitch, mot.sureness, mot.rms_deg)
-    m.phi0 = mot.phi0
+    m.phi0, m.z0 = mot.phi0, mot.z0
     return m
 
 
@@ -141,12 +162,7 @@ def fit_motion(P, N, W=None):
     mot.sureness = float(np.clip(min(1.0 - rms / MAX_RMS_DEG, (gap - MIN_GAP) / MIN_GAP), 0.0, 1.0))
     if rms > MAX_RMS_DEG or gap < MIN_GAP:
         return None
-    if mot.kind != "extrusion":
-        # angles measured from the middle of the patch (no wrap inside it)
-        rel = P - mot.a
-        ang = np.arctan2(rel @ mot.v, rel @ mot.u)
-        mot.phi0 = float(np.arctan2(np.sin(ang).mean(), np.cos(ang).mean()))
-    return mot
+    return set_phi0(mot, P)
 
 
 def order_curve(Q, tol):
@@ -207,10 +223,20 @@ class ProfileCurve:
         P = np.asarray(P, float)
         self.tol = tol
         seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+        # A profile known only at a few spots (a flank whose mesh has
+        # corners only at its ends: two tight clusters of points) says
+        # nothing about a curve between them, and a cubic through the
+        # clusters swings far off: straight lines between their centres.
+        gap = seg > 0.2 * seg.sum()
+        if gap.any() and gap.sum() <= 2:
+            parts = np.split(P, np.nonzero(gap)[0] + 1)
+            P = np.array([q.mean(0) for q in parts])
+            seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
         t = np.r_[0.0, np.cumsum(seg)]
         t /= t[-1]
         # smooth within the tolerance, never wiggling between points
-        self.spl, _ = make_splprep(P.T, u=t, k=3, s=len(P) * (0.25 * tol) ** 2)
+        k = min(3, len(P) - 1)
+        self.spl, _ = make_splprep(P.T, u=t, k=k, s=0.0 if k < 3 else len(P) * (0.25 * tol) ** 2)
         self.ts = np.linspace(0.0, 1.0, max(200, 8 * len(P)))
         self.S = self.at(self.ts)
         from scipy.spatial import cKDTree
@@ -235,6 +261,8 @@ class SweptSurface:
     rank = 4
 
     def __init__(self, motion, curve, s_range, t_range, tol):
+        from scipy.spatial import cKDTree
+
         self.motion = motion
         self.curve = curve
         self.s_range = s_range
@@ -242,26 +270,67 @@ class SweptSurface:
         self.tol = tol
         self.dev = 0.0
         self._geom = None
+        # the profile over the surface's whole range (a little past the
+        # patch's ends), densely, for nearest points
+        self.ss = np.linspace(s_range[0], s_range[1], max(400, 2 * len(curve.ts)))
+        self.SS = curve.at(self.ss)
+        self.tree = cKDTree(self.SS)
+
+    def _nearest(self, Q):
+        d, k = self.tree.query(np.asarray(Q, float))
+        return d, self.ss[k]
+
+    def X(self, s, t):
+        return self.motion.from_profile(self.curve.at(s), t)
+
+    def foot(self, P, iters=6):
+        """(s, t) of the surface point nearest each point: the profile point
+        nearest in the profile's plane to start, then Gauss-Newton on the
+        3D distance (for a helix the plane cuts a flank facing round the
+        axis at a slant, so the start can be well off)."""
+        P = np.atleast_2d(np.asarray(P, float))
+        Q, t = self.motion.to_profile(P)
+        _, s = self._nearest(Q)
+        if self.motion.kind != "helix":
+            return s, t
+        hs = 1e-5 * max(self.s_range[1] - self.s_range[0], 1e-9)
+        ht = 1e-5 * max(self.t_range[1] - self.t_range[0], 1e-9)
+        for _ in range(iters):
+            X = self.X(s, t)
+            Js = (self.X(s + hs, t) - X) / hs
+            Jt = (self.X(s, t + ht) - X) / ht
+            r = P - X
+            a, b, c = (Js * Js).sum(1), (Js * Jt).sum(1), (Jt * Jt).sum(1)
+            gs, gt = (Js * r).sum(1), (Jt * r).sum(1)
+            det = a * c - b * b
+            ok = np.abs(det) > 1e-30
+            ds = np.where(ok, (c * gs - b * gt) / np.where(ok, det, 1), 0.0)
+            dt = np.where(ok, (a * gt - b * gs) / np.where(ok, det, 1), 0.0)
+            s, t = s + ds, t + dt
+            if np.abs(ds).max() < 1e-9 and np.abs(dt).max() < 1e-12:
+                break
+        return s, t
+
+    def uv(self, P):
+        """Surface parameters (0..1 along the profile and the sweep, see
+        geom) of points on or near the surface."""
+        s, t = self.foot(P)
+        (s0, s1), (t0, t1) = self.s_range, self.t_range
+        return (s - s0) / (s1 - s0), (t - t0) / (t1 - t0)
 
     def describe(self):
         return f"swept ({self.motion.describe()})"
 
     def distance(self, P):
         P = np.atleast_2d(np.asarray(P, float))
-        Q, t = self.motion.to_profile(P)
-        d, s = self.curve.nearest(Q)
         if self.motion.kind != "helix":
-            return d  # in the profile's plane: exact
-        # for a helix the profile plane cuts a flank that faces round the
-        # axis at a slant (a small gap there reads several times too big):
-        # the distance along the surface normal at the nearest profile point
-        X = self.motion.from_profile(self.curve.at(s), t)
-        return np.abs(((P - X) * self._normal_at(s, t)).sum(1))
+            return self._nearest(self.motion.to_profile(P)[0])[0]  # exact
+        s, t = self.foot(P)
+        return np.linalg.norm(P - self.X(s, t), axis=1)
 
     def normal(self, P):
         P = np.atleast_2d(P)
-        Q, t = self.motion.to_profile(P)
-        _, s = self.curve.nearest(Q)
+        s, t = self.foot(P)
         return self._normal_at(s, t)
 
     def _normal_at(self, s, t):
@@ -283,6 +352,31 @@ class SweptSurface:
     def refit(self, P, N=None, W=None):
         return None  # kept as fitted
 
+    def pcurve(self, edge, n=40):
+        """The edge's curve in this surface's parameters (Geom2d), sharing
+        the edge's own parameters, or None."""
+        from OCP.BRepAdaptor import BRepAdaptor_Curve
+        from OCP.Geom2dAPI import Geom2dAPI_Interpolate
+        from OCP.gp import gp_Pnt2d
+        from OCP.collections import HArray1_double as TColStd_HArray1OfReal
+        from OCP.collections import HArray1_gp_Pnt2d as TColgp_HArray1OfPnt2d
+
+        c = BRepAdaptor_Curve(edge)
+        a, b = c.FirstParameter(), c.LastParameter()
+        ts = np.linspace(a, b, n)
+        P = np.array([[*c.Value(float(t)).Coord()] for t in ts])
+        u, v = self.uv(P)
+        if not (np.isfinite(u).all() and np.isfinite(v).all()):
+            return None
+        pts = TColgp_HArray1OfPnt2d(1, n)
+        prm = TColStd_HArray1OfReal(1, n)
+        for i in range(n):
+            pts.SetValue(i + 1, gp_Pnt2d(float(u[i]), float(v[i])))
+            prm.SetValue(i + 1, float(ts[i]))
+        it = Geom2dAPI_Interpolate(pts, prm, False, 1e-9)
+        it.Perform()
+        return it.Curve() if it.IsDone() else None
+
     def grid(self, nu=40, nv=24):
         s = np.linspace(*self.s_range, nu)
         t = np.linspace(*self.t_range, nv)
@@ -291,6 +385,7 @@ class SweptSurface:
 
     def geom(self):
         if self._geom is None:
+            from OCP.Approx import Approx_IsoParametric
             from OCP.GeomAbs import GeomAbs_C2
             from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
             from OCP.collections import Array2_gp_Pnt as TColgp_Array2OfPnt
@@ -302,7 +397,11 @@ class SweptSurface:
             for i in range(G.shape[0]):
                 for j in range(G.shape[1]):
                     arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, G[i, j])))
-            ap = GeomAPI_PointsToBSplineSurface(arr, 3, 8, GeomAbs_C2, max(0.05 * self.tol, 1e-7))
+            # evenly spaced parameters: u and v are the profile position and
+            # the sweep, scaled to 0..1 (see uv), so edges can be placed on
+            # the face exactly instead of by projection (which went astray
+            # on twisted flanks, and left the faces invalid)
+            ap = GeomAPI_PointsToBSplineSurface(arr, Approx_IsoParametric, 3, 8, GeomAbs_C2, max(0.05 * self.tol, 1e-7))
             self._geom = ap.Surface()
         return self._geom
 

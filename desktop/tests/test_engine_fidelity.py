@@ -686,7 +686,6 @@ def test_motion_of_swept_surfaces_is_found():
     assert sweep.fit_motion(P2, N2) is None
 
 
-@pytest.mark.xfail(reason="swept faces on sharp-cornered twisted teeth still come out invalid (in progress)", strict=False)
 def test_helical_gear_flanks_become_one_face_each(tmp_path, monkeypatch):
     from mmm import cad
     from mmm.pipeline import Options, convert

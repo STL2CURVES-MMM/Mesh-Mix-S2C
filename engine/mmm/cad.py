@@ -733,6 +733,7 @@ class Segmenter:
         starts = np.r_[0, np.nonzero(np.diff(comp[order]))[0] + 1, nf]
         cen = self.V[F].mean(1)
         found = 0
+        kinds, sure = {}, 1.0
         cands = []
         for k in range(len(starts) - 1):
             faces = order[starts[k]:starts[k + 1]]
@@ -816,7 +817,12 @@ class Segmenter:
             lab[faces] = len(self.regions)
             self.regions.append(Region(surf, faces, sense))
             found += 1
-            self.report.log(f"Found a swept surface ({mot.describe()}, sure {mot.sureness:.0%})")
+            kinds[mot.kind] = kinds.get(mot.kind, 0) + 1
+            sure = min(sure, mot.sureness)
+        if kinds:
+            words = {"helix": "helical", "extrusion": "extruded", "revolution": "turned"}
+            self.report.log("Found " + ", ".join(f"{n} {words[k]}" for k, n in kinds.items())
+                            + f" surface(s) swept along one motion (sureness {sure:.0%})")
         if found:
             self._rebuild_regions()
         return found
@@ -1508,6 +1514,7 @@ class CADAssembler(BRepAssembler):
         return float(self._fa[self.regions[r].faces].sum())
 
     def _bounded_face(self, r, surf, nat, reverse, tol):
+        swept = self.regions[r].prim if hasattr(self.regions[r].prim, "pcurve") else None
         face = TopoDS_Face()
         self.B.MakeFace(face, surf, tol)
         wires = []
@@ -1531,6 +1538,13 @@ class CADAssembler(BRepAssembler):
                 exp.Next()
                 if BRep_Tool.IsClosed_s(e, face):
                     continue  # seam: explicit pcurves already
+                if swept is not None:
+                    # placed exactly from the sweep (projection onto a
+                    # twisted flank went astray: the faces were invalid)
+                    pc = swept.pcurve(e)
+                    if pc is not None:
+                        self.B.UpdateEdge(e, pc, face, BRep_Tool.Tolerance_s(e))
+                        continue
                 self.sfe.FixAddPCurve(e, face, False, tol)
             sfw = ShapeFix_Wire(w, face, tol)
             sfw.FixShifted()
