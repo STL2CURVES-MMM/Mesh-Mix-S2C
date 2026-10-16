@@ -647,3 +647,55 @@ def test_a_small_deep_notch_makes_the_verdict_uncertain():
     assert v.ok and v.local > fidelity.Verdict.LOCAL_K
     assert v.certainty <= 0.4 and "small spot" in v.doubt
     assert v.score < good.score
+
+
+def _helical_gear(path, twist):
+    """A gear with trapezoid teeth (sharp corners, so each flank is its own
+    smooth patch), extruded 10 mm with a twist."""
+    pts = []
+    teeth = 12
+    for k in range(teeth):
+        a0 = 2 * np.pi * k / teeth
+        for da, r in ((0.0, 9.0), (0.10, 9.0), (0.17, 11.0), (0.33, 11.0), (0.40, 9.0)):
+            pts.append((r * np.cos(a0 + da), r * np.sin(a0 + da)))
+    cs = m3.CrossSection([np.array(pts)])
+    m = m3.Manifold.extrude(cs, 10.0, n_divisions=60 if twist else 0, twist_degrees=twist).to_mesh()
+    trimesh.Trimesh(np.asarray(m.vert_properties)[:, :3], np.asarray(m.tri_verts)).export(path)
+    return path
+
+
+def test_motion_of_swept_surfaces_is_found():
+    from mmm import sweep
+
+    rng = np.random.default_rng(0)
+    # points and normals on a helicoid-like surface: a line swept by a screw
+    s, t = rng.uniform(5, 10, 400), rng.uniform(-0.6, 0.6, 400)
+    pitch = 2.0
+    P = np.c_[s * np.cos(t), s * np.sin(t), 0.3 * s + pitch * t]
+    du = np.c_[np.cos(t), np.sin(t), np.full_like(t, 0.3)]
+    dv = np.c_[-s * np.sin(t), s * np.cos(t), np.full_like(t, pitch)]
+    N = np.cross(du, dv)
+    N /= np.linalg.norm(N, axis=1)[:, None]
+    mot = sweep.fit_motion(P, N)
+    assert mot.kind == "helix" and abs(abs(mot.pitch) - pitch) < 1e-3 and mot.sureness > 0.8
+    assert abs(abs(mot.d[2]) - 1) < 1e-6
+    # a cylinder fits several motions equally well: left to the analytic fit
+    a = rng.uniform(0, 2 * np.pi, 400)
+    P2 = np.c_[5 * np.cos(a), 5 * np.sin(a), rng.uniform(0, 10, 400)]
+    N2 = np.c_[np.cos(a), np.sin(a), np.zeros(400)]
+    assert sweep.fit_motion(P2, N2) is None
+
+
+@pytest.mark.xfail(reason="swept faces on sharp-cornered twisted teeth still come out invalid (in progress)", strict=False)
+def test_helical_gear_flanks_become_one_face_each(tmp_path, monkeypatch):
+    from mmm import cad
+    from mmm.pipeline import Options, convert
+
+    monkeypatch.setattr(cad, "FIND_SWEEPS", True)
+
+    path = _helical_gear(str(tmp_path / "gear.stl"), 30.0)
+    res = convert(path, str(tmp_path / "gear.step"), Options(preset="cad", quality=0.8), NULL)
+    assert res["valid"] and res["fidelity"]["ok"]
+    # 12 teeth: 24 flanks, 12 tips, 12 roots, top and bottom (instead of
+    # each twisted flank cut into strips)
+    assert res["faces"] <= 70, res["faces"]

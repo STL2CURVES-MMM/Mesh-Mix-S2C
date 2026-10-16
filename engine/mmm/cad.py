@@ -21,7 +21,7 @@ from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt2d
 from OCP.collections import Array1_gp_Pnt
 
 from .brep import MIN_TOL, BRepAssembler, _pnt, make_compound
-from .fitting import CURVED, Cone, Cylinder, Plane, Sphere, perp_basis, unit
+from .fitting import CURVED, Cone, Cylinder, Plane, Sphere, Torus, perp_basis, unit
 from .meshio import face_normals_areas
 from .planar import planar_regions
 from .report import NULL
@@ -304,6 +304,8 @@ class Segmenter:
         self._refine()
         self._absorb_slivers()
         self._smooth_borders()
+        if FIND_SWEEPS:
+            self._find_sweeps()
         self._make_freeform()
         self._fix_apex_cones()
         if self.scan:
@@ -704,6 +706,132 @@ class Segmenter:
         if changed:
             self._rebuild_regions()
         return changed
+
+    def _find_sweeps(self, sharp_deg=30.0, min_regions=3):
+        """Smooth patches (bounded by sharp edges) that one swept surface
+        explains (see sweep.py: a helical gear's tooth flank, a thread, a
+        straight gear's tooth side) become one face, instead of the many
+        small planes, cylinders and freeform pieces that each follow a bit
+        of it. Patches already one good analytic surface are left alone.
+        Returns the number of patches replaced."""
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+
+        from .sweep import MAX_RMS_DEG, fit_motion, fit_swept, motion_rms
+
+        F, fn, fa, nb, lab = self.F, self.fn, self.fa, self.nb, self.label
+        nf = len(F)
+        rows = np.repeat(np.arange(nf), 3)
+        cols = nb.reshape(-1)
+        m = cols >= 0
+        smooth = m.copy()
+        smooth[m] = (fn[rows[m]] * fn[cols[m]]).sum(1) >= np.cos(np.radians(sharp_deg))
+        G = sparse.coo_matrix((np.ones(smooth.sum(), np.int8), (rows[smooth], cols[smooth])), shape=(nf, nf))
+        ncomp, comp = connected_components(G, directed=False)
+        total = float(fa.sum())
+        order = np.argsort(comp, kind="stable")
+        starts = np.r_[0, np.nonzero(np.diff(comp[order]))[0] + 1, nf]
+        cen = self.V[F].mean(1)
+        found = 0
+        cands = []
+        for k in range(len(starts) - 1):
+            faces = order[starts[k]:starts[k + 1]]
+            if len(faces) < 30 or fa[faces].sum() < 1e-3 * total:
+                continue
+            regs = np.unique(lab[faces])
+            if len(regs) < min_regions:
+                continue  # already one or two faces: nothing to gain
+            # one good analytic surface covering nearly all of it stays
+            areas = np.bincount(np.searchsorted(regs, lab[faces]), weights=fa[faces])
+            top = self.regions[regs[int(np.argmax(areas))]]
+            if areas.max() > 0.95 * areas.sum() and not top.weak and top.kind != "freeform":
+                continue
+            cands.append(faces)
+        # The patches of one part often share one motion (all flanks of a
+        # gear screw about its axis): fitted on all of them at once it is
+        # far better determined than on one thin flank (whose normals barely
+        # vary), and the flanks come out exactly alike. Groups of patches
+        # that agree on a motion get it; the rest use their own.
+        own = [fit_motion(cen[f], fn[f], fa[f]) for f in cands]
+        motion = list(own)
+        left = set(range(len(cands)))
+        area = [float(fa[f].sum()) for f in cands]
+
+        def agree(mot):
+            return [i for i in left if motion_rms(mot, cen[cands[i]], fn[cands[i]], fa[cands[i]]) <= MAX_RMS_DEG]
+
+        def fit_on(idx):
+            u = np.concatenate([cands[i] for i in idx])
+            return fit_motion(cen[u], fn[u], fa[u])
+
+        while len(left) >= 2:
+            hyps = []
+            swept_like = [i for i in left if own[i] is not None and own[i].kind != "revolution"]
+            if len(swept_like) >= 2:
+                hyps.append(fit_on(swept_like))
+            big = sorted((i for i in left if own[i] is not None), key=lambda i: -area[i])[:20]
+            hyps += [own[i] for i in big]
+            best, best_area = None, 0.0
+            for h in hyps:
+                if h is None:
+                    continue
+                g = agree(h)
+                ga = sum(area[i] for i in g)
+                if len(g) >= 2 and ga > best_area:
+                    best, best_area, group = h, ga, g
+            if best is None:
+                break
+            ref = fit_on(group) or best
+            group = agree(ref) or group
+            for i in group:
+                motion[i] = ref
+            left -= set(group)
+        for i, faces in enumerate(cands):
+            vid = np.unique(F[faces])
+            mot = motion[i]
+            if mot is None:
+                continue
+            if mot.kind == "revolution":
+                # a turned straight line or arc is a cone, cylinder, sphere
+                # or torus (a faceted chamfer has corners only at its two
+                # ends, too few for a profile curve)
+                prim = self._revolved_analytic(faces)
+                if prim is not None:
+                    lab[faces] = len(self.regions)
+                    self.regions.append(Region(prim, faces, self.sense_of(prim, faces)))
+                    found += 1
+                    continue
+            surf, dev = fit_swept(cen[faces], fn[faces], fa[faces], self.tol, X=self.V[vid], motion=mot)
+            if surf is None or dev > self.tol:
+                continue
+            mot = surf.motion
+            if mot.kind != "extrusion" and surf.t_range[1] - surf.t_range[0] > 1.6 * np.pi:
+                continue  # all the way round (a thread): not yet
+            # every triangle of it on the surface, between its corners too
+            T = self.V[F[faces]]
+            M = np.concatenate([T, (T + np.roll(T, -1, axis=1)) / 2], axis=1).reshape(-1, 3)
+            if surf.distance(M).max() > self.tol_mid:
+                continue
+            sense = self.sense_of(surf, faces)
+            lab[faces] = len(self.regions)
+            self.regions.append(Region(surf, faces, sense))
+            found += 1
+            self.report.log(f"Found a swept surface ({mot.describe()}, sure {mot.sureness:.0%})")
+        if found:
+            self._rebuild_regions()
+        return found
+
+    def _revolved_analytic(self, faces):
+        """A cone, cylinder, sphere or torus that every triangle of faces
+        lies on, or None."""
+        P, N, ok, W = self.region_points(faces, True)
+        for cls in (Cone, Cylinder, Sphere, Torus):
+            prim = self._robust_fit(cls, P[ok], N[ok], W[ok])
+            if prim is None or prim.degenerate(self.ext):
+                continue
+            if self.accept(prim, self.sense_of(prim, faces), faces).all():
+                return prim
+        return None
 
     def _make_freeform(self, smooth_deg=35.0):
         """Clusters of facet-like leftovers become freeform B-spline cells.
@@ -1677,6 +1805,11 @@ class CADAssembler(BRepAssembler):
 
 
 PERIODIC = ("cylinder", "cone", "torus")
+# Swept surfaces (Segmenter._find_sweeps) are still being validated on the
+# whole model suite; MMM_SWEEPS=1 turns them on
+import os as _os
+
+FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") == "1"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
@@ -2004,8 +2137,10 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         replaced += len(bad)
         # a freeform face that still strays from the mesh becomes flat faces
         # (when its triangles are few, and big enough to be faces of their own)
+        # (a swept surface that strays becomes freeform patches like any
+        # other surface, not flat facets)
         flat = {r for r in off if r < len(regions) and regions[r].kind == "freeform"
-                and _facets_ok(seg, regions[r].faces)}
+                and not hasattr(regions[r].prim, "motion") and _facets_ok(seg, regions[r].faces)}
         labels, regions = _demote(seg, labels, regions, bad - flat, split_more=rnd > 0, facet=flat)
     # Splitting freeform faces can leave slivers too small to be valid faces;
     # those still broken at the end go to a neighbouring face (no new faces

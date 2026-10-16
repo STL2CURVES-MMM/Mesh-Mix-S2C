@@ -407,6 +407,11 @@ class Cone:
             apex = np.linalg.solve(M, b)
         except np.linalg.LinAlgError:
             return None
+        # the axis runs from the apex toward the points (the sign from the
+        # normals alone is wrong for an inward-facing chamfer, a countersink:
+        # the points then sat behind the apex and the refinement ran off)
+        if float(np.average((P - apex) @ d, weights=w)) < 0:
+            d = -d
         return Cone(apex, d, alpha)._refine(P, W)
 
     def _refine(self, P, W=None):
