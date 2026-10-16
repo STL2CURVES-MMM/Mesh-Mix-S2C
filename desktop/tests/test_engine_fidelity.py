@@ -599,3 +599,31 @@ def test_converter_faults_are_not_blamed_on_the_file(tmp_path, monkeypatch, exc)
     trimesh.Trimesh(V, F).export(path)
     with pytest.raises(exc):
         convert(path, str(tmp_path / "box.step"), Options(quality=0.7), NULL)
+
+
+def test_points_are_laid_onto_each_kind_of_surface():
+    from mmm import cad
+    from mmm.fitting import Cone, Cylinder, Plane, Sphere, Torus
+
+    rng = np.random.default_rng(3)
+    P = rng.normal(size=(200, 3)) * 5 + [7.0, 0.0, 0.0]
+    for prim in (Plane([0, 0, 1], [0.2, 0.1, 1]), Cylinder([1, 2, 0], [0, 0.3, 1], 4.0), Sphere([0, 1, 2], 6.0),
+                 Torus([0, 0, 0], [0, 0, 1], 8.0, 2.5), Cone([0, 0, -5], [0, 0, 1], np.radians(30))):
+        # (points near the surface: an edge's points are)
+        X = P[P[:, 2] > 0] if prim.kind == "cone" else P
+        Q = cad._project(prim, X)
+        assert Q is not None and prim.distance(Q).max() < 1e-6, prim.kind
+
+
+def test_a_wrapped_face_touching_itself_is_cut_into_half_turns():
+    """A cylinder band that wraps almost all the way round and touches itself
+    at one point is cut into two halves of about half a turn each (room for
+    the seam), not into a big C and a sliver."""
+    from mmm import cad
+    from mmm.fitting import Cylinder
+
+    a = np.linspace(0, 2 * np.pi, 73)[:-1]
+    cen = np.c_[13 * np.cos(a), 13 * np.sin(a), np.full(len(a), 5.0)]
+    reg = cad.Region(Cylinder([0, 0, 0], [0, 0, 1], 13.0), np.arange(len(a)), 1)
+    parts = cad._half_turns(reg, np.array([13.0, 0.0, 5.0]), cen)
+    assert parts is not None and sorted(len(p) for p in parts) == [36, 36]

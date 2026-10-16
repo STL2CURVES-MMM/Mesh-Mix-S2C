@@ -303,6 +303,7 @@ class Segmenter:
                 self._process_seed(faces, allow_defer=False)
         self._refine()
         self._absorb_slivers()
+        self._smooth_borders()
         self._make_freeform()
         self._fix_apex_cones()
         if self.scan:
@@ -650,6 +651,60 @@ class Segmenter:
             self._rebuild_regions()
         return changed
 
+    def _gap(self, prim, faces):
+        """How far triangles stray from a surface: the largest distance of
+        their corners, edge midpoints and centre."""
+        if len(faces) == 0:
+            return np.zeros(0)
+        T = self.V[self.F[faces]]
+        P = np.concatenate([T, (T + np.roll(T, -1, axis=1)) / 2, T.mean(1, keepdims=True)], axis=1)
+        return prim.distance(P.reshape(-1, 3)).reshape(len(faces), -1).max(1)
+
+    def _smooth_borders(self, passes=6):
+        """Triangles that stick out of their surface into a neighbour's (a
+        "tooth": two or all three of its neighbours belong to one other
+        surface) join that surface when they fit it. A CAD export's long thin
+        triangles otherwise leave borders that run out and straight back,
+        and the edge curves drawn along them fold over themselves, which
+        makes the faces invalid. Returns whether anything changed."""
+        regs, lab, nb = self.regions, self.label, self.nb
+        analytic = np.array([not r.weak and r.kind in ("plane", "cylinder", "cone", "sphere", "torus")
+                             for r in regs], dtype=bool)
+        changed = False
+        for _ in range(passes):
+            nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
+            other = (nl >= 0) & (nl != lab[:, None])
+            cand = np.nonzero(other.sum(1) >= 2)[0]
+            if not len(cand):
+                break
+            # the label that two or three of the neighbours share
+            a, b_, c = nl[cand, 0], nl[cand, 1], nl[cand, 2]
+            maj = np.where((a == b_) | (a == c), a, np.where(b_ == c, b_, -1))
+            ok = (maj >= 0) & (maj != lab[cand])
+            cand, maj = cand[ok], maj[ok]
+            ok = analytic[maj]
+            cand, maj = cand[ok], maj[ok]
+            # a thin triangle along a border can fit both surfaces (it lies
+            # on the line where a fillet meets a wall): it goes to the one it
+            # follows more closely, so moving it can't be undone next pass
+            gap_new = np.full(len(cand), np.inf)
+            gap_own = np.full(len(cand), np.inf)
+            for rj in np.unique(maj):
+                k = np.nonzero(maj == rj)[0]
+                fit = self.accept(regs[rj].prim, regs[rj].sense, cand[k])
+                gap_new[k[fit]] = self._gap(regs[rj].prim, cand[k[fit]])
+            for ri in np.unique(lab[cand]):
+                k = np.nonzero(lab[cand] == ri)[0]
+                gap_own[k] = self._gap(regs[ri].prim, cand[k])
+            move = gap_new < gap_own
+            if not move.any():
+                break
+            lab[cand[move]] = maj[move]
+            changed = True
+        if changed:
+            self._rebuild_regions()
+        return changed
+
     def _make_freeform(self, smooth_deg=35.0):
         """Clusters of facet-like leftovers become freeform B-spline cells.
 
@@ -847,6 +902,15 @@ class CADAssembler(BRepAssembler):
         both_planar = L.kind == "plane" and (R is None or R.kind == "plane")
         if len(chain.verts) == 2:
             return super().build_chain_edges(chain)
+        if R is not None and L.prim is R.prim and not chain.closed:
+            # one surface cut in two (see split_pinched_regions): the cut
+            # can be any curve on it, so it runs smoothly from corner to
+            # corner instead of zigzagging along the mesh's triangles (a
+            # zigzag edge folds over itself and makes both faces invalid)
+            e = self._on_surface_edge(chain, L.prim)
+            if e is not None:
+                chain.edges = [e]
+                return
         if both_planar:
             if not chain.closed:
                 P = self.V[chain.verts]
@@ -880,6 +944,38 @@ class CADAssembler(BRepAssembler):
             chain.edges = [e]
             return
         chain.edges = self._polyline_edges(chain.verts)
+
+    def _on_surface_edge(self, chain, prim, n=24):
+        """The straight line between a chain's end corners, laid onto the
+        surface, as one smooth edge (None when that doesn't work: the line
+        would pass through the surface's axis, say)."""
+        a, b = self.V[chain.verts[0]], self.V[chain.verts[-1]]
+        if np.linalg.norm(b - a) <= MIN_TOL:
+            return None
+        t = np.linspace(0.0, 1.0, n)[:, None]
+        P = _project(prim, a + t * (b - a))
+        if P is None or not np.isfinite(P).all():
+            return None
+        # a smooth curve: neighbouring samples stay evenly spaced (no jump
+        # across the surface where the line ran through its axis)
+        seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+        if seg.max() > 3.0 * max(seg.mean(), MIN_TOL):
+            return None
+        P[0], P[-1] = a, b
+        curve, dev = fit_chain_curve(P, self.tol)
+        if curve is None:
+            return None
+        S = _sample_curve(curve, 4 * n)
+        off = float(prim.distance(S).max())
+        if off > self.tol:
+            return None
+        v0, v1 = self.vertex(chain.verts[0]), self.vertex(chain.verts[-1])
+        mk = BRepBuilderAPI_MakeEdge(curve, v0, v1, curve.FirstParameter(), curve.LastParameter())
+        if not mk.IsDone():
+            return None
+        e = mk.Edge()
+        self._set_edge_tol(e, chain, max(dev, off))
+        return e
 
     def _set_edge_tol(self, e, chain, curve_dev):
         t = max(MIN_TOL, curve_dev * 1.5 + 1e-9)
@@ -1584,6 +1680,38 @@ PERIODIC = ("cylinder", "cone", "torus")
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
+def _project(prim, P):
+    """Points moved onto a surface (along its normal)."""
+    k = prim.kind
+    if k == "plane":
+        return P - np.outer((P - prim.origin) @ prim.n, prim.n)
+    if k == "cylinder":
+        rad, h = prim._radial(P)
+        rho = np.linalg.norm(rad, axis=1)
+        if rho.min() < 1e-6 * max(prim.r, 1.0):
+            return None
+        return prim.a + np.outer(h, prim.d) + rad / rho[:, None] * prim.r
+    if k == "sphere":
+        v = P - prim.c
+        rho = np.linalg.norm(v, axis=1)
+        if rho.min() < 1e-6 * max(prim.r, 1.0):
+            return None
+        return prim.c + v / rho[:, None] * prim.r
+    if k == "torus":
+        q = prim._spine(P)
+        v = P - q
+        rho = np.linalg.norm(v, axis=1)
+        if rho.min() < 1e-6 * max(prim.r, 1.0):
+            return None
+        return q + v / rho[:, None] * prim.r
+    if k == "cone":
+        Q = P.copy()
+        for _ in range(3):
+            Q = Q - prim.signed(Q)[:, None] * prim.normal(Q)
+        return Q
+    return None
+
+
 def _face_area(face):
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
@@ -2020,7 +2148,9 @@ def split_pinched_regions(seg, labels, regions, max_passes=4):
         lf = labels[f]
         # first triangle of each fan around a vertex (rotation order)
         start = (t < 0) | (labels[g] != lf)
-        key = v[start].astype(np.int64) * (len(regions) + 1) + lf[start]
+        # (decoded with the count at this point: regions are added below)
+        nr = len(regions) + 1
+        key = v[start].astype(np.int64) * nr + lf[start]
         ks, counts = np.unique(key, return_counts=True)
         pinch = ks[counts >= 2]
         if not len(pinch):
@@ -2030,7 +2160,7 @@ def split_pinched_regions(seg, labels, regions, max_passes=4):
         changed = False
         done = set()
         for pk in pinch:
-            vv, ll = int(pk // (len(regions) + 1)), int(pk % (len(regions) + 1))
+            vv, ll = int(pk // nr), int(pk % nr)
             if ll in done:
                 continue
             seeds = np.unique(f[start & (v == vv) & (lf == ll)])
@@ -2038,7 +2168,9 @@ def split_pinched_regions(seg, labels, regions, max_passes=4):
                 continue
             done.add(ll)
             r = regions[ll]
-            parts = seeded_partition(r.faces, seeds[:2], cen, seg.nb)
+            parts = _half_turns(r, seg.V[vv], cen) if r.kind in PERIODIC else None
+            if parts is None:
+                parts = seeded_partition(r.faces, seeds[:2], cen, seg.nb)
             if len(parts) < 2 or not len(parts[0]) or not len(parts[1]):
                 continue
             a = Region(r.prim, parts[0], r.sense, r.weak)
@@ -2051,6 +2183,30 @@ def split_pinched_regions(seg, labels, regions, max_passes=4):
         if not changed:
             break
     return labels, regions
+
+
+def _half_turns(r, p, cen):
+    """A cylinder, cone or torus face that wraps around its axis and touches
+    itself at point p is cut into two halves by the angle around the axis,
+    starting at p: each half spans about half a turn, which leaves room for
+    the surface's seam (a face that wraps almost all the way round gets its
+    seam right at the point where it touches itself, and comes out
+    invalid). None when the halves wouldn't each be one piece."""
+    prim = r.prim
+    o = {"cylinder": "a", "cone": "apex", "torus": "c"}[prim.kind]
+    o, d = getattr(prim, o), prim.d
+    u, v = perp_basis(d)
+
+    def ang(X):
+        rel = X - o
+        return np.arctan2(rel @ v, rel @ u)
+
+    t = np.mod(ang(cen[r.faces]) - ang(p[None])[0], 2 * np.pi)
+    half = t < np.pi
+    parts = [r.faces[half], r.faces[~half]]
+    if min(len(parts[0]), len(parts[1])) == 0:
+        return None
+    return parts
 
 
 def _settle_tolerances(shape, tol):
