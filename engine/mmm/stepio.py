@@ -416,6 +416,15 @@ def export_preview(shape, path, diag, max_faces_colored=200000):
             if face.Orientation() == TopAbs_REVERSED:
                 T = T[:, ::-1]
             N = _surface_normals(face, tri, trsf, n)
+            if N is not None and len(T):
+                # Along a face's edges OpenCASCADE can leave tiny folded
+                # slivers (the edge curve is a hair off the surface, within
+                # its tolerance): seen from outside they are back faces and
+                # showed as dark specks. They are turned to face the way the
+                # surface does; at their size the shape doesn't change.
+                g = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+                folded = (g * N[T].sum(1)).sum(1) < 0
+                T[folded] = T[folded][:, ::-1]
             if N is None:
                 # fall back to normals averaged from the triangles
                 N = np.zeros_like(P)
