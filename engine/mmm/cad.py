@@ -73,6 +73,26 @@ class Segmenter:
         # surfaces must also follow the mesh between its vertices, within the
         # mesh's own tessellation coarseness
         self.tol_mid = max(3.0 * tol, 5.0 * self.deflection, 2.0 * defl_hi)
+        # A scan's noise tilts thin triangles: one 0.03 mm high on a mesh with
+        # 0.01 mm of noise points anywhere within about 40 degrees, so judged
+        # by its direction it fits no surface, and a scanned flat face fell
+        # apart into thousands of pieces (a plate with five holes: 38,830
+        # faces). Measured, noise tilts a triangle of height h by about
+        # atan(3.4 noise / h); where that exceeds the angle surfaces are
+        # matched by, only the triangle's position counts. On such a mesh
+        # flat faces are also fitted again as they grow (a small seed's own
+        # plane is tilted by the noise). Clean meshes have no noise: none of
+        # this applies to them.
+        from .fidelity import mesh_noise
+
+        self.noise = mesh_noise(V, F)
+        h = 2.0 * self.fa / np.maximum(lmax, 1e-30)
+        noisy = h < 3.4 * self.noise / np.tan(np.radians(normal_deg))
+        self.scan = self.noise > 0.5 * tol or self.fa[noisy].sum() > 0.005 * max(self.fa.sum(), 1e-30)
+        # triangles whose direction says nothing: tiny ones, and on a scan
+        # the ones thin enough for the noise to tilt
+        self.unsure = self.tiny | noisy if self.scan else self.tiny
+        self.refit_planes = self.scan
         self.label = -np.ones(nf, dtype=np.int64)
         self._stamp = np.zeros(nf, dtype=np.int64)
         self._stamp_id = 0
@@ -136,7 +156,7 @@ class Segmenter:
     def accept(self, prim, sense, faces, tol=None):
         tol = self.tol if tol is None else tol
         d, cs = self.face_error(prim, sense, faces)
-        return (d <= tol) & ((cs >= self.cos_n) | self.tiny[faces])
+        return (d <= tol) & ((cs >= self.cos_n) | self.unsure[faces])
 
     def region_points(self, faces, with_weights=False):
         """Vertices of faces with normals averaged over these faces only.
@@ -192,7 +212,7 @@ class Segmenter:
                 region.append(new)
             frontier = new
             total += new.size
-            if refit and prim.kind != "plane" and total >= refit_at:
+            if refit and (prim.kind != "plane" or self.refit_planes) and total >= refit_at:
                 allf = np.concatenate(region)
                 P, N, _, W = self.region_points(allf, True)
                 p2 = prim.refit(P, N, W)
@@ -232,7 +252,7 @@ class Segmenter:
             if not cand.size:
                 break
             cs = (self.fn[src] * self.fn[cand]).sum(1)
-            m = (cs >= self.cos_smooth) | self.tiny[cand] | self.tiny[src]
+            m = (cs >= self.cos_smooth) | self.unsure[cand] | self.unsure[src]
             cand = np.unique(cand[m])
             if not cand.size:
                 break
@@ -240,7 +260,7 @@ class Segmenter:
             out.append(cand)
             frontier = cand
             total += cand.size
-            ok = ~self.tiny[cand]
+            ok = ~self.unsure[cand]
             if ok.any():
                 min_cos = min(min_cos, float((self.fn[cand[ok]] @ nref).min()))
             if layers >= min_layers and min_cos <= cos_spread:
@@ -333,7 +353,7 @@ class Segmenter:
         P, N, _, W = self.region_points(faces, True)
         pl = Plane.fit(P, (self.fn[faces] * fa[faces, None]), W=W)
         best = None
-        reg_p, pl = self.grow(pl, 1.0, faces, refit=False)
+        reg_p, pl = self.grow(pl, 1.0, faces, refit=self.refit_planes)
         area_p = fa[reg_p].sum()
         best = (area_p, 0, pl, 1.0, reg_p)
 
@@ -552,7 +572,7 @@ class Segmenter:
                 if regs[r].weak:
                     continue  # weak (single facet) regions dissolve readily
                 d, cs = self.face_error(regs[r].prim, regs[r].sense, bfaces[m])
-                own[m] = np.where((cs >= self.cos_n) | self.tiny[bfaces[m]], d, np.inf)
+                own[m] = np.where((cs >= self.cos_n) | self.unsure[bfaces[m]], d, np.inf)
             best_err = own.copy()
             for j in range(3):
                 cl = nbl[bfaces, j]
@@ -564,7 +584,7 @@ class Segmenter:
                     if reg.weak:
                         continue
                     d, cs = self.face_error(reg.prim, reg.sense, bfaces[m])
-                    e = np.where((cs >= self.cos_n) | self.tiny[bfaces[m]], d, np.inf)
+                    e = np.where((cs >= self.cos_n) | self.unsure[bfaces[m]], d, np.inf)
                     e = np.where(e <= self.tol, e, np.inf)
                     idx = np.nonzero(m)[0]
                     better = e < best_err[idx] - 0.05 * self.tol
@@ -602,7 +622,7 @@ class Segmenter:
                     if rj == ri or regs[rj].weak or len(regs[rj].faces) <= max_tris:
                         continue
                     d, cs = self.face_error(regs[rj].prim, regs[rj].sense, np.array([f]))
-                    if cs[0] < cos_relaxed and not (self.tiny[f] or self.needle[f]):
+                    if cs[0] < cos_relaxed and not (self.unsure[f] or self.needle[f]):
                         continue
                     if d[0] <= tol_factor * self.tol and d[0] < best_e:
                         best, best_e = rj, d[0]
@@ -632,7 +652,7 @@ class Segmenter:
         m = cols >= 0
         rows, cols = rows[m], cols[m]
         cs = (self.fn[rows] * self.fn[cols]).sum(1)
-        smooth = (cs >= np.cos(np.radians(smooth_deg))) | self.tiny[rows] | self.tiny[cols]
+        smooth = (cs >= np.cos(np.radians(smooth_deg))) | self.unsure[rows] | self.unsure[cols]
         lr, lc = lab[rows], lab[cols]
         m = smooth & (lr != lc) & weak[lr] & weak[lc]
         nr = len(regs)
