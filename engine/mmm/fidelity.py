@@ -29,6 +29,33 @@ from scipy.spatial import cKDTree
 WRONG_WAY_DEG = 30.0
 
 
+def face_blown_up(face, k=10.0):
+    """A face whose surface is far bigger than its own outline allows (a
+    freeform fit gone wild: one came out with an area of 10^40 mm^2 inside
+    a few millimetres of edges). Such a face passes OpenCASCADE's validity
+    check, but it is garbage, and meshing it finely never finishes."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+
+    box = Bnd_Box()
+    exp = TopExp_Explorer(face, TopAbs_EDGE)
+    while exp.More():
+        BRepBndLib.Add_s(exp.Current(), box)
+        exp.Next()
+    if box.IsVoid():
+        return False
+    lo, hi = box.CornerMin(), box.CornerMax()
+    diag2 = (hi.X() - lo.X()) ** 2 + (hi.Y() - lo.Y()) ** 2 + (hi.Z() - lo.Z()) ** 2
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    area = props.Mass()
+    return not np.isfinite(area) or abs(area) > k * max(diag2, 1e-30)
+
+
 def tessellate(shape, deflection, angle=0.25):
     """The shape's faces as triangles: (V, F, face index of each triangle).
 
@@ -48,29 +75,46 @@ def tessellate(shape, deflection, angle=0.25):
     from OCP.TopoDS import TopoDS
     from OCP.BRepTools import BRepTools
 
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
     deflection = max(float(deflection), 1e-7)
-    copy = BRepBuilderAPI_Copy(shape).Shape()
+    faces = []
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        faces.append(TopoDS.Face(exp.Current()))
+        exp.Next()
+    # a blown-up face is left out of the fine meshing (it would never end),
+    # and meshed as it is: coarsely, and its distances from the mesh show
+    # what it is
+    blown = [face_blown_up(f) for f in faces]
+    B = BRep_Builder()
+    comp = TopoDS_Compound()
+    B.MakeCompound(comp)
+    for f, b in zip(faces, blown):
+        if not b:
+            B.Add(comp, f)
+    copy = BRepBuilderAPI_Copy(comp).Shape()
     ShapeFix_ShapeTolerance().SetTolerance(copy, 1e-7)
     BRepMesh_IncrementalMesh(copy, deflection, False, angle, True)
+    copied = TopExp_Explorer(copy, TopAbs_FACE)
     retry = []
     Vs, Fs, ids = [], [], []
     base = 0
-    exp = TopExp_Explorer(copy, TopAbs_FACE)
-    orig = TopExp_Explorer(shape, TopAbs_FACE)
-    fi = 0
-    while exp.More():
-        face = TopoDS.Face(exp.Current())
-        exp.Next()
+    for fi, (orig, gone) in enumerate(zip(faces, blown)):
         loc = TopLoc_Location()
-        tri = BRep_Tool.Triangulation_s(face, loc)
+        tri = None
+        if not gone:
+            face = TopoDS.Face(copied.Current())
+            copied.Next()
+            tri = BRep_Tool.Triangulation_s(face, loc)
         if tri is None or tri.NbTriangles() == 0:
             # mesh the face as it is (at its own tolerance) instead
-            face = TopoDS.Face(orig.Current())
+            face = orig
             BRepTools.Clean_s(face)
             BRepMesh_IncrementalMesh(face, deflection, False, angle, True)
             tri = BRep_Tool.Triangulation_s(face, loc)
             retry.append(face)
-        orig.Next()
         if tri is not None and tri.NbTriangles() > 0:
             trsf = loc.Transformation()
             n = tri.NbNodes()
@@ -89,7 +133,6 @@ def tessellate(shape, deflection, angle=0.25):
             Fs.append(T + base)
             ids.append(np.full(m, fi, dtype=np.int64))
             base += n
-        fi += 1
     # (a fine triangulation would stay on the shape, and the 3D preview, or
     # anything else that meshes it, would reuse it)
     for face in retry:

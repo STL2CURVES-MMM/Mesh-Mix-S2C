@@ -1809,6 +1809,8 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     the splitting, which go to a neighbouring face)."""
     from OCP.BRepCheck import BRepCheck_Analyzer
 
+    from .fidelity import face_blown_up
+
     if seg is None or abs(seg.tol - tol) > 1e-12 * max(1.0, tol):
         seg = Segmenter(shell.V, shell.F, shell.topo, tol, report)
         seg.detail = detail
@@ -1827,7 +1829,8 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         _settle_tolerances(asm.shell_from_faces(faces), tol)
         bad = set(r for r, _ in asm.failed_regions)
         for r, f in asm.region_faces.items():
-            if not BRepCheck_Analyzer(f).IsValid():
+            # (a face whose surface blew up passes the validity check)
+            if not BRepCheck_Analyzer(f).IsValid() or face_blown_up(f):
                 bad.add(r)
         return labels, regions, asm, faces, bad
 

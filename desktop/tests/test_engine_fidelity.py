@@ -500,6 +500,31 @@ def test_nothing_is_reported_when_not_checked(tmp_path):
     assert res["fidelity"] is None
 
 
+def test_a_blown_up_face_is_found_and_doesnt_hang_the_check():
+    """A freeform patch from a scanned plate whose surface blew up (an area
+    of about 10^40 mm^2 inside a few millimetres of edges) passed the
+    validity check, and meshing it finely never finished: a conversion
+    hung for an hour. It is recognised, and measured coarsely instead."""
+    import time
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, os.path.join(os.path.dirname(__file__), "data", "blown_up_face.brep"), BRep_Builder())
+    assert fidelity.face_blown_up(TopoDS.Face(TopExp_Explorer(shape, TopAbs_FACE).Current()))
+    t = time.time()
+    fidelity.tessellate(shape, 0.0116)
+    assert time.time() - t < 10
+    # an ordinary face isn't
+    box = _box_shape((10, 8, 6))
+    assert not fidelity.face_blown_up(TopoDS.Face(TopExp_Explorer(box, TopAbs_FACE).Current()))
+    assert not fidelity.face_blown_up(TopoDS.Face(TopExp_Explorer(_sphere_shape(5.0), TopAbs_FACE).Current()))
+
+
 def test_checking_leaves_no_fine_mesh_on_the_shape():
     # the 3D preview meshes the shape again and would reuse a finer mesh
     from OCP.BRep import BRep_Tool
