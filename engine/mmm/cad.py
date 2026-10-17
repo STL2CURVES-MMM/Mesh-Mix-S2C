@@ -306,6 +306,7 @@ class Segmenter:
         self._smooth_borders()
         if FIND_SWEEPS:
             self._find_sweeps()
+            self._find_fillets()
         self._make_freeform()
         self._fix_apex_cones()
         if self.scan:
@@ -756,6 +757,14 @@ class Segmenter:
         # vary), and the flanks come out exactly alike. Groups of patches
         # that agree on a motion get it; the rest use their own.
         own = [fit_motion(cen[f], fn[f], fa[f]) for f in cands]
+        # a patch no one motion explains may hold parts that one does (a
+        # filleted extrusion: side, fillet and top are one smooth patch)
+        split = []
+        for f, m in zip(cands, own):
+            subs = self._sub_patches(f, min_regions) if m is None else []
+            split += subs if subs else [(f, m)]
+        cands = [f for f, _ in split]
+        own = [m for _, m in split]
         motion = list(own)
         left = set(range(len(cands)))
         area = [float(fa[f].sum()) for f in cands]
@@ -805,10 +814,11 @@ class Segmenter:
             mot = motion[i]
             if mot is None:
                 continue
-            if mot.kind == "revolution":
+            if mot.kind == "revolution" or (mot.kind == "taper" and abs(mot.twist) < 1e-3):
                 # a turned straight line or arc is a cone, cylinder, sphere
                 # or torus (a faceted chamfer has corners only at its two
-                # ends, too few for a profile curve)
+                # ends, too few for a profile curve); so are lines through
+                # one point along a circle
                 prim = self._revolved_analytic(faces)
                 if prim is not None:
                     lab[faces] = len(self.regions)
@@ -819,7 +829,7 @@ class Segmenter:
             if surf is None or dev > self.tol:
                 continue
             mot = surf.motion
-            if mot.kind != "extrusion" and surf.t_range[1] - surf.t_range[0] > 1.6 * np.pi:
+            if mot.kind != "extrusion" and mot.turns(surf.t_range[1] - surf.t_range[0]) > 1.6 * np.pi:
                 continue  # all the way round (a thread): not yet
             # every triangle of it on the surface, between its corners too
             T = self.V[F[faces]]
@@ -828,18 +838,183 @@ class Segmenter:
                 continue
             sense = self.sense_of(surf, faces)
             faces = self._take_in_pieces(surf, faces)
-            lab[faces] = len(self.regions)
-            self.regions.append(Region(surf, faces, sense))
+            if surf.curve.closed:
+                # all the way round: two faces of half the profile each
+                half = surf.half_of(cen[faces])
+                if half.all() or not half.any():
+                    continue
+                for hs, hf in zip(surf.halves(), (faces[half], faces[~half])):
+                    lab[hf] = len(self.regions)
+                    self.regions.append(Region(hs, hf, self.sense_of(hs, hf)))
+            else:
+                lab[faces] = len(self.regions)
+                self.regions.append(Region(surf, faces, sense))
             found += 1
             kinds[mot.kind] = kinds.get(mot.kind, 0) + 1
             sure = min(sure, mot.sureness)
         if kinds:
-            words = {"helix": "helical", "extrusion": "extruded", "revolution": "turned"}
+            words = {"helix": "helical", "extrusion": "extruded", "revolution": "turned", "taper": "tapered"}
             self.report.log("Found " + ", ".join(f"{n} {words[k]}" for k, n in kinds.items())
                             + f" surface(s) swept along one motion (sureness {sure:.0%})")
         if found:
             self._rebuild_regions()
         return found
+
+    def _find_fillets(self, min_regions=3):
+        """Fillets along curved edges (see fillet.py): neighbouring tori and
+        cylinders of one radius, which the segmenter cut a rounded edge
+        into, become one pipe face when every triangle lies on it. Pieces
+        that are all one torus or cylinder already are left alone. Returns
+        the number of fillets found."""
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+
+        from .fillet import fit_pipe
+
+        regs, lab, nb, F, fa = self.regions, self.label, self.nb, self.F, self.fa
+        nr, nf = len(regs), len(F)
+        rad = np.full(nr, np.nan)
+        for i, reg in enumerate(regs):
+            if reg.weak or not len(reg.faces):
+                continue
+            if reg.kind in ("torus", "cylinder") and not hasattr(reg.prim, "motion"):
+                rad[i] = reg.prim.r
+        rows = np.repeat(np.arange(nf), 3)
+        cols = nb.reshape(-1)
+        m = cols >= 0
+        a, b = lab[rows[m]], lab[cols[m]]
+        k = (a != b) & (a >= 0) & (b >= 0)
+        a, b = a[k], b[k]
+        k = np.isfinite(rad[a]) & np.isfinite(rad[b])
+        a, b = a[k], b[k]
+        same = np.abs(rad[a] - rad[b]) <= np.maximum(0.03 * np.minimum(rad[a], rad[b]), 0.5 * self.tol)
+        G = sparse.coo_matrix((np.ones(same.sum(), np.int8), (a[same], b[same])), shape=(nr, nr))
+        ncomp, comp = connected_components(G, directed=False)
+        cen = self.V[F].mean(1)
+        found = 0
+        for c in range(ncomp):
+            members = np.nonzero(comp == c)[0]
+            if len(members) < min_regions:
+                continue
+            p0 = regs[members[0]].prim
+            if all(regs[i].prim.kind == p0.kind and regs[i].prim.same_as(p0, self.tol, self.ext) for i in members[1:]):
+                continue
+            faces = np.concatenate([np.asarray(regs[i].faces) for i in members])
+            # spine samples: each triangle's centre moved onto its piece's
+            # spine (a torus's centre circle, a cylinder's axis)
+            C = []
+            for i in members:
+                p, P = regs[i].prim, cen[regs[i].faces]
+                C.append(p._spine(P) if p.kind == "torus" else p.a + np.outer((P - p.a) @ p.d, p.d))
+            w = np.array([fa[regs[i].faces].sum() for i in members])
+            r = float(rad[members][np.argsort(rad[members])][np.searchsorted(np.cumsum(w[np.argsort(rad[members])]), 0.5 * w.sum())])
+            C = np.vstack(C)
+            surf, dev = fit_pipe(C, self.V[np.unique(F[faces])], r, self.tol)
+            # the fillet's other pieces (the segmenter fits some as cones or
+            # freeform cells): small neighbours near the pipe join, and it is
+            # fitted again on all of them
+            for _ in range(2):
+                if surf is None:
+                    break
+                inside = np.zeros(nf, dtype=bool)
+                inside[faces] = True
+                near = nb[faces]
+                near = np.unique(lab[near[near >= 0]])
+                more = []
+                for l in near:
+                    if l < 0 or hasattr(regs[l].prim, "motion"):
+                        continue
+                    g = np.asarray(regs[l].faces)
+                    g = g[(lab[g] == l) & ~inside[g]]
+                    if len(g) and len(g) <= 0.2 * len(faces) and self._gap(surf, g).max() <= 3 * self.tol:
+                        more.append(g)
+                if not more:
+                    break
+                g = np.concatenate(more)
+                faces = np.concatenate([faces, g])
+                C = np.vstack([C, surf.curve.at(surf.foot(cen[g])[0])])
+                surf, dev = fit_pipe(C, self.V[np.unique(F[faces])], r, self.tol)
+            if surf is None or dev > self.tol:
+                continue
+            T = self.V[F[faces]]
+            M = np.concatenate([T, (T + np.roll(T, -1, axis=1)) / 2], axis=1).reshape(-1, 3)
+            if surf.distance(M).max() > self.tol_mid:
+                continue
+            faces = self._take_in_pieces(surf, faces)
+            if surf.curve.closed:
+                halves = surf.halves()
+                half = surf.half_of(cen[faces])
+                if halves is None or half.all() or not half.any():
+                    continue
+                for hs, hf in zip(halves, (faces[half], faces[~half])):
+                    lab[hf] = len(self.regions)
+                    self.regions.append(Region(hs, hf, self.sense_of(hs, hf)))
+            else:
+                lab[faces] = len(self.regions)
+                self.regions.append(Region(surf, faces, self.sense_of(surf, faces)))
+            found += 1
+        if found:
+            self.report.log(f"Found {found} fillet(s) along curved edges (a ball rolled along the edge)")
+            self._rebuild_regions()
+        return found
+
+    def _sub_patches(self, faces, min_regions=3, max_deg=3.0):
+        """Parts of a smooth patch that one motion explains, as [(faces,
+        motion)]: the side of an extrusion whose top edge is rounded (the
+        fillet joins side and top smoothly, so the three are one patch). The
+        patch's own analytic regions propose the motions: a cylinder its
+        axis to slide along or turn about, a cone its axis to turn about. The triangles square to a motion (within max_deg), in
+        connected pieces over at least min_regions regions, are confirmed by
+        fitting the motion on them alone: it must come out the motion
+        proposed."""
+        from .sweep import Motion, fit_motion
+
+        F, fn, fa, nb, lab = self.F, self.fn, self.fa, self.nb, self.label
+        regs = np.unique(lab[faces])
+        props = []
+        for r in regs:
+            p = self.regions[r].prim
+            w = float(fa[self.regions[r].faces].sum())
+            if p.kind == "cylinder":
+                props += [(w, Motion("extrusion", p.a, p.d)), (w, Motion("revolution", p.a, p.d))]
+            elif p.kind == "cone":
+                props.append((w, Motion("revolution", p.apex, p.d)))
+            # (not a torus: inside a patch no one motion explains, those are
+            # nearly always pieces of a fillet, which _find_fillets joins; a
+            # motion proposed by one turned a fillet into a helix)
+        # (extrusions along one direction are one motion, whatever cylinder
+        # proposed them)
+        seen, hyps = [], []
+        for w, m in sorted(props, key=lambda x: -x[0]):
+            key = (m.kind, m.d, m.a)
+            if any(k == m.kind and abs(d @ m.d) > np.cos(np.radians(1.0))
+                   and (k == "extrusion" or np.linalg.norm(np.cross(a - m.a, m.d)) < self.tol)
+                   for k, d, a in seen):
+                continue
+            seen.append(key)
+            hyps.append(m)
+        cen = self.V[F[faces]].mean(1)
+        used = np.zeros(len(F), dtype=bool)
+        lim = np.sin(np.radians(max_deg))
+        out = []
+        for mot in hyps[:60]:
+            v = mot.velocity(cen)
+            sp = np.linalg.norm(v, axis=1)
+            ok = (sp > 1e-12) & (np.abs((fn[faces] * v).sum(1)) <= lim * np.maximum(sp, 1e-300)) & ~used[faces]
+            if ok.sum() < 12:
+                continue
+            for comp in _cluster_components(faces[ok], nb):
+                comp = np.asarray(comp)
+                if len(comp) < 12 or len(np.unique(lab[comp])) < min_regions:
+                    continue
+                m = fit_motion(self.V[F[comp]].mean(1), fn[comp], fa[comp])
+                # confirmed only as the motion proposed (fitted on the
+                # agreeing triangles alone, a fillet's came out a helix)
+                if m is None or m.kind != mot.kind or abs(m.d @ mot.d) < np.cos(np.radians(2.0)):
+                    continue
+                used[comp] = True
+                out.append((comp, m))
+        return out
 
     def _take_in_pieces(self, surf, faces, share=0.1):
         """faces of a swept surface, plus the small neighbouring regions
@@ -1085,8 +1260,10 @@ class CADAssembler(BRepAssembler):
         both_planar = L.kind == "plane" and (R is None or R.kind == "plane")
         if len(chain.verts) == 2:
             return super().build_chain_edges(chain)
-        if R is not None and L.prim is R.prim and not chain.closed:
-            # one surface cut in two (see split_pinched_regions): the cut
+        if R is not None and (L.prim is R.prim or getattr(L.prim, "twin", None) is R.prim) and not chain.closed:
+            # one surface cut in two (see split_pinched_regions, and the
+            # two halves of a swept surface that goes all the way round,
+            # SweptSurface.halves): the cut
             # can be any curve on it, so it runs smoothly from corner to
             # corner instead of zigzagging along the mesh's triangles (a
             # zigzag edge folds over itself and makes both faces invalid)
@@ -1589,10 +1766,14 @@ class CADAssembler(BRepAssembler):
                     continue  # seam: explicit pcurves already
                 if swept is not None:
                     # placed exactly from the sweep (projection onto a
-                    # twisted flank went astray: the faces were invalid)
+                    # twisted flank went astray: the faces were invalid);
+                    # the edge's own curve, fitted along the mesh's border,
+                    # can stand off this surface by more than its tolerance,
+                    # which then has to cover the gap
                     pc = swept.pcurve(e)
                     if pc is not None:
-                        self.B.UpdateEdge(e, pc, face, BRep_Tool.Tolerance_s(e))
+                        gap = _pcurve_gap(e, pc, swept)
+                        self.B.UpdateEdge(e, pc, face, max(BRep_Tool.Tolerance_s(e), 1.5 * gap))
                         continue
                 self.sfe.FixAddPCurve(e, face, False, tol)
             sfw = ShapeFix_Wire(w, face, tol)
@@ -1876,6 +2057,19 @@ FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") == "1"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
+def _pcurve_gap(edge, pc, swept, n=40):
+    """How far an edge's 3D curve is from the swept surface's points along
+    the edge's curve on it (pc, sharing the edge's parameters)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    c = BRepAdaptor_Curve(edge)
+    ts = np.linspace(c.FirstParameter(), c.LastParameter(), n)
+    P = np.array([[*c.Value(float(t)).Coord()] for t in ts])
+    g = swept.geom()
+    Q = np.array([[*g.Value(pc.Value(float(t)).X(), pc.Value(float(t)).Y()).Coord()] for t in ts])
+    return float(np.linalg.norm(P - Q, axis=1).max())
+
+
 def _project(prim, P):
     """Points moved onto a surface (along its normal)."""
     k = prim.kind
@@ -1905,6 +2099,8 @@ def _project(prim, P):
         for _ in range(3):
             Q = Q - prim.signed(Q)[:, None] * prim.normal(Q)
         return Q
+    if hasattr(prim, "foot"):  # a swept surface
+        return prim.X(*prim.foot(P))
     return None
 
 

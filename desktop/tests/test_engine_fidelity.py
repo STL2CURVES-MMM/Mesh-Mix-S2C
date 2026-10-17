@@ -698,3 +698,110 @@ def test_helical_gear_flanks_become_one_face_each(tmp_path, monkeypatch):
     # 12 teeth: 24 flanks, 12 tips, 12 roots, top and bottom (instead of
     # each twisted flank cut into strips)
     assert res["faces"] <= 70, res["faces"]
+
+
+def _taper_points(twist, rng, n=3000):
+    """Points and normals on lines through the point (3, -2, 40) along a wavy
+    outline 40 below it, turned by twist radians as they grow."""
+    from mmm import sweep
+
+    apex = np.array([3.0, -2.0, 40.0])
+    m = sweep.Motion("taper", apex, [0, 0, -1], twist=twist)
+    m.z0 = 40.0
+
+    def prof(s):
+        P = np.c_[15 * np.cos(s) + 2 * np.cos(5 * s), 12 * np.sin(s), np.zeros_like(s)] - apex
+        return np.c_[P @ m.u, P @ m.v]
+
+    s, t = rng.uniform(0, 1.2, n), np.log(rng.uniform(0.6, 1.0, n))
+    P = m.from_profile(prof(s), t)
+    e = 1e-6
+    N = np.cross(m.from_profile(prof(s + e), t) - P, m.from_profile(prof(s), t + e) - P)
+    return P, N / np.linalg.norm(N, axis=1)[:, None], apex
+
+
+def test_tapered_surfaces_are_found():
+    """Lines through one point (a drafted side, a bevel gear's teeth), and
+    the same turning as they grow: the motion's centre and twist come out
+    exactly, and a centre placed roughly is moved back by the corners."""
+    from mmm import sweep
+
+    rng = np.random.default_rng(1)
+    for twist in (0.0, 0.8):
+        P, N, apex = _taper_points(twist, rng)
+        mot = sweep.fit_motion(P, N)
+        assert mot is not None and mot.kind == "taper", twist
+        assert np.linalg.norm(mot.a - apex) < 1e-3 and abs(mot.twist - twist) < 1e-3
+        off = sweep.copy_motion(mot)
+        off.a = mot.a + np.array([0.12, 0.0, 0.0])
+        assert np.linalg.norm(sweep.refine_taper(off, P[:800]).a - apex) < 0.01
+
+
+def _outline(n=160):
+    t = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    return np.c_[15 * np.cos(t) + 3 * np.cos(3 * t), 10 * np.sin(t)]
+
+
+def test_a_drafted_boss_becomes_few_faces(tmp_path, monkeypatch):
+    """A smooth outline pulled up and shrunk towards a point above it: its
+    side is one tapered surface (two faces, as it goes all the way round),
+    not 30 cones and cylinders."""
+    from mmm import cad
+    from mmm.pipeline import Options, convert
+
+    monkeypatch.setattr(cad, "FIND_SWEEPS", True)
+    m = m3.Manifold.extrude(m3.CrossSection([_outline()]), 12.0, scale_top=(0.7, 0.7)).to_mesh()
+    path = str(tmp_path / "boss.stl")
+    trimesh.Trimesh(np.asarray(m.vert_properties)[:, :3], np.asarray(m.tri_verts)).export(path)
+    res = convert(path, str(tmp_path / "boss.step"), Options(preset="cad", quality=0.9), NULL)
+    assert res["valid"] and res["fidelity"]["ok"]
+    assert res["faces"] <= 6, res["faces"]
+
+
+def test_a_rounded_edge_along_a_curve_becomes_one_fillet(tmp_path, monkeypatch):
+    """A cam (a smooth outline pulled up) with its top edge rounded: the
+    fillet, a ball rolled along the curved edge, comes out as one pipe
+    surface (two faces, as it goes all the way round) instead of 15 tori,
+    and the side as one extruded surface, though fillet, side and top are
+    one smooth patch."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    from OCP.StlAPI import StlAPI_Writer
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.collections import HArray1_gp_Pnt
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    from mmm import cad
+    from mmm.pipeline import Options, convert
+
+    monkeypatch.setattr(cad, "FIND_SWEEPS", True)
+    th = np.linspace(0, 2 * np.pi, 9)[:-1]
+    arr = HArray1_gp_Pnt(1, len(th))
+    for i, t in enumerate(th):
+        arr.SetValue(i + 1, gp_Pnt(18 * np.cos(t) * (1 + 0.25 * np.cos(2 * t)), 12 * np.sin(t) * (1 + 0.15 * np.sin(t)), 0.0))
+    it = GeomAPI_Interpolate(arr, True, 1e-7)
+    it.Perform()
+    wire = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(it.Curve()).Edge()).Wire()
+    body = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire).Face(), gp_Vec(0, 0, 10)).Shape()
+    mk = BRepFilletAPI_MakeFillet(body)
+    ex = TopExp_Explorer(body, TopAbs_EDGE)
+    while ex.More():
+        e = TopoDS.Edge(ex.Current())
+        c = BRepAdaptor_Curve(e)
+        if min(c.Value(c.FirstParameter()).Z(), c.Value(c.LastParameter()).Z()) > 9.9:
+            mk.Add(1.5, e)
+        ex.Next()
+    shape = mk.Shape()
+    BRepMesh_IncrementalMesh(shape, 0.02, False, 0.2, True)
+    path = str(tmp_path / "cam.stl")
+    StlAPI_Writer().Write(shape, path)
+    res = convert(path, str(tmp_path / "cam.step"), Options(preset="cad", quality=0.9), NULL)
+    assert res["valid"] and res["fidelity"]["ok"]
+    # the true part has 4 faces: side, fillet, top, bottom
+    assert res["faces"] <= 8, res["faces"]

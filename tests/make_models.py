@@ -223,6 +223,92 @@ def cad_models():
     save_shape(plate, "messy_ascii_plate", lin=0.1, ang=0.4, ascii=True)
 
 
+def spline_wire(pts, z=0.0):
+    """A closed smooth (periodic B-spline) wire through 2D points at height z."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    from OCP.collections import HArray1_gp_Pnt as TColgp_HArray1OfPnt
+
+    arr = TColgp_HArray1OfPnt(1, len(pts))
+    for i, (x, y) in enumerate(pts):
+        arr.SetValue(i + 1, gp_Pnt(float(x), float(y), float(z)))
+    it = GeomAPI_Interpolate(arr, True, 1e-7)
+    it.Perform()
+    return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(it.Curve()).Edge()).Wire()
+
+
+def loft(wires, ruled=True):
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+
+    mk = BRepOffsetAPI_ThruSections(True, ruled)
+    for w in wires:
+        mk.AddWire(w)
+    mk.Build()
+    return mk.Shape()
+
+
+def sweep_models():
+    """Parts whose faces are known swept surfaces: fillets along curved
+    edges (a ball rolled along a curve: a pipe) and shapes that shrink as
+    they sweep (lines through one point: drafted sides, bevel gears)."""
+    # a cam: a smooth outline pulled up, its top edge rounded (the fillet is
+    # a pipe around the outline moved in by the radius)
+    th = np.linspace(0, 2 * np.pi, 9)[:-1]
+    cam = [(18 * np.cos(t) * (1 + 0.25 * np.cos(2 * t)), 12 * np.sin(t) * (1 + 0.15 * np.sin(t))) for t in th]
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace as MkFace
+
+    body = BRepPrimAPI_MakePrism(MkFace(spline_wire(cam)).Face(), gp_Vec(0, 0, 10)).Shape()
+    try:
+        body = fillet_all(body, 1.5, lambda e: min(edge_z_range(e)[0].Z(), edge_z_range(e)[1].Z()) > 9.9)
+    except Exception as e:
+        print("cam fillet failed", e)
+    save_shape(body, "cad_cam_fillet", lin=0.02, ang=0.2)
+
+    # a pipe through a sloping plate, the joint rounded (the fillet follows
+    # the oval where the two meet)
+    plate = BRepPrimAPI_MakeBox(gp_Pnt(-25, -25, -3), 50, 50, 3).Shape()
+    t = gp_Trsf()
+    t.SetRotation(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)).Axis(), math.radians(25))
+    plate = BRepBuilderAPI_Transform(plate, t, True).Shape()
+    tube = fuse(plate, BRepPrimAPI_MakeCylinder(ax(0, 0, -20), 6, 40).Shape())
+    tube = cut(tube, BRepPrimAPI_MakeCylinder(ax(0, 0, -25), 4, 50).Shape())
+
+    def joint(e):
+        from OCP.BRepAdaptor import BRepAdaptor_Curve
+        from OCP.GeomAbs import GeomAbs_Ellipse
+
+        return BRepAdaptor_Curve(e).GetType() == GeomAbs_Ellipse
+
+    try:
+        tube = fillet_all(tube, 2.0, joint)
+    except Exception as e:
+        print("tube fillet failed", e)
+    save_shape(tube, "cad_tube_fillet", lin=0.02, ang=0.2)
+
+    # a boss whose sides lean in (straight lines towards one point above it)
+    th = np.linspace(0, 2 * np.pi, 7)[:-1]
+    out = np.array([(15 * np.cos(t) + 3 * np.cos(3 * t), 10 * np.sin(t)) for t in th])
+    apex, h = np.array([2.0, 1.0]), 12.0
+    s = 1 - h / 40.0  # the apex 40 above the base
+    top = apex + s * (out - apex)
+    save_shape(loft([spline_wire(out), spline_wire(top, h)]), "cad_tapered_boss", lin=0.02, ang=0.2)
+
+    # a straight bevel gear: tooth outline at the back, the same outline
+    # shrunk towards the cone's apex at the front
+    n, R, tooth = 14, 20.0, 2.2
+    pts = []
+    for k in range(n):
+        for f, r in ((0.0, R - tooth), (0.18, R - tooth), (0.32, R + tooth), (0.5, R + tooth),
+                     (0.68, R - tooth + 0.01), (0.82, R - tooth)):
+            a = 2 * np.pi * (k + f) / n
+            pts.append((r * np.cos(a), r * np.sin(a)))
+    h, depth = 8.0, 30.0
+    s = 1 - h / depth
+    bevel = loft([spline_wire(pts), spline_wire([(s * x, s * y) for x, y in pts], h)])
+    bevel = cut(bevel, BRepPrimAPI_MakeCylinder(ax(0, 0, -1), 5, h + 2).Shape())
+    save_shape(bevel, "cad_bevel_gear", lin=0.02, ang=0.2)
+
+
 # ----------------------------------------------------------------------------
 # Organic shapes
 # ----------------------------------------------------------------------------
@@ -377,9 +463,11 @@ def big_models():
 
 
 if __name__ == "__main__":
-    which = sys.argv[1:] or ["cad", "organic", "scan", "messy", "big"]
+    which = sys.argv[1:] or ["cad", "sweeps", "organic", "scan", "messy", "big"]
     if "cad" in which:
         cad_models()
+    if "sweeps" in which:
+        sweep_models()
     if "organic" in which:
         organic_models()
     if "scan" in which:
