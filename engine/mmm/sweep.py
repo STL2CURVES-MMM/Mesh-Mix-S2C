@@ -683,10 +683,16 @@ class SweptSurface:
             from OCP.collections import Array2_gp_Pnt as TColgp_Array2OfPnt
             from OCP.gp import gp_Pnt
 
-            # (a taper without twist is straight along its lines, but
-            # grows exponentially along them)
-            nv = {"extrusion": 4}.get(self.motion.kind, 24)
-            if self.motion.kind == "taper" and abs(self.motion.twist) < 1e-3:
+            # along the sweep: by the turn round the axis, 4 degrees between
+            # samples (24 samples fixed left 12 degrees on a mount's turned
+            # face, which sagged 0.1 mm between them); an extrusion is
+            # straight, a taper without twist straight along its lines (but
+            # growing exponentially along them)
+            turn = np.degrees(self.motion.turns(self.t_range[1] - self.t_range[0]))
+            nv = int(np.clip(turn / 4.0 + 4, 8, 200))
+            if self.motion.kind == "extrusion":
+                nv = 4
+            elif self.motion.kind == "taper" and abs(self.motion.twist) < 1e-3:
                 nv = 8
             # samples along the profile by how sharply it bends (see
             # samples_for), and cubic pieces only: a gear's teeth sampled 80

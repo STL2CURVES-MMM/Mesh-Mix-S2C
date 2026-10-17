@@ -2080,11 +2080,11 @@ class CADAssembler(BRepAssembler):
 
 
 PERIODIC = ("cylinder", "cone", "torus")
-# Swept surfaces (Segmenter._find_sweeps) are still being validated on the
-# whole model suite; MMM_SWEEPS=1 turns them on
+# Swept surfaces, tapers and fillets (Segmenter._find_sweeps and
+# _find_fillets); MMM_SWEEPS=0 turns them off
 import os as _os
 
-FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") == "1"
+FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") != "0"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
