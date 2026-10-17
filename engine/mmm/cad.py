@@ -304,9 +304,15 @@ class Segmenter:
         self._refine()
         self._absorb_slivers()
         self._smooth_borders()
-        if FIND_SWEEPS:
-            self._find_sweeps()
-            self._find_fillets()
+        self._absorb_strips()
+        if FIND_SWEEPS and self._find_sweeps() + self._find_fillets():
+            # the pieces they leave between them and their neighbours (one
+            # or two triangles each) join a surface they fit, and their
+            # borders are cleaned like the others' (a tooth left in one made
+            # its edge fold back, and the face was invalid)
+            self._absorb_slivers()
+            self._smooth_borders()
+            self._absorb_strips()
         self._make_freeform()
         self._fix_apex_cones()
         if self.scan:
@@ -671,7 +677,10 @@ class Segmenter:
         and the edge curves drawn along them fold over themselves, which
         makes the faces invalid. Returns whether anything changed."""
         regs, lab, nb = self.regions, self.label, self.nb
-        analytic = np.array([not r.weak and r.kind in ("plane", "cylinder", "cone", "sphere", "torus")
+        # (swept surfaces and fillets too, which have a motion attribute:
+        # they are exact, like these)
+        analytic = np.array([not r.weak and (r.kind in ("plane", "cylinder", "cone", "sphere", "torus")
+                                             or hasattr(r.prim, "motion"))
                              for r in regs], dtype=bool)
         changed = False
         for _ in range(passes):
@@ -703,6 +712,59 @@ class Segmenter:
             if not move.any():
                 break
             lab[cand[move]] = maj[move]
+            changed = True
+        if changed:
+            self._rebuild_regions()
+        return changed
+
+    def _absorb_strips(self, passes=4):
+        """Strips of triangles poking into a neighbouring surface (one
+        triangle wide, every corner on that surface's border) join it when
+        they fit it. Their border runs in and straight back out, a spike in
+        the face's outline that crosses itself (a printed mount's cylinder,
+        a tab on a rim), and _smooth_borders, which looks at a triangle's
+        edge neighbours, misses them: each has only one on that surface. A
+        genuine narrow face (a small chamfer) has a different surface on
+        each side, so its corners don't all touch one. Returns whether
+        anything changed."""
+        regs, lab, nb, F = self.regions, self.label, self.nb, self.F
+        nr = len(regs)
+        target = np.array([not r.weak and (r.kind in ("plane", "cylinder", "cone", "sphere", "torus")
+                                           or hasattr(r.prim, "motion")) for r in regs], dtype=bool)
+        changed = False
+        for _ in range(passes):
+            nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
+            other = (nl >= 0) & (nl != lab[:, None])
+            cand = np.nonzero(other.any(1))[0]
+            if not len(cand):
+                break
+            # (vertex, region) pairs: which surfaces each corner touches
+            touch = np.unique(F.reshape(-1).astype(np.int64) * nr + np.repeat(lab, 3))
+            best = np.full(len(cand), -1)
+            for k in range(3):
+                y = nl[cand, k]
+                ok = (y >= 0) & (y != lab[cand]) & target[np.maximum(y, 0)] & (best < 0)
+                for j in range(3):
+                    key = F[cand, j].astype(np.int64) * nr + np.maximum(y, 0)
+                    ok &= np.isin(key, touch)
+                best[ok] = y[ok]
+            sel = best >= 0
+            cand, best = cand[sel], best[sel]
+            if not len(cand):
+                break
+            gap_new = np.full(len(cand), np.inf)
+            gap_own = np.full(len(cand), np.inf)
+            for rj in np.unique(best):
+                k = np.nonzero(best == rj)[0]
+                fit = self.accept(regs[rj].prim, regs[rj].sense, cand[k])
+                gap_new[k[fit]] = self._gap(regs[rj].prim, cand[k[fit]])
+            for ri in np.unique(lab[cand]):
+                k = np.nonzero(lab[cand] == ri)[0]
+                gap_own[k] = self._gap(regs[ri].prim, cand[k])
+            move = gap_new < np.maximum(gap_own, self.tol)
+            if not move.any():
+                break
+            lab[cand[move]] = best[move]
             changed = True
         if changed:
             self._rebuild_regions()
@@ -832,8 +894,13 @@ class Segmenter:
             if surf is None or dev > self.tol:
                 continue
             mot = surf.motion
-            if mot.kind != "extrusion" and mot.turns(surf.t_range[1] - surf.t_range[0]) > 1.6 * np.pi:
-                continue  # all the way round (a thread): not yet
+            # all the way round (a thread): not yet. A turned face short of
+            # a full turn is one face (the rounded rim round a hole, broken
+            # only where an arm leaves it), as long as its range, margins
+            # included, doesn't come back over itself
+            most = 1.95 * np.pi if mot.kind == "revolution" else 1.6 * np.pi
+            if mot.kind != "extrusion" and mot.turns(surf.t_range[1] - surf.t_range[0]) > most:
+                continue
             # every triangle of it on the surface, between its corners too
             T = self.V[F[faces]]
             M = np.concatenate([T, (T + np.roll(T, -1, axis=1)) / 2], axis=1).reshape(-1, 3)
@@ -2641,6 +2708,15 @@ def _settle_tolerances(shape, tol):
     the written geometry is unaffected (every result is re-read in tests)."""
     try:
         BRepLib.SameParameter_s(shape, max(tol * 0.01, 1e-7), True)
+        # an edge it gives up on keeps its flag unset, which alone makes
+        # its faces invalid (a printed mount: 3 of its 13 broken faces);
+        # ShapeFix settles those, without raising their tolerance
+        ex = TopExp_Explorer(shape, TopAbs_EDGE)
+        while ex.More():
+            e = TopoDS.Edge(ex.Current())
+            if not BRep_Tool.SameParameter_s(e):
+                ShapeFix_Edge().FixSameParameter(e)
+            ex.Next()
         BRepLib.UpdateTolerances_s(shape, False)
     except Exception:
         pass
