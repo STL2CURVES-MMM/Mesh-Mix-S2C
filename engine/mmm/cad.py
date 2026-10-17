@@ -827,6 +827,7 @@ class Segmenter:
             if surf.distance(M).max() > self.tol_mid:
                 continue
             sense = self.sense_of(surf, faces)
+            faces = self._take_in_pieces(surf, faces)
             lab[faces] = len(self.regions)
             self.regions.append(Region(surf, faces, sense))
             found += 1
@@ -839,6 +840,41 @@ class Segmenter:
         if found:
             self._rebuild_regions()
         return found
+
+    def _take_in_pieces(self, surf, faces, share=0.1):
+        """faces of a swept surface, plus the small neighbouring regions
+        that lie on it (every corner, edge midpoint and centre within the
+        tolerance). At the fan of long thin triangles where a tooth flank
+        meets a top or bottom face, a region reaching across the flank's
+        border leaves single triangles of the flank outside it (their
+        normals are too noisy to count as smooth), which would become tiny
+        planes of their own; left out, they make the flank touch itself at
+        the fan's vertex, and the cut that separates it leaves necks
+        narrower than the tolerance, so the faces come out invalid (a bevel
+        gear). Each connected piece of a neighbour outside the surface is
+        judged on its own."""
+        lab, nb = self.label, self.nb
+        inside = np.zeros(len(self.F), dtype=bool)
+        inside[faces] = True
+        near = nb[faces]
+        near = near[near >= 0]
+        near = near[~inside[near]]
+        out = [faces]
+        for l in np.unique(lab[near]):
+            if l < 0 or hasattr(self.regions[l].prim, "motion"):
+                continue
+            g = np.asarray(self.regions[l].faces)
+            g = g[(lab[g] == l) & ~inside[g]]
+            if not len(g):
+                continue
+            for piece in _cluster_components(g, nb):
+                piece = np.asarray(piece)
+                if len(piece) > share * len(faces) or not inside[nb[piece][nb[piece] >= 0]].any():
+                    continue
+                if self._gap(surf, piece).max() <= self.tol:
+                    out.append(piece)
+                    inside[piece] = True
+        return np.concatenate(out) if len(out) > 1 else faces
 
     def _revolved_analytic(self, faces):
         """A cone, cylinder, sphere or torus that every triangle of faces
