@@ -1,6 +1,6 @@
 """Render an MMMP preview from a few angles into one PNG: render_views.py in.mmmp out.png [face_colors] [edges]"""
 import math, os, sys
-sys.path.insert(0, "/home/user/Manifold-Mesh-Mix/desktop")
+sys.path.insert(0, "desktop")
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage, QPainter

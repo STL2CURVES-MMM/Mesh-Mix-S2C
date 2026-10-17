@@ -1,6 +1,6 @@
 """render_at.py in.mmmp out.png x,y,z dist [colors] - close-up views of one spot from four sides"""
 import math, sys
-sys.path.insert(0, "/home/user/Manifold-Mesh-Mix/desktop")
+sys.path.insert(0, "desktop")
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage, QPainter, QVector3D

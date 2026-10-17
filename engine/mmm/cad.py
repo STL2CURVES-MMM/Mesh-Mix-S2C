@@ -304,7 +304,6 @@ class Segmenter:
         self._refine()
         self._absorb_slivers()
         self._smooth_borders()
-        self._absorb_strips()
         if FIND_SWEEPS and self._find_sweeps() + self._find_fillets():
             # the pieces they leave between them and their neighbours (one
             # or two triangles each) join a surface they fit, and their
@@ -312,7 +311,6 @@ class Segmenter:
             # its edge fold back, and the face was invalid)
             self._absorb_slivers()
             self._smooth_borders()
-            self._absorb_strips()
         self._make_freeform()
         self._fix_apex_cones()
         if self.scan:
@@ -712,59 +710,6 @@ class Segmenter:
             if not move.any():
                 break
             lab[cand[move]] = maj[move]
-            changed = True
-        if changed:
-            self._rebuild_regions()
-        return changed
-
-    def _absorb_strips(self, passes=4):
-        """Strips of triangles poking into a neighbouring surface (one
-        triangle wide, every corner on that surface's border) join it when
-        they fit it. Their border runs in and straight back out, a spike in
-        the face's outline that crosses itself (a printed mount's cylinder,
-        a tab on a rim), and _smooth_borders, which looks at a triangle's
-        edge neighbours, misses them: each has only one on that surface. A
-        genuine narrow face (a small chamfer) has a different surface on
-        each side, so its corners don't all touch one. Returns whether
-        anything changed."""
-        regs, lab, nb, F = self.regions, self.label, self.nb, self.F
-        nr = len(regs)
-        target = np.array([not r.weak and (r.kind in ("plane", "cylinder", "cone", "sphere", "torus")
-                                           or hasattr(r.prim, "motion")) for r in regs], dtype=bool)
-        changed = False
-        for _ in range(passes):
-            nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
-            other = (nl >= 0) & (nl != lab[:, None])
-            cand = np.nonzero(other.any(1))[0]
-            if not len(cand):
-                break
-            # (vertex, region) pairs: which surfaces each corner touches
-            touch = np.unique(F.reshape(-1).astype(np.int64) * nr + np.repeat(lab, 3))
-            best = np.full(len(cand), -1)
-            for k in range(3):
-                y = nl[cand, k]
-                ok = (y >= 0) & (y != lab[cand]) & target[np.maximum(y, 0)] & (best < 0)
-                for j in range(3):
-                    key = F[cand, j].astype(np.int64) * nr + np.maximum(y, 0)
-                    ok &= np.isin(key, touch)
-                best[ok] = y[ok]
-            sel = best >= 0
-            cand, best = cand[sel], best[sel]
-            if not len(cand):
-                break
-            gap_new = np.full(len(cand), np.inf)
-            gap_own = np.full(len(cand), np.inf)
-            for rj in np.unique(best):
-                k = np.nonzero(best == rj)[0]
-                fit = self.accept(regs[rj].prim, regs[rj].sense, cand[k])
-                gap_new[k[fit]] = self._gap(regs[rj].prim, cand[k[fit]])
-            for ri in np.unique(lab[cand]):
-                k = np.nonzero(lab[cand] == ri)[0]
-                gap_own[k] = self._gap(regs[ri].prim, cand[k])
-            move = gap_new < np.maximum(gap_own, self.tol)
-            if not move.any():
-                break
-            lab[cand[move]] = best[move]
             changed = True
         if changed:
             self._rebuild_regions()

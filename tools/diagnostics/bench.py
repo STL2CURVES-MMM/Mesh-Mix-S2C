@@ -1,7 +1,7 @@
 """bench.py engine_dir out.jsonl model...  - convert each model like the app (Auto, quality by size), one line per model"""
 import json, os, subprocess, sys, time
 eng, out = sys.argv[1], sys.argv[2]
-PY = "/home/user/Manifold-Mesh-Mix/.venv/bin/python"
+PY = sys.executable
 STEPS = [(50_000, 0.9), (300_000, 0.8), (1_000_000, 0.7), (3_000_000, 0.6)]
 done = set()
 if os.path.exists(out):

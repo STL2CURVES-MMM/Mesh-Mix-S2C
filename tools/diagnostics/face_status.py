@@ -1,5 +1,5 @@
 import sys, glob
-sys.path.insert(0, "/home/user/Manifold-Mesh-Mix/engine")
+sys.path.insert(0, "engine")
 from OCP.BRepTools import BRepTools
 from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.TopoDS import TopoDS_Shape, TopoDS
