@@ -982,6 +982,10 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     info = MeshInfo()
     tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
     info.input_triangles = int(len(tris))
+    from . import __version__, build_id
+
+    b = build_id()
+    report.log(f"Engine {__version__}" + (f" (build {b})" if b else ""))
     report.log(f"Read {len(tris):,} triangles")
 
     # 1. broken numbers

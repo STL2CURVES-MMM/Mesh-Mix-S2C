@@ -197,10 +197,18 @@ class _Candidate:
 
     def rank(self):
         # following the mesh comes first (a valid but wrinkled shape is
-        # useless), then validity, then how closely it follows
+        # useless), then following it nearly everywhere, then validity,
+        # then how closely it follows: a rim's CAD faces, 99.8% within the
+        # tolerance but with a few faulty faces, lost to smooth surfaces
+        # only 40% within it because those had no faults
         v = self.verdict
-        return (v is None or v.ok, self.valid, 0.0 if v is None else v.score)
+        nearly = v is None or v.ok or getattr(v, "r", {}).get("within", 0.0) >= NEARLY_ALL
+        return (v is None or v.ok, nearly, self.valid, 0.0 if v is None else v.score)
 
+
+# share of the mesh surface within the tolerance for a result that doesn't
+# pass to still rank above one that is far off (see _Candidate.rank)
+NEARLY_ALL = 0.98
 
 # when two results both follow the mesh, the other method's replaces the
 # first only when it is this much closer (in Verdict.score: about one
