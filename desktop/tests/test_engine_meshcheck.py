@@ -30,6 +30,7 @@ EXPECTED = {
     "duplicates": ({"duplicates": "fixed"}, 1, 1, True),
     "nan": ({"bad_numbers": "fixed"}, 1, 1, True),
     "corner_touch": ({"pinched": "fixed"}, 2, 2, True),
+    "edge_touch": ({"pinched": "fixed"}, 2, 2, True),
     "self_crossing": ({"self_intersections": "not_fixed"}, 1, 1, False),
     "overlap": ({"overlaps": "action"}, 2, 2, True),
     "nested": ({}, 2, 2, True),
@@ -60,6 +61,22 @@ def test_fixed_box_keeps_its_volume():
         vol = sum(s.volume for b in bodies for s in b)
         expected = 2000.0 if name == "glued_internal_wall" else 1000.0
         assert vol == pytest.approx(expected, rel=1e-3), name
+
+
+def test_pieces_touching_along_an_edge_each_stay_closed():
+    """Around an edge shared by four triangles, each one is paired with its
+    neighbour on its inside, so both boxes close on their own instead of
+    being joined across the edge by slivers."""
+    from mmm.meshio import EdgeTopology, triangles_to_indexed
+
+    V, F = triangles_to_indexed(CASES["edge_touch"])
+    topo = EdgeTopology(V, F)
+    assert topo.n_nonmanifold_edges == 8
+    V2, F2, n = meshcheck.split_pinched(V, F, topo)
+    t2 = EdgeTopology(V2, F2)
+    assert n == 3 and t2.n_nonmanifold_edges == 0 and t2.n_boundary_edges == 0
+    bodies, _, _ = meshcheck.prepare_part(CASES["edge_touch"], "auto", True, NULL, False)
+    assert sorted(s.volume for b in bodies for s in b) == pytest.approx([1000.0, 1000.0], rel=1e-6)
 
 
 def test_merge_overlaps_on_request():

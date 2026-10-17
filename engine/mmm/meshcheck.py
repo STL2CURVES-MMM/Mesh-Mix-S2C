@@ -204,16 +204,17 @@ def glued_sheets(V, F, diag, topo=None):
     return wall[lab], int(wall.sum())
 
 
-def pinched_vertices(F, topo, nv):
+def pinched_vertices(F, topo, nv, twin=None):
     """Corner groups per vertex: a vertex whose triangles form more than one
     fan (joined through shared edges) is a pinch point. Returns
     (corner_labels, n_pinched) where corner_labels gives each face corner
-    (3*f + i) the id of its fan."""
+    (3*f + i) the id of its fan. twin: half-edge pairs to join fans
+    through (topo.twin by default)."""
     nf = len(F)
     if nf == 0:
         return np.zeros(0, np.int64), 0
     vert = F.reshape(-1)
-    twin = topo.twin
+    twin = topo.twin if twin is None else twin
     rows, cols = [], []
     for i in range(3):
         h = 3 * np.arange(nf) + i  # half-edge from corner i to corner i+1
@@ -747,10 +748,65 @@ def close_cracks(V, F, diag):
     return V, F, max(0, before - EdgeTopology(V, F).n_boundary_edges) // 2
 
 
+def pair_tangled(V, F, topo):
+    """topo.twin with the edges shared by 4, 6, ... triangles paired too:
+    where two pieces of a part touch along an edge (a rib over a notch cut
+    under it, two blocks meeting at a corner), each triangle is paired with
+    the one next to it round the edge on its inside, so each piece closes
+    on its own and they meet along the line instead of being joined across
+    it. Edges that can't be paired that way (odd counts, triangles on top
+    of each other, a twisted surface) are left unpaired."""
+    twin = topo.twin.copy()
+    hs = np.nonzero(topo.nonmanifold_he)[0]
+    if not len(hs):
+        return twin
+    a, b = topo.he_from[hs], topo.he_to[hs]
+    key = np.minimum(a, b) * len(V) + np.maximum(a, b)
+    order = np.argsort(key, kind="stable")
+    hs, key = hs[order], key[order]
+    starts = np.r_[0, np.nonzero(np.diff(key))[0] + 1, len(key)]
+    for s, e in zip(starts[:-1], starts[1:]):
+        g = hs[s:e]
+        if len(g) % 2:
+            continue
+        lo = min(topo.he_from[g[0]], topo.he_to[g[0]])
+        hi = max(topo.he_from[g[0]], topo.he_to[g[0]])
+        d = V[hi] - V[lo]
+        L = np.linalg.norm(d)
+        if L == 0:
+            continue
+        d = d / L
+        e1 = np.cross(d, np.eye(3)[int(np.argmin(np.abs(d)))])
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(d, e1)
+        f = g // 3
+        third = F[f, (g % 3 + 2) % 3]
+        w = V[third] - V[lo]
+        w -= np.outer(w @ d, d)
+        th = np.arctan2(w @ e2, w @ e1)
+        srt = np.argsort(th)
+        g, th, f = g[srt], th[srt], f[srt]
+        if np.min(np.diff(np.r_[th, th[0] + 2 * np.pi])) < 1e-6:
+            continue  # triangles on top of each other
+        n = np.cross(V[F[f, 1]] - V[F[f, 0]], V[F[f, 2]] - V[F[f, 0]])
+        # the inside is behind each triangle: towards the next one round the
+        # edge (increasing angle) when -n turns that way
+        up = (-n * np.cross(d, w[srt])).sum(1) > 0
+        k = len(g)
+        mate = np.where(up, (np.arange(k) + 1) % k, (np.arange(k) - 1) % k)
+        if not (mate[mate] == np.arange(k)).all():
+            continue
+        if (topo.he_from[g] == topo.he_from[g[mate]]).any():
+            continue  # same direction: a twisted surface
+        twin[g] = g[mate]
+    return twin
+
+
 def split_pinched(V, F, topo):
     """Give every fan of triangles around a pinched vertex its own copy of
-    the vertex, so the surface no longer touches itself at a point."""
-    lab, n = pinched_vertices(F, topo, len(V))
+    the vertex, so the surface no longer touches itself at a point (or
+    along a line, where pieces touch along an edge: see pair_tangled)."""
+    lab, n = pinched_vertices(F, topo, len(V), pair_tangled(V, F, topo))
     if n == 0:
         return V, F, 0
     vert = F.reshape(-1)
