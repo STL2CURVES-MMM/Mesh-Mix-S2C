@@ -814,11 +814,14 @@ class Segmenter:
             mot = motion[i]
             if mot is None:
                 continue
-            if mot.kind == "revolution" or (mot.kind == "taper" and abs(mot.twist) < 1e-3):
-                # a turned straight line or arc is a cone, cylinder, sphere
-                # or torus (a faceted chamfer has corners only at its two
-                # ends, too few for a profile curve); so are lines through
-                # one point along a circle
+            if True:
+                # one cone, cylinder, sphere or torus, when it fits, is
+                # better than a sweep: a turned straight line or arc is one
+                # (a faceted chamfer has corners only at its two ends, too
+                # few for a profile curve), so are lines through one point
+                # along a circle, and pieces of one cylinder that a patch
+                # holds (extruded, they followed a printed liner 2.5 times
+                # less closely than the cylinder)
                 prim = self._revolved_analytic(faces)
                 if prim is not None:
                     lab[faces] = len(self.regions)
@@ -1024,20 +1027,25 @@ class Segmenter:
                 out.append((comp, m))
         return out
 
-    def _no_worse(self, surf, faces, slack=1.1):
-        """Whether a swept surface or fillet follows triangles at least about
-        as closely as the regions it would replace (largest gap of corners,
-        edge midpoints and centres). Fewer faces are worth having only then:
-        on a printed liner, extrusions 1.4 tolerances off replaced cylinders
-        0.9 off, and the largest gap grew threefold."""
+    def _no_worse(self, surf, faces, slack=1.1, many=5):
+        """Whether a swept surface or fillet is worth the regions it would
+        replace: it follows their triangles clearly more closely (largest
+        gap of corners, edge midpoints and centres), or about as closely
+        and stands for many of them. On a printed liner, extrusions 1.4
+        tolerances off replaced cylinders 0.9 off and the largest gap grew
+        threefold; others, as close as the three cylinders they replaced
+        by that measure, still stood off the mesh between those points,
+        where the cylinders hadn't."""
         new = float(self._gap(surf, faces).max())
         old = 0.0
         lab = self.label
-        for r in np.unique(lab[faces]):
-            if r >= 0:
-                g = faces[lab[faces] == r]
-                old = max(old, float(self._gap(self.regions[r].prim, g).max()))
-        return new <= slack * old + 0.05 * self.tol
+        regs = [r for r in np.unique(lab[faces]) if r >= 0]
+        for r in regs:
+            g = faces[lab[faces] == r]
+            old = max(old, float(self._gap(self.regions[r].prim, g).max()))
+        if new <= old / slack:
+            return True
+        return len(regs) >= many and new <= slack * old + 0.05 * self.tol
 
     def _take_in_pieces(self, surf, faces, share=0.1):
         """faces of a swept surface, plus the small neighbouring regions
