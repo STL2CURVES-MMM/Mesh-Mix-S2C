@@ -715,6 +715,58 @@ class Segmenter:
             self._rebuild_regions()
         return changed
 
+    def _absorb_self_crossing_strips(self, sources, passes=4):
+        """Try to remove border strips from faces whose *built* wire crosses.
+
+        This is deliberately not part of normal segmentation.  It is a
+        second, topology-checked attempt after OpenCASCADE has proved that a
+        face's wire crosses itself.  A candidate must lie on a neighbouring
+        analytic surface, have every corner already on that neighbour's
+        border, and fit it more closely than its current surface.  The
+        caller builds the result again and keeps it only if the reported
+        self-crossing actually disappears without adding invalid faces.
+        """
+        regs, lab, nb, F = self.regions, self.label, self.nb, self.F
+        sources = set(sources)
+        if not sources:
+            return False
+        nr = len(regs)
+        target = np.array([not r.weak and (r.kind in ("plane", "cylinder", "cone", "sphere", "torus")
+                                           or hasattr(r.prim, "motion")) for r in regs], dtype=bool)
+        changed = False
+        for _ in range(passes):
+            nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
+            touch = np.unique(F.reshape(-1).astype(np.int64) * nr + np.repeat(lab, 3))
+            cand = np.nonzero(np.isin(lab, tuple(sources)) & (nl != lab[:, None]).any(1))[0]
+            best = np.full(len(cand), -1)
+            for edge in range(3):
+                dst = nl[cand, edge]
+                ok = (dst >= 0) & (dst != lab[cand]) & target[np.maximum(dst, 0)] & (best < 0)
+                keys = F[cand].astype(np.int64) * nr + np.maximum(dst, 0)[:, None]
+                ok &= np.isin(keys, touch).all(1)
+                best[ok] = dst[ok]
+            keep = best >= 0
+            cand, best = cand[keep], best[keep]
+            if not len(cand):
+                break
+            gap_new = np.full(len(cand), np.inf)
+            gap_own = np.full(len(cand), np.inf)
+            for rj in np.unique(best):
+                k = np.nonzero(best == rj)[0]
+                fit = self.accept(regs[rj].prim, regs[rj].sense, cand[k])
+                gap_new[k[fit]] = self._gap(regs[rj].prim, cand[k[fit]])
+            for ri in np.unique(lab[cand]):
+                k = np.nonzero(lab[cand] == ri)[0]
+                gap_own[k] = self._gap(regs[ri].prim, cand[k])
+            move = (gap_new <= self.tol) & (gap_new < gap_own)
+            if not move.any():
+                break
+            lab[cand[move]] = best[move]
+            changed = True
+        if changed:
+            self._rebuild_regions()
+        return changed
+
     def _find_sweeps(self, sharp_deg=30.0, min_regions=3):
         """Smooth patches (bounded by sharp edges) that one swept surface
         explains (see sweep.py: a helical gear's tooth flank, a thread, a
@@ -2381,6 +2433,25 @@ def segment_shell(shell, tol, report=NULL):
     return seg, regions
 
 
+def _self_crossing_regions(asm):
+    """Region numbers whose constructed face contains a crossing wire."""
+    from OCP.BRepCheck import BRepCheck_Status, BRepCheck_Wire
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+
+    out = set()
+    for r, face in asm.region_faces.items():
+        exp = TopExp_Explorer(face, TopAbs_WIRE)
+        while exp.More():
+            wire = TopoDS.Wire(exp.Current())
+            e1, e2 = TopoDS_Edge(), TopoDS_Edge()
+            if BRepCheck_Wire(wire).SelfIntersect(face, e1, e2) != BRepCheck_Status.BRepCheck_NoError:
+                out.add(r)
+                break
+            exp.Next()
+    return out
+
+
 def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=0.6, seg=None):
     """Segment + build. Analytic faces that cannot be built validly, or that
     don't follow the mesh (checked in the first ``fit_rounds`` rounds), are
@@ -2401,6 +2472,7 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     labels = seg.label.copy()
     replaced = 0
     inaccurate = 0
+    tried_crossing_cleanup = False
 
     def build(labels, regions):
         labels, regions = split_pinched_regions(seg, labels, regions)
@@ -2423,6 +2495,26 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
 
     for rnd in range(max_rounds):
         labels, regions, asm, faces, bad = build(labels, regions)
+        # A wire crossing is proof that a face boundary is not representable;
+        # before turning that whole face into freeform cells, try a local
+        # re-labelling of only the crossing face's border strips.  The trial
+        # is retained only when rebuilding proves it removed a crossing and
+        # did not add invalid faces.
+        crossing = _self_crossing_regions(asm)
+        if crossing and not tried_crossing_cleanup:
+            tried_crossing_cleanup = True
+            old_label, old_regions = seg.label, seg.regions
+            seg.label, seg.regions = labels.copy(), list(regions)
+            if seg._absorb_self_crossing_strips(crossing):
+                trial_labels, trial_regions, trial_asm, trial_faces, trial_bad = build(seg.label.copy(), seg.regions)
+                if (len(_self_crossing_regions(trial_asm)) < len(crossing)
+                        and len(trial_bad) <= len(bad)):
+                    labels, regions, asm, faces, bad = trial_labels, trial_regions, trial_asm, trial_faces, trial_bad
+                    report.log("Removed border strips that caused a self-crossing CAD wire")
+                else:
+                    seg.label, seg.regions = old_label, old_regions
+            else:
+                seg.label, seg.regions = old_label, old_regions
         if rnd < min(fit_rounds, max_rounds - 1):
             # valid faces that still don't follow their part of the mesh (a
             # surface that bulges between the mesh's vertices, a face whose
