@@ -213,6 +213,10 @@ def fit_taper(P, N, W=None, min_gap=MIN_GAP, max_rms=None):
     M = (A * w[:, None]).T @ A / w.sum()
     lam, U = np.linalg.eigh(M)
     lam = np.maximum(lam, 0.0)
+    if lam[1] <= 1e-9 * max(lam.sum(), 1e-300):
+        # two motions fit exactly (a cylinder slides and turns): the
+        # smallest one is any mix of them, and their ratio is noise
+        return None
     e = U[:, 0] * np.sign(U[6, 0] or 1.0)  # growing as the parameter rises
     c, cbar, g = e[:3], e[3:6], e[6]
     if g < 0.05 * max(np.linalg.norm(c), np.linalg.norm(cbar)):
