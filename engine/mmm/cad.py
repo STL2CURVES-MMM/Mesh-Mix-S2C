@@ -716,15 +716,19 @@ class Segmenter:
         return changed
 
     def _absorb_self_crossing_strips(self, sources, passes=4):
-        """Try to remove border strips from faces whose *built* wire crosses.
+        """Try to remove border triangles from faces whose *built* wire crosses.
 
         This is deliberately not part of normal segmentation.  It is a
         second, topology-checked attempt after OpenCASCADE has proved that a
-        face's wire crosses itself.  A candidate must lie on a neighbouring
-        analytic surface, have every corner already on that neighbour's
-        border, and fit it more closely than its current surface.  The
-        caller builds the result again and keeps it only if the reported
-        self-crossing actually disappears without adding invalid faces.
+        face's wire crosses itself.  A candidate triangle must share one edge
+        with a neighbouring analytic surface (so at least one of that edge's
+        two vertices already participates in a face of the neighbour), and the
+        whole triangle must fit the neighbour within tolerance and better than
+        its current surface.  The caller builds the result again and keeps it
+        only if the reported self-crossing actually decreases without adding
+        invalid faces.  The purely geometric criterion (shared-edge anchor +
+        gap improvement) is model-agnostic: it fires wherever a region boundary
+        produces a crossing wire, regardless of the model.
         """
         regs, lab, nb, F = self.regions, self.label, self.nb, self.F
         sources = set(sources)
@@ -742,8 +746,15 @@ class Segmenter:
             for edge in range(3):
                 dst = nl[cand, edge]
                 ok = (dst >= 0) & (dst != lab[cand]) & target[np.maximum(dst, 0)] & (best < 0)
-                keys = F[cand].astype(np.int64) * nr + np.maximum(dst, 0)[:, None]
-                ok &= np.isin(keys, touch).all(1)
+                # A candidate triangle is anchored at the boundary when at
+                # least one vertex of the shared edge (the edge that touches
+                # the neighbour) already participates in a face of that
+                # neighbour.  Half-edge convention: nb[fi, e] is the
+                # neighbour across the edge from F[fi, e] to F[fi, (e+1)%3].
+                dmax = np.maximum(dst, 0)
+                v0 = F[cand, edge].astype(np.int64) * nr + dmax
+                v1 = F[cand, (edge + 1) % 3].astype(np.int64) * nr + dmax
+                ok &= np.isin(v0, touch) | np.isin(v1, touch)
                 best[ok] = dst[ok]
             keep = best >= 0
             cand, best = cand[keep], best[keep]
@@ -1223,7 +1234,7 @@ class Segmenter:
             faces = order[starts[k]:starts[k + 1]]
             r = old[lab[faces[0]]]
             prim, sense = r.prim, r.sense
-            if prim.kind != "plane" and faces.size >= 3:
+            if prim.kind not in ("plane", "freeform") and faces.size >= 3:
                 P, N, ok, W = self.region_points(faces, True)
                 p2 = prim.refit(P[ok], N[ok], W[ok])
                 if p2 is not None and not p2.degenerate(self.ext) and self.accept(p2, sense, faces, 1.5 * self.tol).all():
@@ -2472,7 +2483,7 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     labels = seg.label.copy()
     replaced = 0
     inaccurate = 0
-    tried_crossing_cleanup = False
+    crossed_this_round = False
 
     def build(labels, regions):
         labels, regions = split_pinched_regions(seg, labels, regions)
@@ -2501,20 +2512,25 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # is retained only when rebuilding proves it removed a crossing and
         # did not add invalid faces.
         crossing = _self_crossing_regions(asm)
-        if crossing and not tried_crossing_cleanup:
-            tried_crossing_cleanup = True
+        if crossing and not crossed_this_round:
+            crossed_this_round = True
             old_label, old_regions = seg.label, seg.regions
             seg.label, seg.regions = labels.copy(), list(regions)
             if seg._absorb_self_crossing_strips(crossing):
                 trial_labels, trial_regions, trial_asm, trial_faces, trial_bad = build(seg.label.copy(), seg.regions)
+                # Accept if crossings decreased and no *new* faces went invalid.
+                # Faces already in bad are going to be replaced anyway, so only
+                # newly-invalid faces count against the trial.
+                new_bad = trial_bad - bad
                 if (len(_self_crossing_regions(trial_asm)) < len(crossing)
-                        and len(trial_bad) <= len(bad)):
+                        and not new_bad):
                     labels, regions, asm, faces, bad = trial_labels, trial_regions, trial_asm, trial_faces, trial_bad
                     report.log("Removed border strips that caused a self-crossing CAD wire")
                 else:
                     seg.label, seg.regions = old_label, old_regions
             else:
                 seg.label, seg.regions = old_label, old_regions
+        crossed_this_round = False  # reset for next round
         if rnd < min(fit_rounds, max_rounds - 1):
             # valid faces that still don't follow their part of the mesh (a
             # surface that bulges between the mesh's vertices, a face whose
