@@ -170,6 +170,10 @@ def fit_motion(P, N, W=None, min_gap=MIN_GAP, max_rms=None, taper=True):
     M = (A * w[:, None]).T @ A / w.sum()
     lam, U = np.linalg.eigh(M)
     lam = np.maximum(lam, 0.0)
+    if lam[1] <= 1e-9 * max(lam.sum(), 1e-300):
+        # two motions fit exactly (a cylinder slides and turns): no single
+        # clear one (their ratio is two zeros, which varies by platform)
+        return None
     c, cbar = U[:3, 0], U[3:, 0]
     nc, nb = float(np.linalg.norm(c)), float(np.linalg.norm(cbar))
     if nc < 0.02 * max(nb, 1e-12):
