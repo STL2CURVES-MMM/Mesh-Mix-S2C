@@ -836,6 +836,8 @@ class Segmenter:
             M = np.concatenate([T, (T + np.roll(T, -1, axis=1)) / 2], axis=1).reshape(-1, 3)
             if surf.distance(M).max() > self.tol_mid:
                 continue
+            if not self._no_worse(surf, faces):
+                continue
             sense = self.sense_of(surf, faces)
             faces = self._take_in_pieces(surf, faces)
             if surf.curve.closed:
@@ -938,7 +940,7 @@ class Segmenter:
                 continue
             T = self.V[F[faces]]
             M = np.concatenate([T, (T + np.roll(T, -1, axis=1)) / 2], axis=1).reshape(-1, 3)
-            if surf.distance(M).max() > self.tol_mid:
+            if surf.distance(M).max() > self.tol_mid or not self._no_worse(surf, faces):
                 continue
             faces = self._take_in_pieces(surf, faces)
             if surf.curve.closed:
@@ -958,7 +960,7 @@ class Segmenter:
             self._rebuild_regions()
         return found
 
-    def _sub_patches(self, faces, min_regions=3, max_deg=3.0):
+    def _sub_patches(self, faces, min_regions=3, max_deg=3.0, min_tris=30):
         """Parts of a smooth patch that one motion explains, as [(faces,
         motion)]: the side of an extrusion whose top edge is rounded (the
         fillet joins side and top smoothly, so the three are one patch). The
@@ -993,6 +995,12 @@ class Segmenter:
                 continue
             seen.append(key)
             hyps.append(m)
+        # (curved triangles only: a flat face has its surface already, and
+        # every plane containing a motion's direction agrees with it, which
+        # on a printed mount made patches of 20,000 triangles that only cost
+        # time, and a stray small one that changed the faces around it)
+        flat = np.array([r.kind == "plane" and not r.weak for r in self.regions], dtype=bool)
+        faces = faces[~flat[lab[faces]]]
         cen = self.V[F[faces]].mean(1)
         used = np.zeros(len(F), dtype=bool)
         lim = np.sin(np.radians(max_deg))
@@ -1001,11 +1009,11 @@ class Segmenter:
             v = mot.velocity(cen)
             sp = np.linalg.norm(v, axis=1)
             ok = (sp > 1e-12) & (np.abs((fn[faces] * v).sum(1)) <= lim * np.maximum(sp, 1e-300)) & ~used[faces]
-            if ok.sum() < 12:
+            if ok.sum() < min_tris:
                 continue
             for comp in _cluster_components(faces[ok], nb):
                 comp = np.asarray(comp)
-                if len(comp) < 12 or len(np.unique(lab[comp])) < min_regions:
+                if len(comp) < min_tris or len(np.unique(lab[comp])) < min_regions:
                     continue
                 m = fit_motion(self.V[F[comp]].mean(1), fn[comp], fa[comp])
                 # confirmed only as the motion proposed (fitted on the
@@ -1015,6 +1023,21 @@ class Segmenter:
                 used[comp] = True
                 out.append((comp, m))
         return out
+
+    def _no_worse(self, surf, faces, slack=1.1):
+        """Whether a swept surface or fillet follows triangles at least about
+        as closely as the regions it would replace (largest gap of corners,
+        edge midpoints and centres). Fewer faces are worth having only then:
+        on a printed liner, extrusions 1.4 tolerances off replaced cylinders
+        0.9 off, and the largest gap grew threefold."""
+        new = float(self._gap(surf, faces).max())
+        old = 0.0
+        lab = self.label
+        for r in np.unique(lab[faces]):
+            if r >= 0:
+                g = faces[lab[faces] == r]
+                old = max(old, float(self._gap(self.regions[r].prim, g).max()))
+        return new <= slack * old + 0.05 * self.tol
 
     def _take_in_pieces(self, surf, faces, share=0.1):
         """faces of a swept surface, plus the small neighbouring regions
