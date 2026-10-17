@@ -29,6 +29,38 @@ from scipy.spatial import cKDTree
 WRONG_WAY_DEG = 30.0
 
 
+def _round_trip(shape):
+    """A copy of a shape written out and read back in OpenCASCADE's own
+    format: what a saved file holds. Meshed as it is in memory, faces whose
+    edges stand a little off their surface (within their tolerance) came
+    out in part (a printed mount's cylinder 85% covered, read as a gap 2.5
+    tolerances wide); the copy read back, like the saved STEP file, is
+    meshed whole."""
+    import os
+    import tempfile
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    fd, path = tempfile.mkstemp(suffix=".brep")
+    os.close(fd)
+    try:
+        BRepTools.Write_s(shape, path)
+        out = TopoDS_Shape()
+        if BRepTools.Read_s(out, path, BRep_Builder()) and not out.IsNull():
+            return out
+    except Exception:
+        pass
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return BRepBuilderAPI_Copy(shape).Shape()
+
+
 def face_blown_up(face, k=10.0):
     """A face whose surface is far bigger than its own outline allows (a
     freeform fit gone wild: one came out with an area of 10^40 mm^2 inside
@@ -66,7 +98,6 @@ def tessellate(shape, deflection, angle=0.25):
     also leaves no fine mesh on the shape itself for the 3D preview to
     reuse); faces that copy can't mesh are meshed from the shape."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.ShapeFix import ShapeFix_ShapeTolerance
     from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
@@ -94,7 +125,7 @@ def tessellate(shape, deflection, angle=0.25):
     for f, b in zip(faces, blown):
         if not b:
             B.Add(comp, f)
-    copy = BRepBuilderAPI_Copy(comp).Shape()
+    copy = _round_trip(comp)
     ShapeFix_ShapeTolerance().SetTolerance(copy, 1e-7)
     BRepMesh_IncrementalMesh(copy, deflection, False, angle, True)
     copied = TopExp_Explorer(copy, TopAbs_FACE)
