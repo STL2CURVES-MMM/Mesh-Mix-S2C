@@ -47,9 +47,8 @@ how the run was started (relative paths from the wrong directory), so
 
 ## The owner's three open complaints
 
-The owner's files are NOT in the repo. They are `rim-x4.stl`,
-`right-side-tire-x2.stl` and `sharps_mount_PETG_rev8.stl`. Ask the owner for
-them if needed.
+All test models, including these three, are zipped in `test files/` (see its
+README). The owner asked for that, as an exception to the CLAUDE.md rule.
 
 ### 1. Rim (`rim-x4.stl`): mostly fixed
 
