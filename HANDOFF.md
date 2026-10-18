@@ -9,6 +9,140 @@ Read `CLAUDE.md` first — it holds the owner's rules. The most important ones:
 - Give them the macOS CI build to test first.
 - Never commit the owner's own model files.
 
+---
+
+## How to think and work on this project
+
+This section is for every AI that picks this up. Read it before doing anything.
+
+### Step back before every big move
+
+Before writing any code, stop and ask:
+- Do I actually understand the root cause, or am I guessing?
+- Is there a simpler explanation I haven't checked?
+- Is the fix I'm about to write model-agnostic — does it work on any STL, not
+  just the one file that surfaced the bug?
+- Is this the right level to fix the problem (segmenter vs assembler vs healer)?
+- What's the smallest change that solves the confirmed cause?
+
+Do this again after you have a fix working: step back and ask whether you've
+actually solved the right thing or just patched a symptom.
+
+At the start of each new problem area (not just each session), re-read the
+relevant code before touching it. Never write a fix for code you haven't read.
+
+### Diagnose first, code second
+
+The pattern that worked this session:
+
+1. **Reproduce:** run `bench.py` on the problem model, confirm the issue is real
+   and measure it (face count, validity, max gap, volume).
+2. **Isolate:** use `why_demoted2.py` to find which regions fail each round.
+3. **Inspect:** save failing faces with `face_area.py`, examine with `face_status.py`,
+   `edge_status.py`, `wire_cross.py`. Look at the actual numbers — UV coordinates,
+   3D gap sizes, vertex positions.
+4. **Understand the mechanism:** trace through the code to understand exactly why
+   the numbers look the way they do. Write small Python scripts that re-run the
+   relevant internal step and instrument it.
+5. **Confirm the cause:** before writing a fix, you should be able to state
+   "the problem is X because the measurement at step Y shows Z". If you can't
+   state it that precisely, keep diagnosing.
+6. **Write the minimal fix:** one targeted change that addresses the confirmed cause.
+7. **Verify:** run `bench.py` on the problem file, then on the full 30-model suite.
+   Compare with `bench_cmp.py`. Zero regressions is the bar.
+
+Never skip steps. The previous agent who ran a rejected experiment (unconditional
+border-tongue rule) skipped step 5 and it made things worse. The session that worked
+spent most of its time in steps 2–5 before writing a single line.
+
+### How to run tests
+
+**Unit tests** (fast, run after every code change):
+```bash
+.venv/bin/python -m pytest -q desktop/tests
+# Expected: 177 passed, 6-7 skipped, 0 errors
+```
+
+**Lint** (fast, run after every code change):
+```bash
+.venv/bin/python -m pyflakes desktop
+# Expected: no output (clean)
+```
+
+**Single-model bench** (medium, run to check a specific problem file):
+```bash
+cp -r engine /tmp/engine_test  # always bench on a copy so you can keep editing
+.venv/bin/python tools/diagnostics/bench.py /tmp/engine_test /tmp/result.jsonl \
+  "$(pwd)/test files/owner problem files/sharps_mount_PETG_rev8.stl"
+# Output: model name, face count, valid, ok, time
+```
+
+**Full suite** (slow, ~15-20 min, run before accepting any change):
+```bash
+# Generate models first if tests/models/ is missing:
+.venv/bin/python tests/make_models.py
+
+# Build the path list:
+cat tools/diagnostics/results/suite8_models.txt | grep -v scratch \
+  | sed "s|tests/models/|$(pwd)/tests/models/|" > /tmp/suite_paths.txt
+
+# Run on two engine copies and compare:
+cp -r engine /tmp/engine_before   # baseline (last verified commit)
+cp -r engine /tmp/engine_after    # your change
+.venv/bin/python tools/diagnostics/bench.py /tmp/engine_before /tmp/suite_before.jsonl \
+  $(cat /tmp/suite_paths.txt)
+.venv/bin/python tools/diagnostics/bench.py /tmp/engine_after /tmp/suite_after.jsonl \
+  $(cat /tmp/suite_paths.txt)
+.venv/bin/python tools/diagnostics/bench_cmp.py /tmp/suite_before.jsonl /tmp/suite_after.jsonl
+```
+
+**Important bench.py gotchas:**
+- Always pass model paths as separate arguments — NOT via `$()` string expansion.
+  `$(cat file)` with word splitting works; a single `"$(cat file)"` does not.
+- Do NOT run bench in the background with `&`. The sandbox kills background processes.
+  Run sequentially and wait for each to finish.
+- `pgrep` doesn't work in the sandbox. Check progress by looking at the output file:
+  `wc -l /tmp/result.jsonl` counts finished models.
+- bench.py skips models already in the output file. Delete the file to re-run from scratch.
+
+**What "zero regressions" means:** every model in `bench_cmp.py` output shows
+`(same)`, or shows strictly better numbers (fewer faces, better within2, lower max
+gap) with no model going from valid→invalid or ok→not-ok.
+
+### What quality means for this project
+
+This is a geometry engine that converts STL meshes to STEP/CAD. Quality means:
+
+- **Valid:** the STEP output is topologically valid (BRepCheck_Analyzer passes).
+  This is non-negotiable.
+- **Fewer analytic faces is better** when they're correct CAD faces (planes,
+  cylinders, tori). Freeform B-spline faces are a fallback — they're correct but
+  ugly in a CAD viewer.
+- **Lower max gap is better** — how far the output STEP deviates from the input mesh.
+- **Volume accuracy** — within 0.5% of mesh volume is good.
+- **Speed** matters less than quality. The owner said explicitly: quality and
+  reliability over speed. A fix that adds 10 seconds but produces better faces
+  is the right trade.
+
+Any fix must work on any STL, not just the files that surfaced the bug. If you
+find yourself writing code that checks for specific region numbers, specific
+coordinates, or specific model names, stop — that's a model-specific hack.
+The fix must be driven by geometric properties (gap size, wire validity, surface
+fit quality) that are meaningful for any input.
+
+### When to stop and ask the owner
+
+Stop and ask before:
+- Any design choice that trades one quality metric for another (e.g. "fewer faces
+  but slightly larger gap").
+- Any change to the segmenter's core region-assignment logic.
+- Any change that affects more than ~3 files.
+- Any change to how the app presents results to the user.
+- Merging to main, publishing a release, or pushing to a shared branch.
+- You've tried two different approaches to the same problem and both failed.
+
+---
+
 ## Branch and commits
 
 Branch: `claude/happy-mccarthy-50o8b0`. Not merged to main.
@@ -23,11 +157,15 @@ Branch: `claude/happy-mccarthy-50o8b0`. Not merged to main.
 | `e384dce` | **Fix crossing-wire spike absorption** — shared-edge anchor criterion; freeform refit skip; improved trial acceptance | **verified** — zero suite regressions |
 | `cd27158` | **WIP: per-round ShapeFix_Face** for UV-gap invalidity on curved faces | **NOT suite-tested** |
 
+---
+
 ## First thing to do next session
 
-**Verify commit `cd27158` on the full suite.** See `DEBRIEF_2026-10-17b.md` for the
-exact commands. Do not accept this change until the suite shows zero regressions.
+**Verify commit `cd27158` on the full suite.** See `DEBRIEF_2026-10-17b.md` for
+the exact commands. Do not accept this change until the suite shows zero regressions.
 If it regresses anything, revert to `e384dce` and the crossing-wire fix stands alone.
+
+---
 
 ## The owner's three open complaints
 
@@ -59,22 +197,16 @@ All test models are zipped in `test files/` (see its README).
   `InvalidImbricationOfWires`) becomes valid. First-round demotions drop from 8 to 6.
 
 **What's still wrong:**
-- Some surfaces on the arm/handle-bend area are still fragmented freeform patches
-  rather than clean analytic faces (the arm sides have long gentle curves — B-spline
-  faces would be ideal but the segmenter produces many small planes).
+- Some arm/handle-bend surfaces are still fragmented freeform patches rather than
+  clean analytic faces.
 - The notch where the arm meets the oval loop still has a dark gap line in renders.
   Check with: `render_at.py <mmmp> <png> 0,15,16 40 1`
+- After verifying both fixes, run `why_demoted2.py` again to find the next invalid
+  region and repeat the diagnosis cycle.
 
-**Diagnosis tools used this session (reference for continuing):**
-- `why_demoted2.py MESH TOL Q` — which regions are invalid/inaccurate each round
-- `face_area.py MESH TOL Q R OUTDIR` — saves region R's face as .brep
-- `face_status.py BREP` — wire validity errors
-- `edge_status.py BREP` — edge-level gaps, self-intersections
-- `wire_cross.py BREP` — UV position of crossing edges
-- Python inline: `BRepAdaptor_Curve2d(e, face)` with orientation-corrected endpoints
-  to find UV pcurve gaps (see `DEBRIEF_2026-10-17b.md` for the full chain)
+---
 
-## Engine architecture notes (what was learned this session)
+## Engine architecture (what was learned this session)
 
 ### How crossing wires happen and how the fix works
 
@@ -100,9 +232,8 @@ not small non-periodic gaps. The outer wire then has a tiny gap in UV space, mak
 `ClassifyWires` fail with `InvalidImbricationOfWires`.
 
 The fix: after `_settle_tolerances` for still-invalid faces, run `ShapeFix_Face`
-at `precision=tol*0.5` (4× larger than the end-of-run `tol*0.1`). This closes UV
-gaps smaller than tol/2 without modifying 3D curves. Only accept if the result is
-actually valid and not blown up.
+at `precision=tol*0.5`. This closes UV gaps smaller than tol/2 without modifying
+3D curves. Only accept if the result is actually valid and not blown up.
 
 The key diagnostic insight: the problem looks like a wire structure issue but the
 mesh loops are perfectly connected. The gap is purely in the 2D pcurve representation.
@@ -113,7 +244,9 @@ traverse t1→t0) to see the actual UV continuity.
 
 `nb[fi, edge]` is the neighbour triangle across the edge from `F[fi, edge]` to
 `F[fi, (edge+1)%3]`. That edge has vertices `F[fi, edge]` and `F[fi, (edge+1)%3]`.
-This is NOT the "edge opposite vertex" convention — it's edge-FROM, not edge-opposite.
+This is NOT "edge opposite vertex" — it's edge-FROM, not edge-opposite.
+
+---
 
 ## Tools (`tools/diagnostics/`)
 
@@ -131,10 +264,14 @@ Run all scripts from repo root with `.venv/bin/python`.
 
 Tolerances: mount 0.06917 (q=0.7), rim 0.0443, tire 0.0879 (q=0.6)
 
+---
+
 ## Saved suite results
 
 - `tools/diagnostics/results/r6_all.jsonl` — oldest baseline (before this work)
 - `tools/diagnostics/results/r8_commit7318f28.jsonl` — 55-model Mac bench from earlier
+
+---
 
 ## Before giving the owner a build
 
@@ -146,14 +283,3 @@ Tolerances: mount 0.06917 (q=0.7), rim 0.0443, tire 0.0879 (q=0.6)
 6. Give owner macOS artifact to test
 7. Owner approves before merge
 
-## Notes for the next AI
-
-- The suite path file is at `/tmp/suite_paths.txt` (30 absolute paths). Regenerate
-  if needed: `cat tools/diagnostics/results/suite8_models.txt | grep -v scratch | sed "s|tests/models/|$(pwd)/tests/models/|" > /tmp/suite_paths.txt`
-- Run `tests/make_models.py` first if tests/models/ is empty.
-- Don't use shell `$()` to pass multiple paths to bench.py — use `$(cat file)` with
-  word splitting, or pass paths explicitly as separate arguments.
-- Background bench processes (with `&`) get killed by the sandbox. Run sequentially.
-- `pgrep` doesn't work in the sandbox. Wait for output files instead.
-- The owner is in Brazil on a MacBook Air M4.
-- Ask before any decision the owner might want to revise.
