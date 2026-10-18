@@ -715,6 +715,52 @@ class Segmenter:
             self._rebuild_regions()
         return changed
 
+    def _absorb_isolated_fragments(self):
+        """Absorb triangles that are completely surrounded by other regions.
+
+        A triangle with no same-region neighbour creates a disconnected face
+        component that OpenCASCADE cannot represent as a single valid face.
+        This arises when split_pinched_regions re-labels some triangles and
+        leaves tiny fragments behind.  Each such triangle is merged into
+        whichever neighbour has the lowest gap to its surface; ties are broken
+        by region size (larger region = more stable boundary).
+
+        Does not run the majority pass or touch any other region boundaries.
+        Returns True if anything changed.
+        """
+        regs, lab, nb = self.regions, self.label, self.nb
+        nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
+        other = (nl >= 0) & (nl != lab[:, None])
+        isolated = np.nonzero(other.all(1) & (nl >= 0).any(1))[0]
+        if not len(isolated):
+            return False
+        best_dst = np.full(len(isolated), -1, dtype=np.int64)
+        gap_best = np.full(len(isolated), np.inf)
+        sizes = np.array([len(r.faces) for r in regs])
+        for edge in range(3):
+            dst = nl[isolated, edge]
+            valid = dst >= 0
+            for rj in np.unique(dst[valid]):
+                k = np.nonzero(valid & (dst == rj))[0]
+                g = self._gap(regs[rj].prim, isolated[k])
+                for ki, idx in enumerate(k):
+                    better = g[ki] < gap_best[idx] - 1e-10
+                    same_gap = abs(g[ki] - gap_best[idx]) < 1e-10
+                    bigger = best_dst[idx] < 0 or sizes[rj] > sizes[best_dst[idx]]
+                    if better or (same_gap and bigger):
+                        gap_best[idx] = g[ki]
+                        best_dst[idx] = rj
+        # Only absorb if the destination surface actually fits the fragment
+        # within tolerance.  A fragment with gap > tol to all neighbours is
+        # genuinely ambiguous — leave it for the invalid-face demotion path
+        # rather than forcing it into a region whose surface it doesn't match.
+        move = (best_dst >= 0) & (gap_best <= self.tol)
+        if not move.any():
+            return False
+        lab[isolated[move]] = best_dst[move]
+        self._rebuild_regions()
+        return True
+
     def _absorb_self_crossing_strips(self, sources, passes=4):
         """Try to remove border triangles from faces whose *built* wire crosses.
 
@@ -2487,6 +2533,13 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
 
     def build(labels, regions):
         labels, regions = split_pinched_regions(seg, labels, regions)
+        # split_pinched_regions can leave isolated single-triangle fragments
+        # (every neighbour in a different region).  Absorb them before
+        # building — a disconnected face component cannot be represented as
+        # a valid OpenCASCADE face.
+        seg.label, seg.regions = labels, regions
+        seg._absorb_isolated_fragments()
+        labels, regions = seg.label, seg.regions
         rg = RegionGraph(shell.V, shell.F, labels, shell.topo)
         asm = CADAssembler(shell.V, rg, regions, tol, report)
         faces = asm.build(lambda f: report.progress(0.6 + 0.35 * f))
@@ -2499,21 +2552,6 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
                 # only because of it); settling the face's own tolerances
                 # once more fixes that, instead of replacing the face
                 _settle_tolerances(f, tol)
-            if not BRepCheck_Analyzer(f).IsValid():
-                # A tiny UV gap in the face's wire (from pcurve endpoint
-                # imprecision on curved surfaces) causes InvalidImbricationOfWires
-                # even when the 3D geometry is correct.  ShapeFix_Face with
-                # a precision of tol/2 closes such gaps without touching the
-                # 3D curves.  Only accept the result if it is actually valid.
-                from OCP.ShapeFix import ShapeFix_Face as _SFF
-                sff = _SFF(f)
-                sff.SetPrecision(tol * 0.5)
-                sff.SetMaxTolerance(tol * 5.0)
-                sff.Perform()
-                healed = sff.Face()
-                if healed is not None and BRepCheck_Analyzer(healed).IsValid() and not face_blown_up(healed):
-                    asm.region_faces[r] = healed
-                    f = healed
             # (a face whose surface blew up passes the validity check)
             if not BRepCheck_Analyzer(f).IsValid() or face_blown_up(f):
                 bad.add(r)
