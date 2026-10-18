@@ -155,15 +155,21 @@ Branch: `claude/happy-mccarthy-50o8b0`. Not merged to main.
 | `0d28921` | Removed `_absorb_strips` (was making round-1 worse); diagnostic scripts and saved results | clean baseline |
 | `e708824` | Added `_absorb_self_crossing_strips` and `_self_crossing_regions` (skeleton — was not firing due to bug) | fixed by next commit |
 | `e384dce` | **Fix crossing-wire spike absorption** — shared-edge anchor criterion; freeform refit skip; improved trial acceptance | **verified** — zero suite regressions |
-| `cd27158` | **WIP: per-round ShapeFix_Face** for UV-gap invalidity on curved faces | **NOT suite-tested** |
+| `cd27158` | WIP: per-round ShapeFix_Face (superseded — do not use, see e3b004e) | reverted/superseded |
+| `e3b004e` | **Fix disconnected face fragments** — `_absorb_isolated_fragments` absorbs triangles with no same-region neighbours after `split_pinched_regions` | **verified** — zero suite regressions, checker_worst identical to baseline |
 
 ---
 
 ## First thing to do next session
 
-**Verify commit `cd27158` on the full suite.** See `DEBRIEF_2026-10-17b.md` for
-the exact commands. Do not accept this change until the suite shows zero regressions.
-If it regresses anything, revert to `e384dce` and the crossing-wire fix stands alone.
+Run `why_demoted2.py` on the mount to see what's still invalid after both fixes:
+
+```bash
+.venv/bin/python tools/diagnostics/why_demoted2.py \
+  "test files/owner problem files/sharps_mount_PETG_rev8.stl" 0.06917 0.7
+```
+
+The known remaining invalids after `e384dce` were: regions 16 (cylinder), 36 (torus — now fixed by e3b004e), 124 (plane), 198 (cylinder), 199 (torus), 201 (torus), 202 (cylinder), 203 (cylinder). Re-run to see what's left and which to tackle next.
 
 ---
 
@@ -190,19 +196,14 @@ All test models are zipped in `test files/` (see its README).
 
 ### 3. Mount (`sharps_mount_PETG_rev8.stl`): partially improved, not finished
 
-**Current state (after both fixes at `cd27158`):**
-- Crossing-wire fix (`e384dce`): regions 16 and 202's spike triangles are now
-  absorbed into neighbours. First-round invalids reduced.
-- UV-gap heal (`cd27158`, pending verification): region 36 (large torus,
-  `InvalidImbricationOfWires`) becomes valid. First-round demotions drop from 8 to 6.
+**Current state (after e384dce + e3b004e):**
+- Crossing-wire fix (`e384dce`): regions 16 and 202's spike triangles absorbed. First-round invalids reduced.
+- Fragment fix (`e3b004e`): region 36's disconnected fragment absorbed. `ClassifyWires` now passes for region 36.
 
 **What's still wrong:**
-- Some arm/handle-bend surfaces are still fragmented freeform patches rather than
-  clean analytic faces.
-- The notch where the arm meets the oval loop still has a dark gap line in renders.
-  Check with: `render_at.py <mmmp> <png> 0,15,16 40 1`
-- After verifying both fixes, run `why_demoted2.py` again to find the next invalid
-  region and repeat the diagnosis cycle.
+- Regions 16 (cylinder), 124 (plane), 198 (cylinder), 199 (torus), 201 (torus), 202 (cylinder), 203 (cylinder) were still invalid in round 1 at `e384dce`. Re-run `why_demoted2.py` to check current state.
+- Some arm/handle-bend surfaces are still fragmented freeform patches.
+- The notch where the arm meets the oval loop may still have a gap. Check with: `render_at.py <mmmp> <png> 0,15,16 40 1`
 
 ---
 
