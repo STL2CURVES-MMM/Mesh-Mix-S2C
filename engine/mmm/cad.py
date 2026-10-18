@@ -2499,6 +2499,21 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
                 # only because of it); settling the face's own tolerances
                 # once more fixes that, instead of replacing the face
                 _settle_tolerances(f, tol)
+            if not BRepCheck_Analyzer(f).IsValid():
+                # A tiny UV gap in the face's wire (from pcurve endpoint
+                # imprecision on curved surfaces) causes InvalidImbricationOfWires
+                # even when the 3D geometry is correct.  ShapeFix_Face with
+                # a precision of tol/2 closes such gaps without touching the
+                # 3D curves.  Only accept the result if it is actually valid.
+                from OCP.ShapeFix import ShapeFix_Face as _SFF
+                sff = _SFF(f)
+                sff.SetPrecision(tol * 0.5)
+                sff.SetMaxTolerance(tol * 5.0)
+                sff.Perform()
+                healed = sff.Face()
+                if healed is not None and BRepCheck_Analyzer(healed).IsValid() and not face_blown_up(healed):
+                    asm.region_faces[r] = healed
+                    f = healed
             # (a face whose surface blew up passes the validity check)
             if not BRepCheck_Analyzer(f).IsValid() or face_blown_up(f):
                 bad.add(r)
