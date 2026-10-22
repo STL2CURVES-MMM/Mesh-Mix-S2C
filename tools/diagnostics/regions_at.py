@@ -8,7 +8,7 @@ seg = cad.Segmenter(s.V, s.F, s.topo, tol); seg.detail = float(sys.argv[3]); seg
 cen = seg.V[seg.F].mean(1)
 for arg in sys.argv[4:]:
     p = np.array([float(v) for v in arg.split(",")])
-    near = np.nonzero(np.linalg.norm(cen - p, axis=1) < 0.6)[0]
+    near = np.nonzero(np.linalg.norm(cen - p, axis=1) < float(__import__("os").environ.get("NEAR", "0.6")))[0]
     print("at", p)
     for r in np.unique(seg.label[near]):
         reg = seg.regions[r]; f = np.asarray(reg.faces)

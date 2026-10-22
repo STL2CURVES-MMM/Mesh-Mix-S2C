@@ -304,7 +304,7 @@ class Segmenter:
         self._refine()
         self._absorb_slivers()
         self._smooth_borders()
-        if FIND_SWEEPS and self._find_sweeps() + self._find_fillets():
+        if FIND_SWEEPS and self._find_sweeps() + self._find_fillets() + (self._grow_fillets() if GROW_FILLETS else 0):
             # the pieces they leave between them and their neighbours (one
             # or two triangles each) join a surface they fit, and their
             # borders are cleaned like the others' (a tooth left in one made
@@ -633,27 +633,40 @@ class Segmenter:
             # stayed, each punching a hole in the face around it (a scanned
             # plate's top face got 334 holes and was invalid)
             small_area = max(small_area, 1e-4 * float(self.fa.sum()))
-        for ri, r in enumerate(regs):
-            if not (len(r.faces) <= max_tris and (r.weak or areas[ri] <= small_area)):
-                continue
-            for f in r.faces:
-                best, best_e = None, np.inf
-                for g in self.nb[f]:
-                    if g < 0:
+        # regions smaller than a face can be (see _too_small_for_face) are
+        # slivers too, however many triangles they have: a strip of 18
+        # needle triangles (0.01 mm2) on a printed mount stuck into the
+        # cylinder beside it, whose outline then ran in and straight back
+        # out, crossed itself, and the face was invalid
+        tiny = areas <= 25.0 * self.tol ** 2
+        sliver = [ri for ri, r in enumerate(regs) if len(r.faces) and (
+            (len(r.faces) <= max_tris and (r.weak or areas[ri] <= small_area)) or tiny[ri])]
+        # (a few passes: a triangle inside a strip joins once its neighbour has)
+        for _ in range(4):
+            moved = False
+            for ri in sliver:
+                for f in regs[ri].faces:
+                    if lab[f] != ri:
                         continue
-                    rj = lab[g]
-                    if rj == ri or regs[rj].weak or len(regs[rj].faces) <= max_tris:
-                        continue
-                    d, cs = self.face_error(regs[rj].prim, regs[rj].sense, np.array([f]))
-                    # (on a scan a piece this small that sits on a surface
-                    # is noise, whichever way its triangles point)
-                    if cs[0] < cos_relaxed and not (self.unsure[f] or self.needle[f] or self.scan):
-                        continue
-                    if d[0] <= tol_factor * self.tol and d[0] < best_e:
-                        best, best_e = rj, d[0]
-                if best is not None:
-                    lab[f] = best
-                    changed = True
+                    best, best_e = None, np.inf
+                    for g in self.nb[f]:
+                        if g < 0:
+                            continue
+                        rj = lab[g]
+                        if rj == ri or regs[rj].weak or len(regs[rj].faces) <= max_tris or tiny[rj]:
+                            continue
+                        d, cs = self.face_error(regs[rj].prim, regs[rj].sense, np.array([f]))
+                        # (on a scan a piece this small that sits on a surface
+                        # is noise, whichever way its triangles point)
+                        if cs[0] < cos_relaxed and not (self.unsure[f] or self.needle[f] or self.scan):
+                            continue
+                        if d[0] <= tol_factor * self.tol and d[0] < best_e:
+                            best, best_e = rj, d[0]
+                    if best is not None:
+                        lab[f] = best
+                        moved = changed = True
+            if not moved:
+                break
         if changed:
             self._rebuild_regions()
         return changed
@@ -1083,6 +1096,115 @@ class Segmenter:
             self.report.log(f"Found {found} fillet(s) along curved edges (a ball rolled along the edge)")
             self._rebuild_regions()
         return found
+
+    def _grow_fillets(self, min_tris=20, max_rounds=40, small=0.05):
+        """Fillets grown triangle by triangle from one good piece. Along a
+        helix (a tyre's rounded tread edge) or any other curve, the
+        segmenter cuts a fillet into cylinders and tori whose radii are all
+        over the place, each also holding a strip of the faces beside it, so
+        _find_fillets, which joins whole pieces of one radius, finds nothing.
+        Here a pipe is fitted to one piece that is a good cylinder or torus
+        of small radius, then the neighbouring triangles that lie on it join,
+        it is fitted again on all of them (reaching a little further along
+        its spine each time), and so on until no more join. It replaces what
+        it covers only when it took in triangles from other pieces and isn't
+        just one cylinder or torus. Returns the number found."""
+        from .fillet import fit_pipe
+
+        regs, lab, nb, F, V = self.regions, self.label, self.nb, self.F, self.V
+        cen = V[F].mean(1)
+        used = np.zeros(len(F), dtype=bool)
+        seeds = [i for i, r in enumerate(regs) if not r.weak and len(r.faces) >= min_tris
+                 and r.kind in ("cylinder", "torus") and not hasattr(r.prim, "motion")
+                 and r.prim.r < small * self.ext]
+        seeds.sort(key=lambda i: -len(regs[i].faces))
+        new = []
+        for s in seeds:
+            faces = np.asarray(regs[s].faces)
+            faces = faces[(lab[faces] == s) & ~used[faces]]
+            if len(faces) < min_tris:
+                continue
+            p, r = regs[s].prim, regs[s].prim.r
+            # spine samples: each triangle's centre moved r along its normal,
+            # towards the piece's own axis (a cylinder's axis is straight, the
+            # fillet's spine is not)
+            ax = p._spine(cen[faces]) if p.kind == "torus" else p.a + np.outer((cen[faces] - p.a) @ p.d, p.d)
+            sign = 1.0 if float(((ax - cen[faces]) * self.fn[faces]).sum(1).mean()) >= 0 else -1.0
+            C = cen[faces] + sign * r * self.fn[faces]
+            surf, dev = fit_pipe(C, V[np.unique(F[faces])], r, self.tol)
+            if surf is None or dev > self.tol:
+                _dbg(s, p.kind, r, len(faces), "seed pipe fails", dev / self.tol)
+                continue
+            inside = np.zeros(len(F), dtype=bool)
+            inside[faces] = True
+            for _ in range(max_rounds):
+                sense = self.sense_of(surf, faces)
+                more = []
+                while True:
+                    fr = nb[faces] if not more else nb[more[-1]]
+                    fr = np.unique(fr[fr >= 0])
+                    fr = fr[~inside[fr] & ~used[fr]]
+                    if not len(fr):
+                        break
+                    fr = fr[self.accept(surf, sense, fr)]
+                    # only beside the spine, not past its end: there every
+                    # point a radius from the end point "fits" (a ball round
+                    # it), and the growth ran off the fillet
+                    if len(fr):
+                        sf, _ = surf.foot(cen[fr])
+                        eps = 1e-3 * (surf.ss[-1] - surf.ss[0])
+                        fr = fr[(sf > surf.ss[0] + eps) & (sf < surf.ss[-1] - eps)]
+                    if not len(fr):
+                        break
+                    inside[fr] = True
+                    more.append(fr)
+                if not more:
+                    break
+                g = np.concatenate(more)
+                faces = np.concatenate([faces, g])
+                # spine samples from the new triangles themselves, so the
+                # pipe can reach past the end of the old spine
+                # (only from triangles closely on it: the faces beside a
+                # fillet touch it, and their triangles near that line fit
+                # it within the tolerance too, but moved along their normals
+                # they land well off the spine)
+                close = g[self._gap(surf, g) <= 0.5 * self.tol]
+                C = np.vstack([C, cen[close] + sign * r * self.fn[close]])
+                surf2, dev2 = fit_pipe(C, V[np.unique(F[faces])], surf.r, self.tol)
+                if surf2 is None or dev2 > self.tol:
+                    _dbg(s, "refit fails after", len(faces), dev2 / self.tol)
+                    faces = faces[:len(faces) - len(g)]
+                    inside[g] = False
+                    break
+                surf = surf2
+            _dbg(s, p.kind, round(r, 3), "grown to", len(faces), "from", len(regs[s].faces), "regions", len(np.unique(lab[faces])), "closed", surf.curve.closed)
+            if surf.curve.closed:
+                continue  # all the way round: see _find_fillets (not yet)
+            others = np.unique(lab[faces])
+            if len(others) < 2 or (lab[faces] != s).sum() < 0.25 * len(faces):
+                continue
+            prim = self._revolved_analytic(faces)
+            if prim is not None:
+                # one cylinder or torus after all, which the segmenter had
+                # cut up: that, rather than a pipe
+                _dbg(s, "is one", prim.kind)
+                used[faces] = True
+                new.append((prim, faces))
+                continue
+            T = V[F[faces]]
+            M = np.concatenate([T, (T + np.roll(T, -1, axis=1)) / 2], axis=1).reshape(-1, 3)
+            if surf.distance(M).max() > self.tol_mid:
+                _dbg(s, "mid-edge", surf.distance(M).max() / self.tol)
+                continue
+            used[faces] = True
+            new.append((surf, faces))
+        for surf, faces in new:
+            lab[faces] = len(self.regions)
+            self.regions.append(Region(surf, faces, self.sense_of(surf, faces)))
+        if new:
+            self.report.log(f"Grew {len(new)} fillet(s) along curved edges from single pieces")  # (pipes or analytic)
+            self._rebuild_regions()
+        return len(new)
 
     def _sub_patches(self, faces, min_regions=3, max_deg=3.0, min_tris=30):
         """Parts of a smooth patch that one motion explains, as [(faces,
@@ -2206,6 +2328,13 @@ PERIODIC = ("cylinder", "cone", "torus")
 import os as _os
 
 FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") != "0"
+# (experimental: Segmenter._grow_fillets; MMM_GROW_FILLETS=1 turns it on)
+def _dbg(*a):
+    if _os.environ.get("MMM_DEBUG_GROW"):
+        print("GROW", *a)
+
+
+GROW_FILLETS = _os.environ.get("MMM_GROW_FILLETS") == "1"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 

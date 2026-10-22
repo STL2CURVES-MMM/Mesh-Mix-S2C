@@ -32,6 +32,15 @@ def inacc(seg_, labels, asm, tol_, **kw):
     from OCP.BRepCheck import BRepCheck_Analyzer
     inv = [r for r, f in asm.region_faces.items() if not BRepCheck_Analyzer(f).IsValid()]
     print("invalid faces:", [(r, asm_regs[0][r].kind, len(asm_regs[0][r].faces)) for r in inv])
+    import os
+    save = os.environ.get("SAVE_DIR")
+    if save:
+        from OCP.BRepTools import BRepTools
+        rnd = len([n for n in os.listdir(save) if n.startswith("round")]) if os.path.isdir(save) else 0
+        d = os.path.join(save, "round%d" % rnd); os.makedirs(d, exist_ok=True)
+        for r in set(inv) | set(out):
+            if r in asm.region_faces:
+                BRepTools.Write_s(asm.region_faces[r], os.path.join(d, "face%d.brep" % r))
     print("failed to build:", [(r, asm_regs[0][r].kind, hasattr(asm_regs[0][r].prim, 'motion'), err) for r, err in asm.failed_regions])
     print("inaccurate:", [(r, asm_regs[0][r].kind, hasattr(asm_regs[0][r].prim, 'motion'), len(asm_regs[0][r].faces)) for r in sorted(out)])
     return out

@@ -11,6 +11,11 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 b, info = load_and_prepare(sys.argv[1]); s = b[0][0]; tol = float(sys.argv[2])
 seg = cad.Segmenter(s.V, s.F, s.topo, tol); seg.detail = float(sys.argv[3]); seg.run()
 labels, regions = cad.split_pinched_regions(seg, seg.label.copy(), seg.regions)
+# (as build_cad_shell's build(): stray single triangles join a neighbour)
+seg.label, seg.regions = labels, regions
+if hasattr(seg, "_absorb_isolated_fragments"):
+    seg._absorb_isolated_fragments()
+labels, regions = seg.label, seg.regions
 rg = RegionGraph(s.V, s.F, labels, s.topo)
 asm = cad.CADAssembler(s.V, rg, regions, tol)
 faces = asm.build(lambda f: None)

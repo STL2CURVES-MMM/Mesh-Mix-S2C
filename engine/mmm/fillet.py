@@ -9,7 +9,14 @@ tori and cylinders of the same radius, which this joins into one face.
 The spine is sampled from those pieces themselves (a torus's centre circle,
 a cylinder's axis), so it comes from measurements of the mesh, and the
 radius from the corners, which lie on the fillet."""
+import os
+
 import numpy as np
+
+
+def _dbgp(*a):
+    if os.environ.get("MMM_DEBUG_GROW"):
+        print("PIPE", *a)
 
 from .sweep import ProfileCurve, SweptSurface, _is_loop, _on_polyline, order_curve, samples_for
 
@@ -172,8 +179,14 @@ def fit_pipe(C, X, r, tol, margin=0.05):
     # (the samples come from pieces that each only approximate the fillet,
     # so they stray about a tolerance either side of the spine: ordered and
     # smoothed at that scale; the corners decide whether the pipe fits)
-    O = order_curve(C, tol)
+    # (spine samples moved in from triangles along their normals stray
+    # further: a coarser ordering is enough, the corners refine it below)
+    for scale in (tol, 3 * tol, 0.5 * r):
+        O = order_curve(C, scale)
+        if O is not None:
+            break
     if O is None:
+        _dbgp("order_curve failed on", len(C))
         return None, np.inf
     closed = _is_loop(O, C, tol)
     if not closed:
@@ -184,7 +197,8 @@ def fit_pipe(C, X, r, tol, margin=0.05):
         closed = len(O) >= 12 and gap < min(4 * r, 0.1 * np.linalg.norm(np.diff(O, axis=0), axis=1).sum())
     try:
         spine = ProfileCurve(O, 4 * tol, closed=closed)
-    except Exception:
+    except Exception as e:
+        _dbgp("spine curve failed", e)
         return None, np.inf
     rng = (0.0, 1.0) if closed else (-margin, 1.0 + margin)
     surf = PipeSurface(spine, r, rng, (0.0, 1.0), tol)
@@ -219,6 +233,7 @@ def fit_pipe(C, X, r, tol, margin=0.05):
     # (round a closed spine the frame comes back turned a little, so the
     # angles of the whole loop say nothing: each half measures its own)
     if not _angles(surf, X) and not closed:
+        _dbgp("angles: corners on it", int((surf.distance(X) <= 3 * surf.tol).sum()), "of", len(X))
         return None, np.inf
     surf.X_on = X
     dev = float(np.percentile(surf.distance(X), 99))
@@ -243,6 +258,10 @@ def _angles(surf, X, margin=0.2):
     lo, hi = np.percentile(th, [0.5, 99.5])
     span = max(hi - lo, 1e-6)
     if span > 1.5 * np.pi:
+        s, _ = surf.foot(X)
+        q = np.quantile(s, [0, 0.25, 0.5, 0.75, 1.0])
+        _dbgp("angle span deg", round(float(np.degrees(span)), 1), "per quarter of the spine:",
+              [(round(float(np.degrees(np.percentile(th[(s >= a) & (s <= b)], 2))), 0), round(float(np.degrees(np.percentile(th[(s >= a) & (s <= b)], 98))), 0)) for a, b in zip(q[:-1], q[1:]) if ((s >= a) & (s <= b)).sum() > 5])
         return False
     surf.t_range = (lo - margin * span, hi + margin * span)
     return True
