@@ -137,36 +137,19 @@ def test_a_hole_in_the_checkers_own_triangles_is_not_a_gap(monkeypatch):
     assert fidelity.Verdict(r, 0.01).ok
 
 
-def test_triangles_that_cut_across_a_curved_face_are_split_along_it():
+def test_triangles_that_cut_across_a_curved_face_dont_count_as_gaps(monkeypatch):
     """Asked for a fine mesh, OpenCASCADE kept triangles 4 mm long that cut
-    0.6 mm inside a cylinder, reporting no error. Each face whose mesh
-    missed the deflection asked for is split along its surface."""
-    from OCP.BRep import BRep_Tool
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    0.6 mm inside a cylinder, reporting no error. A shape whose own
+    triangles are that coarse must still be measured by its faces."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
-    from OCP.GeomAbs import GeomAbs_Cylinder
-    from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.TopAbs import TopAbs_FACE
-    from OCP.TopExp import TopExp_Explorer
-    from OCP.TopLoc import TopLoc_Location
-    from OCP.TopoDS import TopoDS
 
-    shape = BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()
-    exp = TopExp_Explorer(shape, TopAbs_FACE)
-    while BRepAdaptor_Surface(TopoDS.Face(exp.Current())).GetType() != GeomAbs_Cylinder:
-        exp.Next()
-    face = TopoDS.Face(exp.Current())
-    BRepMesh_IncrementalMesh(face, 0.5, False, 1.0, True)  # coarse on purpose
-    loc = TopLoc_Location()
-    tri = BRep_Tool.Triangulation_s(face, loc)
-    assert fidelity._follow_surface(face, tri, loc, 1.0) is None  # good enough as it is
-    V, T = fidelity._follow_surface(face, tri, loc, 0.01)
-    C = V[T].mean(1)
-    assert np.abs(np.hypot(C[:, 0], C[:, 1]) - 5.0).max() < 0.01
-    assert np.abs(np.hypot(V[:, 0], V[:, 1]) - 5.0).max() < 1e-9  # corners on the surface
-    # the same area as the face, so no part is covered twice or left out
-    a = 0.5 * np.linalg.norm(np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]]), axis=1).sum()
-    assert abs(a - 2 * np.pi * 5.0 * 10.0) < 0.01 * a
+    real = fidelity.tessellate
+    monkeypatch.setattr(fidelity, "tessellate", lambda shape, deflection, angle=0.25: real(shape, 0.3, 1.0))
+    cyl = trimesh.creation.cylinder(radius=5.0, height=10.0, sections=720)
+    cyl.apply_translation((0, 0, 5))
+    r = _strip(fidelity.compare(BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape(), [(cyl.vertices, cyl.faces)], 0.01, n_points=1500))
+    assert r["to_shape"]["max"] <= 0.01 and r["to_mesh"]["max"] <= 0.01
+    assert r["wrong_way"] == 0 and fidelity.Verdict(r, 0.01).ok
 
 
 def test_exact_distances_to_the_faces():
