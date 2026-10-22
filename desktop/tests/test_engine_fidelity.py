@@ -807,3 +807,36 @@ def test_a_rounded_edge_along_a_curve_becomes_one_fillet(tmp_path, monkeypatch):
     # fillets and tapers; 8 on Linux, 12 on Windows, whose OpenCASCADE
     # meshes the test part a little differently)
     assert res["faces"] <= 14, res["faces"]
+
+
+def test_a_strip_too_small_for_a_face_joins_the_surface_it_lies_on(tmp_path):
+    """A region smaller than any valid face (on a printed mount, a strip of
+    18 needle triangles inside a cylinder) joins the surface it lies on,
+    however many triangles it has: left alone, its outline cut a spike into
+    the cylinder's, which crossed itself and made the face invalid."""
+    import trimesh
+
+    from mmm import cad
+    from mmm.fitting import Plane
+
+    path = str(tmp_path / "cyl.stl")
+    trimesh.creation.cylinder(radius=10.0, height=2.0, sections=256).export(path)
+    bodies, _ = load_and_prepare(path, report=NULL)
+    sh = bodies[0][0]
+    # (a coarse tolerance, so that a few of these triangles are smaller
+    # than a face can be)
+    tol = 0.5
+    seg = cad.Segmenter(sh.V, sh.F, sh.topo, tol, NULL)
+    seg.run()
+    cyl = next(i for i, r in enumerate(seg.regions) if r.kind == "cylinder")
+    faces = np.asarray(seg.regions[cyl].faces)
+    centre = seg.V[seg.F[faces[0]]].mean(0)
+    strip = faces[np.argsort(np.linalg.norm(seg.V[seg.F[faces]].mean(1) - centre, axis=1))][:8]
+    # more triangles than slivers used to be limited to (3), less area than a face
+    assert float(seg.fa[strip].sum()) < 25 * tol ** 2
+    n = seg.fn[strip].mean(0)
+    seg.label[strip] = len(seg.regions)
+    seg.regions.append(cad.Region(Plane(seg.V[seg.F[strip]].reshape(-1, 3).mean(0), n), strip, 1.0))
+    seg._rebuild_regions()
+    assert seg._absorb_slivers()
+    assert all(seg.regions[seg.label[f]].kind == "cylinder" for f in strip)
