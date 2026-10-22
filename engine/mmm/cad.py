@@ -734,6 +734,55 @@ class Segmenter:
             self._rebuild_regions()
         return changed
 
+    def _absorb_isolated_fragments(self):
+        """Absorb triangles that are completely surrounded by other regions.
+
+        A triangle with no same-region neighbour creates a disconnected face
+        component that OpenCASCADE cannot represent as a single valid face.
+        This arises when split_pinched_regions re-labels some triangles and
+        leaves tiny fragments behind.  Each such triangle is merged into
+        whichever neighbour has the lowest gap to its surface; ties are broken
+        by region size (larger region = more stable boundary).
+
+        Does not run the majority pass or touch any other region boundaries.
+        Returns True if anything changed.
+        """
+        regs, lab, nb = self.regions, self.label, self.nb
+        nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
+        other = (nl >= 0) & (nl != lab[:, None])
+        isolated = np.nonzero(other.all(1) & (nl >= 0).any(1))[0]
+        if not len(isolated):
+            return False
+        best_dst = np.full(len(isolated), -1, dtype=np.int64)
+        gap_best = np.full(len(isolated), np.inf)
+        sizes = np.array([len(r.faces) for r in regs])
+        for edge in range(3):
+            dst = nl[isolated, edge]
+            valid = dst >= 0
+            for rj in np.unique(dst[valid]):
+                k = np.nonzero(valid & (dst == rj))[0]
+                g = self._gap(regs[rj].prim, isolated[k])
+                for ki, idx in enumerate(k):
+                    better = g[ki] < gap_best[idx] - 1e-10
+                    same_gap = abs(g[ki] - gap_best[idx]) < 1e-10
+                    bigger = best_dst[idx] < 0 or sizes[rj] > sizes[best_dst[idx]]
+                    if better or (same_gap and bigger):
+                        gap_best[idx] = g[ki]
+                        best_dst[idx] = rj
+        # Only absorb if the destination surface actually fits the fragment
+        # within tolerance.  A fragment with gap > tol to all neighbours is
+        # genuinely ambiguous — leave it for the invalid-face demotion path
+        # rather than forcing it into a region whose surface it doesn't match.
+        move = (best_dst >= 0) & (gap_best <= self.tol)
+        if not move.any():
+            return False
+        lab[isolated[move]] = best_dst[move]
+        # (the surfaces stay as they are and no regions merge: two
+        # neighbouring cylinders of a worm gear merged into one that
+        # followed neither closely, between the build's rounds)
+        self._rebuild_regions(refit=False, merge=False)
+        return True
+
     def _absorb_self_crossing_strips(self, sources, passes=4):
         """Try to remove border triangles from faces whose *built* wire crosses.
 
@@ -1231,8 +1280,9 @@ class Segmenter:
         self.regions = new_regs
         self.label = new_lab
 
-    def _rebuild_regions(self):
-        """Split disconnected labels, refit primitives, merge equal ones."""
+    def _rebuild_regions(self, refit=True, merge=True):
+        """Split disconnected labels, refit primitives and merge equal
+        ones (each unless turned off)."""
         from scipy import sparse
         from scipy.sparse.csgraph import connected_components
 
@@ -1253,7 +1303,9 @@ class Segmenter:
             faces = order[starts[k]:starts[k + 1]]
             r = old[lab[faces[0]]]
             prim, sense = r.prim, r.sense
-            if prim.kind not in ("plane", "freeform") and faces.size >= 3:
+            if not refit:
+                pass
+            elif prim.kind not in ("plane", "freeform") and faces.size >= 3:
                 P, N, ok, W = self.region_points(faces, True)
                 p2 = prim.refit(P[ok], N[ok], W[ok])
                 if p2 is not None and not p2.degenerate(self.ext) and self.accept(p2, sense, faces, 1.5 * self.tol).all():
@@ -1269,7 +1321,8 @@ class Segmenter:
             new_regions.append(Region(prim, faces, sense, weak))
         self.regions = new_regions
         self.label = new_label
-        self._merge_equal()
+        if merge:
+            self._merge_equal()
 
     def _merge_equal(self):
         regs = self.regions
@@ -2506,6 +2559,13 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
 
     def build(labels, regions):
         labels, regions = split_pinched_regions(seg, labels, regions)
+        # single triangles cut off from their region (every neighbour in
+        # another) make a face OpenCASCADE can't build: they join a
+        # neighbour (the ring of a printed mount came out as slivers
+        # without this)
+        seg.label, seg.regions = labels, regions
+        seg._absorb_isolated_fragments()
+        labels, regions = seg.label, seg.regions
         rg = RegionGraph(shell.V, shell.F, labels, shell.topo)
         asm = CADAssembler(shell.V, rg, regions, tol, report)
         faces = asm.build(lambda f: report.progress(0.6 + 0.35 * f))
