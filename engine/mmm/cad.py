@@ -311,6 +311,8 @@ class Segmenter:
             # its edge fold back, and the face was invalid)
             self._absorb_slivers()
             self._smooth_borders()
+        if STRAIGHTEN:
+            self._straighten_borders()
         self._make_freeform()
         self._fix_apex_cones()
         if self.scan:
@@ -733,6 +735,138 @@ class Segmenter:
         if changed:
             self._rebuild_regions()
         return changed
+
+    def _straighten_borders(self, rings=8):
+        """Where two exact surfaces meet smoothly (a fillet running into a
+        wall), the triangles along their border fit both, and which one
+        each joined was close to chance: the border zigzagged along the
+        mesh, and the faces came out with saw-tooth edges (on a printed
+        mount, 82 of 479 edges). Triangles within ``rings`` of such a
+        border that fit both surfaces may change sides, and they take the
+        sides that make the border shortest (a minimum cut). Triangles that
+        fit only one surface stay where they are, so no face moves further
+        from the mesh. Returns whether anything changed."""
+        from scipy import sparse
+        from scipy.sparse.csgraph import maximum_flow
+
+        regs, lab, nb = self.regions, self.label, self.nb
+        topo = self.topo
+        analytic = np.array([not r.weak and (r.kind in ("plane", "cylinder", "cone", "sphere", "torus")
+                                             or hasattr(r.prim, "motion"))
+                             for r in regs], dtype=bool)
+        L = np.linalg.norm(self.V[topo.he_to] - self.V[topo.he_from], axis=1).reshape(-1, 3)
+        unit = max(float(np.median(L)), 1e-12)
+        nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
+        cross = (nl >= 0) & (nl != lab[:, None])
+        f_, k_ = np.nonzero(cross)
+        a_, b_ = lab[f_], nl[f_, k_]
+        keep = (a_ < b_) & analytic[a_] & analytic[b_]
+        pairs = np.unique(np.stack([a_[keep], b_[keep]], 1), axis=0) if keep.any() else np.zeros((0, 2), int)
+        changed = False
+        self._pieces_before = {}
+        for r in np.unique(pairs):
+            self._pieces_before[int(r)] = self._pieces(lab == r)
+        for a, b in pairs:
+            # the triangles of either surface near their border
+            on = (lab == a) | (lab == b)
+            front = np.unique(np.r_[f_[(a_ == a) & (b_ == b)], f_[(a_ == b) & (b_ == a)]])
+            front = front[on[front]]
+            seen = np.zeros(len(lab), dtype=bool)
+            seen[front] = True
+            for _ in range(rings):
+                n = nb[front].reshape(-1)
+                n = np.unique(n[n >= 0])
+                n = n[on[n] & ~seen[n]]
+                if not len(n):
+                    break
+                seen[n] = True
+                front = n
+            near = np.nonzero(seen)[0]
+            free = near[self.accept(regs[a].prim, regs[a].sense, near)
+                        & self.accept(regs[b].prim, regs[b].sense, near)]
+            if len(free) < 2:
+                continue
+            # graph: the free triangles, plus a source (side a) and a sink
+            # (side b) standing for the triangles that stay
+            idx = np.full(len(lab), -1)
+            idx[free] = np.arange(len(free))
+            src, snk = len(free), len(free) + 1
+            rows, cols, caps = [], [], []
+            for k in range(3):
+                o = nb[free, k]
+                w = np.maximum(1, np.round(100 * L[free, k] / unit)).astype(np.int64)
+                ok = o >= 0
+                inner = ok & (idx[np.maximum(o, 0)] >= 0)
+                rows.append(idx[free[inner]])
+                cols.append(idx[o[inner]])
+                caps.append(w[inner])
+                for side, node in ((a, src), (b, snk)):
+                    fixed = ok & ~inner & (lab[np.maximum(o, 0)] == side)
+                    i = idx[free[fixed]]
+                    if node == src:
+                        rows.append(np.full(len(i), src))
+                        cols.append(i)
+                    else:
+                        rows.append(i)
+                        cols.append(np.full(len(i), snk))
+                    caps.append(w[fixed])
+            rows, cols, caps = np.concatenate(rows), np.concatenate(cols), np.concatenate(caps)
+            if not ((rows == src).any() and (cols == snk).any()):
+                continue  # one surface is all band: nothing holds it in place
+            n = len(free) + 2
+            G = sparse.coo_matrix((caps.astype(np.int32), (rows, cols)), shape=(n, n)).tocsr()
+            G.sum_duplicates()
+            flow = maximum_flow(G, src, snk).flow
+            # what the source still reaches through unsaturated links is
+            # side a; the rest is side b
+            R = (G - flow).tocsr()
+            R.data[R.data < 0] = 0
+            R.eliminate_zeros()
+            # (a reverse link carries back what flowed forward)
+            back = flow.T.tocsr()
+            back.data[back.data < 0] = 0
+            R = (R + back).tocsr()
+            R.eliminate_zeros()
+            reach = np.zeros(n, dtype=bool)
+            reach[src] = True
+            front_ = np.array([src])
+            while len(front_):
+                nxt = np.unique(R[front_].indices)
+                nxt = nxt[~reach[nxt]]
+                reach[nxt] = True
+                front_ = nxt
+            new = np.where(reach[:len(free)], a, b)
+            if not (new != lab[free]).any():
+                continue
+            old = lab[free].copy()
+            lab[free] = new
+            # a cut that leaves either surface in pieces (a thin one cut
+            # through) is undone: the pieces made faces that failed
+            if any(self._pieces(lab == r) > self._pieces_before.get(r, 1) for r in (a, b)):
+                lab[free] = old
+                continue
+            changed = True
+        if changed:
+            # (no refits or merges: the surfaces haven't changed)
+            self._rebuild_regions(refit=False, merge=False)
+        return changed
+
+    def _pieces(self, mask):
+        """How many separate pieces the triangles in ``mask`` make."""
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+
+        f = np.nonzero(mask)[0]
+        if not len(f):
+            return 0
+        idx = np.full(len(mask), -1)
+        idx[f] = np.arange(len(f))
+        n = self.nb[f]
+        ok = (n >= 0) & mask[np.maximum(n, 0)]
+        r = np.repeat(np.arange(len(f)), 3)[ok.reshape(-1)]
+        c = idx[n[ok]]
+        G = sparse.coo_matrix((np.ones(len(r)), (r, c)), shape=(len(f), len(f)))
+        return connected_components(G, directed=False)[0]
 
     def _absorb_isolated_fragments(self):
         """Absorb triangles that are completely surrounded by other regions.
@@ -2232,6 +2366,9 @@ PERIODIC = ("cylinder", "cone", "torus")
 import os as _os
 
 FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") != "0"
+# experimental, off unless MMM_STRAIGHTEN=1: on the owner's mount it left an
+# invalid freeform face where a surface is fitted again during the build
+STRAIGHTEN = _os.environ.get("MMM_STRAIGHTEN") == "1"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
