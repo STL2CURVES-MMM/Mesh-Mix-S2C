@@ -153,6 +153,16 @@ def tessellate(shape, deflection, angle=0.25):
                     break
             retry.append(face)
         if tri is not None and tri.NbTriangles() > 0:
+            refined = _follow_surface(face, tri, loc, deflection)
+            if refined is not None:
+                P, T = refined
+                if face.Orientation() == TopAbs_REVERSED:
+                    T = T[:, ::-1]
+                Vs.append(P)
+                Fs.append(T + base)
+                ids.append(np.full(len(T), fi, dtype=np.int64))
+                base += len(P)
+                continue
             trsf = loc.Transformation()
             n = tri.NbNodes()
             P = np.empty((n, 3))
@@ -177,6 +187,59 @@ def tessellate(shape, deflection, angle=0.25):
     if not Vs:
         return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64)
     return np.vstack(Vs), np.vstack(Fs), np.concatenate(ids)
+
+
+def _follow_surface(face, tri, loc, deflection, depth=6):
+    """A face's triangles split along its surface where OpenCASCADE left
+    them too coarse: (V, F), or None when the face's mesh is fine as it is.
+
+    Asked for a fine mesh, OpenCASCADE sometimes keeps long triangles
+    that cut straight across a curved face while reporting no error: on a
+    printed mount's cylinder, triangles 4 mm long stood 0.6 mm inside the
+    surface (their corners on it), and the checker read that as a 0.6 mm
+    gap the shape doesn't have. The triangulation records the deflection
+    it reached; a face that missed the one asked for has each triangle
+    split in four, by the middles of its sides laid onto the surface,
+    until the middle of the triangle is within the deflection of the
+    surface. (The middles are found in space, not in the surface's (u, v)
+    coordinates: at a sphere's pole one (u, v) point stands for many
+    directions, and splitting there left a hole.)"""
+    if tri.Deflection() <= 2 * deflection:
+        return None
+    from OCP.BRep import BRep_Tool
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.gp import gp_Pnt
+
+    onto = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
+    prec = 0.01 * deflection
+
+    def project(x):
+        uv = onto.ValueOfUV(gp_Pnt(*x), prec)
+        return onto.Value(uv).Coord()
+
+    trsf = loc.Transformation()
+    P = [tri.Node(i).Transformed(trsf).Coord() for i in range(1, tri.NbNodes() + 1)]
+    mids = {}
+
+    def mid(a, b):
+        key = (a, b) if a < b else (b, a)
+        if key not in mids:
+            P.append(project([(P[a][k] + P[b][k]) / 2.0 for k in range(3)]))
+            mids[key] = len(P) - 1
+        return mids[key]
+
+    out = []
+    stack = [(tuple(x - 1 for x in tri.Triangle(i).Get()), 0) for i in range(1, tri.NbTriangles() + 1)]
+    while stack:
+        (a, b, c), d = stack.pop()
+        if d < depth:
+            m = [(P[a][k] + P[b][k] + P[c][k]) / 3.0 for k in range(3)]
+            if np.linalg.norm(np.subtract(project(m), m)) > deflection:
+                ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+                stack.extend((((a, ab, ca), d + 1), ((ab, b, bc), d + 1), ((ca, bc, c), d + 1), ((ab, bc, ca), d + 1)))
+                continue
+        out.append((a, b, c))
+    return np.array(P, dtype=float), np.array(out, dtype=np.int64)
 
 
 def tessellate_faces(faces, deflection, angle=0.25):
@@ -861,6 +924,56 @@ def _coherent(P, flags, rho, k=48):
     return out
 
 
+# at most this many points over the limit are measured again exactly
+# (a few milliseconds each)
+EXACT_CAP = 2000
+
+
+def exact_distances(shape, X):
+    """Distances from points ``X`` to the shape's faces, worked out on the
+    faces themselves rather than on triangles, and each point's nearest
+    point on them: (d, nearest)."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+
+    faces, lo, hi = [], [], []
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        f = TopoDS.Face(exp.Current())
+        box = Bnd_Box()
+        BRepBndLib.Add_s(f, box)
+        if not box.IsVoid():
+            faces.append(f)
+            lo.append(box.CornerMin().Coord())
+            hi.append(box.CornerMax().Coord())
+        exp.Next()
+    X = np.asarray(X, dtype=float)
+    d = np.full(len(X), np.inf)
+    near = X.copy()
+    if not faces:
+        return d, near
+    lo, hi = np.array(lo), np.array(hi)
+    for k, x in enumerate(X):
+        # faces in order of their boxes' distance, until no box is nearer
+        # than the best face so far
+        gap = np.linalg.norm(np.maximum(0.0, np.maximum(lo - x, x - hi)), axis=1)
+        v = BRepBuilderAPI_MakeVertex(gp_Pnt(*x)).Vertex()
+        for i in np.argsort(gap):
+            if gap[i] >= d[k]:
+                break
+            ext = BRepExtrema_DistShapeShape(v, faces[i])
+            if ext.IsDone() and ext.NbSolution() and ext.Value() < d[k]:
+                d[k] = ext.Value()
+                near[k] = ext.PointOnShape2(1).Coord()
+    return d, near
+
+
 def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     """Compares a converted shape with the mesh pieces it came from
     (``meshes``: list of (V, F) with outward-facing triangles).
@@ -902,7 +1015,21 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     # (distances under half the tolerance needn't be exact: they count as
     # close either way)
     d_ms, stri = S.nearest(P, exact_above=0.5 * allow)
+    # The shape's triangles stand in for its faces, and OpenCASCADE's can
+    # leave part of a face uncovered (a printed mount's cylinder came out
+    # a third covered): a mesh point there is far from the triangles but
+    # on the face. Points over the limit are measured again to the faces
+    # themselves, which decides.
+    over = np.argsort(-d_ms)[:EXACT_CAP]
+    over = over[d_ms[over] > allow]
+    missed = np.zeros(len(P), dtype=bool)
+    if len(over):
+        exact, _ = exact_distances(shape, P[over])
+        missed[over] = exact < d_ms[over] - 0.5 * allow
+        d_ms[over] = np.minimum(d_ms[over], exact)
     ang = _angle_deg(MN[ptri], S.normals[stri])
+    # (the direction of a triangle on the far side of a hole says nothing)
+    ang[missed] = 0.0
     # shape -> mesh
     Q, qtri = sample(SV, SF, n_points, rng)
     d_sm, mtri = M.nearest(Q, exact_above=0.5 * allow)

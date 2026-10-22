@@ -116,6 +116,69 @@ def test_a_shape_with_a_missing_feature_fails():
     assert r["to_shape"]["max"] > 0.9  # mesh points the shape doesn't cover
 
 
+def test_a_hole_in_the_checkers_own_triangles_is_not_a_gap(monkeypatch):
+    """OpenCASCADE's triangles can leave part of a face uncovered (a
+    printed mount's cylinder came out a third covered), and mesh points
+    there looked 0.6 mm from a shape they were on. Points over the limit
+    are measured again on the faces themselves."""
+    V, F = _box_mesh((10, 8, 6))
+    real = fidelity.tessellate
+
+    def holed(shape, deflection, angle=0.25):
+        SV, SF, owner = real(shape, deflection, angle)
+        keep = owner != 0  # one whole face left out
+        return SV, SF[keep], owner[keep]
+
+    monkeypatch.setattr(fidelity, "tessellate", holed)
+    r = _strip(fidelity.compare(_box_shape((10, 8, 6)), [(V, F)], 0.01, n_points=3000))
+    # (points within the tolerance aren't measured again: those next to
+    # the hole may read up to it)
+    assert r["to_shape"]["max"] <= 0.01 and r["wrong_way"] == 0
+    assert fidelity.Verdict(r, 0.01).ok
+
+
+def test_triangles_that_cut_across_a_curved_face_are_split_along_it():
+    """Asked for a fine mesh, OpenCASCADE kept triangles 4 mm long that cut
+    0.6 mm inside a cylinder, reporting no error. Each face whose mesh
+    missed the deflection asked for is split along its surface."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.GeomAbs import GeomAbs_Cylinder
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    shape = BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while BRepAdaptor_Surface(TopoDS.Face(exp.Current())).GetType() != GeomAbs_Cylinder:
+        exp.Next()
+    face = TopoDS.Face(exp.Current())
+    BRepMesh_IncrementalMesh(face, 0.5, False, 1.0, True)  # coarse on purpose
+    loc = TopLoc_Location()
+    tri = BRep_Tool.Triangulation_s(face, loc)
+    assert fidelity._follow_surface(face, tri, loc, 1.0) is None  # good enough as it is
+    V, T = fidelity._follow_surface(face, tri, loc, 0.01)
+    C = V[T].mean(1)
+    assert np.abs(np.hypot(C[:, 0], C[:, 1]) - 5.0).max() < 0.01
+    assert np.abs(np.hypot(V[:, 0], V[:, 1]) - 5.0).max() < 1e-9  # corners on the surface
+    # the same area as the face, so no part is covered twice or left out
+    a = 0.5 * np.linalg.norm(np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]]), axis=1).sum()
+    assert abs(a - 2 * np.pi * 5.0 * 10.0) < 0.01 * a
+
+
+def test_exact_distances_to_the_faces():
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+
+    P = np.array([[0.0, 0.0, 7.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]])
+    d, near = fidelity.exact_distances(BRepPrimAPI_MakeSphere(4.0).Shape(), P)
+    # to the faces, not the solid: a point inside is as far as the surface
+    assert np.allclose(d, [3.0, 4.0 - np.sqrt(3.0), 4.0], atol=1e-6)
+    assert np.allclose(np.linalg.norm(near[:2], axis=1), 4.0, atol=1e-6)
+
+
 def _strip(r):
     r.pop("points", None)
     return r
