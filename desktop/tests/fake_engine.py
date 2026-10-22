@@ -74,6 +74,28 @@ def mesh_check(name, merge, touching="ask"):
     return {"status": status, "issues": issues, "verified": {"ready": ready, "problems": problems}}
 
 
+def _log_line(path, line):
+    """Append one line to the shared log. Two engines started together
+    (Convert all) append at once, and on Windows one line could overwrite
+    the other: a lock file lets one write at a time."""
+    lock = path + ".lock"
+    for _ in range(500):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            time.sleep(0.01)
+    else:
+        fd = None  # (a lock left behind: write anyway)
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    finally:
+        if fd is not None:
+            os.close(fd)
+            os.remove(lock)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd")
@@ -103,8 +125,7 @@ def main():
     args, rest = ap.parse_known_args()
     name = os.path.basename(args.input).lower()
     if os.environ.get("FAKE_ENGINE_LOG"):
-        with open(os.environ["FAKE_ENGINE_LOG"], "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(sys.argv[1:]) + "\n")
+        _log_line(os.environ["FAKE_ENGINE_LOG"], json.dumps(sys.argv[1:]))
     if not os.path.exists(args.input):
         emit({"event": "error", "message": "FileNotFoundError: The file couldn't be found."})
         return 1
