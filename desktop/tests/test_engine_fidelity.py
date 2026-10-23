@@ -162,6 +162,40 @@ def test_exact_distances_to_the_faces():
     assert np.allclose(np.linalg.norm(near[:2], axis=1), 4.0, atol=1e-6)
 
 
+def test_preview_draws_a_face_the_mesher_left_out(tmp_path, monkeypatch):
+    """OpenCASCADE can leave a valid face of the shape without triangles
+    (a thin strip on a wheel rim: a hole in the 3D preview though the STEP
+    was closed). The preview meshes such a face again on its own."""
+    import struct
+
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    from mmm import stepio
+
+    shape = BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()
+    real = stepio.BRepMesh_IncrementalMesh
+
+    def failing(s, *a):
+        # the whole shape meshed, its side face left bare
+        m = real(s, *a)
+        if s.IsSame(shape):
+            BRepTools.Clean_s(TopExp_Explorer(shape, TopAbs_FACE).Current())
+        return m
+
+    monkeypatch.setattr(stepio, "BRepMesh_IncrementalMesh", failing)
+    path = tmp_path / "p.mmmp"
+    stepio.export_preview(shape, str(path), 22.0)
+    b = path.read_bytes()
+    _, nP, nI, _ = struct.unpack("<IIII", b[4:20])
+    P = np.frombuffer(b, np.float32, nP * 3, 20).reshape(-1, 3).astype(float)
+    I = np.frombuffer(b, np.uint32, nI * 3, 20 + nP * 28).reshape(-1, 3)
+    area = trimesh.Trimesh(P, I, process=False).area
+    assert abs(area - (2 * np.pi * 5 * 10 + 2 * np.pi * 25)) < 0.01 * area
+
+
 def _strip(r):
     r.pop("points", None)
     return r

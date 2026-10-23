@@ -5,6 +5,7 @@ import struct
 import numpy as np
 
 from OCP.BRep import BRep_Tool
+from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
@@ -399,8 +400,7 @@ def export_preview(shape, path, diag, max_faces_colored=200000):
     fi = 0
     while exp.More():
         face = TopoDS.Face(exp.Current())
-        loc = TopLoc_Location()
-        tri = BRep_Tool.Triangulation_s(face, loc)
+        face, tri, loc = _face_triangulation(face, lin)
         if tri is not None:
             n = tri.NbNodes()
             trsf = loc.Transformation()
@@ -444,6 +444,44 @@ def export_preview(shape, path, diag, max_faces_colored=200000):
         exp.Next()
     lines = _edge_polylines(shape)
     _write_preview(path, pos, nrm, col, idx, lines)
+
+
+def _tri_area(tri):
+    if tri is None or tri.NbTriangles() == 0:
+        return 0.0
+    P = np.array([tri.Node(i).Coord() for i in range(1, tri.NbNodes() + 1)])
+    T = np.array([tri.Triangle(i).Get() for i in range(1, tri.NbTriangles() + 1)]) - 1
+    return 0.5 * float(np.linalg.norm(np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]]), axis=1).sum())
+
+
+def _face_triangulation(face, lin, share=0.8):
+    """The face (or a copy of it), its triangles and their location from the shape's
+    meshing. OpenCASCADE can leave a valid face partly or wholly without
+    triangles at one fineness and mesh it fully at another (a thin strip on
+    a wheel rim showed as a hole in the preview though the STEP was closed),
+    so such a face is meshed again on its own, as a copy (meshing it in place
+    reuses its edges' points and fails the same way), at other finenesses,
+    and the most complete result is kept."""
+    loc = TopLoc_Location()
+    tri = BRep_Tool.Triangulation_s(face, loc)
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    area = abs(props.Mass())
+    if not np.isfinite(area) or area <= 0 or _tri_area(tri) >= share * area:
+        return face, tri, loc
+    best, best_err = (face, tri, loc), abs(_tri_area(tri) / area - 1)
+    for k in (1.0, 0.5, 0.25, 2.0, 4.0, 8.0):
+        copy = TopoDS.Face(BRepBuilderAPI_Copy(face).Shape())
+        BRepMesh_IncrementalMesh(copy, lin * k, False, 0.35, True)
+        cloc = TopLoc_Location()
+        ctri = BRep_Tool.Triangulation_s(copy, cloc)
+        got = _tri_area(ctri) / area
+        # (a result much bigger than the face has triangles outside it)
+        if got <= 1.1 and abs(got - 1) < best_err:
+            best, best_err = (copy, ctri, cloc), abs(got - 1)
+            if best_err < 0.03:
+                break
+    return best
 
 
 def _surface_normals(face, tri, trsf, n):
