@@ -124,7 +124,7 @@ def test_a_hole_in_the_checkers_own_triangles_is_not_a_gap(monkeypatch):
     V, F = _box_mesh((10, 8, 6))
     real = fidelity.tessellate
 
-    def holed(shape, deflection, angle=0.25):
+    def holed(shape, deflection, angle=0.25, loose=None):
         SV, SF, owner = real(shape, deflection, angle)
         keep = owner != 0  # one whole face left out
         return SV, SF[keep], owner[keep]
@@ -144,12 +144,46 @@ def test_triangles_that_cut_across_a_curved_face_dont_count_as_gaps(monkeypatch)
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 
     real = fidelity.tessellate
-    monkeypatch.setattr(fidelity, "tessellate", lambda shape, deflection, angle=0.25: real(shape, 0.3, 1.0))
+    monkeypatch.setattr(fidelity, "tessellate", lambda shape, deflection, angle=0.25, loose=None: real(shape, 0.3, 1.0))
     cyl = trimesh.creation.cylinder(radius=5.0, height=10.0, sections=720)
     cyl.apply_translation((0, 0, 5))
     r = _strip(fidelity.compare(BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape(), [(cyl.vertices, cyl.faces)], 0.01, n_points=1500))
     assert r["to_shape"]["max"] <= 0.01 and r["to_mesh"]["max"] <= 0.01
     assert r["wrong_way"] == 0 and fidelity.Verdict(r, 0.01).ok
+
+
+def test_an_edge_far_off_its_face_keeps_a_matching_tolerance():
+    """The checker meshes a copy with tolerances of 1e-7; an edge 0.27 mm off
+    its face (a fitted strip on a wheel rim) kept the mesher refining without
+    end. Such an edge gets its real distance back as tolerance, the others
+    keep 1e-7."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_Line
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    from OCP.ShapeFix import ShapeFix_ShapeTolerance
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    face = BRepBuilderAPI_MakeFace(gp_Pln(), 0.0, 10.0, 0.0, 10.0).Face()
+    ShapeFix_ShapeTolerance().SetTolerance(face, 1e-7)
+    edges = []
+    exp = TopExp_Explorer(face, TopAbs_EDGE)
+    while exp.More():
+        edges.append(TopoDS.Edge(exp.Current()))
+        exp.Next()
+    # one edge's curve lifted 0.3 mm off the plane (same parameters)
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    c = BRepAdaptor_Curve(edges[0])
+    p0 = c.Value(c.FirstParameter())
+    d = c.DN(c.FirstParameter(), 1)
+    lifted = Geom_Line(gp_Pnt(p0.X(), p0.Y(), 0.3), gp_Dir(d))
+    BRep_Builder().UpdateEdge(edges[0], lifted, 1e-7)
+    fidelity._loosen_far_edges(face, 0.1)
+    assert abs(BRep_Tool.Tolerance_s(edges[0]) - 0.33) < 0.01
+    assert all(BRep_Tool.Tolerance_s(e) <= 1e-6 for e in edges[1:])
 
 
 def test_exact_distances_to_the_faces():

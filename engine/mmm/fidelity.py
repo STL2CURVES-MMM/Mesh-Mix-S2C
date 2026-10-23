@@ -88,7 +88,48 @@ def face_blown_up(face, k=10.0):
     return not np.isfinite(area) or abs(area) > k * max(diag2, 1e-30)
 
 
-def tessellate(shape, deflection, angle=0.25):
+def _loosen_far_edges(shape, limit, n=24):
+    """Edges whose curve stands further than ``limit`` from a face they bound
+    get that distance back as their tolerance. Left at 1e-7, an edge 0.27 mm
+    off a fitted strip on a wheel rim kept OpenCASCADE's mesher refining for
+    minutes without end (the conversion hung); the other edges keep the
+    smallest tolerance, so correct faces are still meshed finely."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d
+    from OCP.BRepLib import BRepLib
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    B = BRep_Builder()
+    raised = False
+    faces = TopExp_Explorer(shape, TopAbs_FACE)
+    while faces.More():
+        face = TopoDS.Face(faces.Current())
+        faces.Next()
+        surf = BRep_Tool.Surface_s(face)
+        edges = TopExp_Explorer(face, TopAbs_EDGE)
+        while edges.More():
+            edge = TopoDS.Edge(edges.Current())
+            edges.Next()
+            if BRep_Tool.Degenerated_s(edge):
+                continue
+            try:
+                c3 = BRepAdaptor_Curve(edge)
+                c2 = BRepAdaptor_Curve2d(edge, face)
+                ts = np.linspace(c3.FirstParameter(), c3.LastParameter(), n)
+                gap = max(surf.Value(*c2.Value(t).Coord()).Distance(c3.Value(t)) for t in ts)
+            except Exception:
+                continue
+            if gap > limit and gap > BRep_Tool.Tolerance_s(edge):
+                B.UpdateEdge(edge, 1.1 * gap)
+                raised = True
+    if raised:
+        # (their vertices must be at least as loose as the edges)
+        BRepLib.UpdateTolerances_s(shape)
+
+
+def tessellate(shape, deflection, angle=0.25, loose=None):
     """The shape's faces as triangles: (V, F, face index of each triangle).
 
     OpenCASCADE never meshes a face finer than its tolerance, and converted
@@ -127,6 +168,9 @@ def tessellate(shape, deflection, angle=0.25):
             B.Add(comp, f)
     copy = _round_trip(comp)
     ShapeFix_ShapeTolerance().SetTolerance(copy, 1e-7)
+    # (edges further off than ``loose``, 4 tolerances where the callers
+    # know the tolerance, keep their real distance as tolerance)
+    _loosen_far_edges(copy, 32 * deflection if loose is None else loose)
     BRepMesh_IncrementalMesh(copy, deflection, False, angle, True)
     copied = TopExp_Explorer(copy, TopAbs_FACE)
     retry = []
@@ -179,7 +223,7 @@ def tessellate(shape, deflection, angle=0.25):
     return np.vstack(Vs), np.vstack(Fs), np.concatenate(ids)
 
 
-def tessellate_faces(faces, deflection, angle=0.25):
+def tessellate_faces(faces, deflection, angle=0.25, loose=None):
     """Like tessellate, for a list of faces: (V, F, index into ``faces`` of
     each triangle)."""
     from OCP.BRep import BRep_Builder
@@ -191,7 +235,7 @@ def tessellate_faces(faces, deflection, angle=0.25):
     for f in faces:
         B.Add(comp, f)
     # a compound keeps its faces in the order they were added
-    return tessellate(comp, deflection, angle)
+    return tessellate(comp, deflection, angle, loose)
 
 
 def _tri_normals(V, F):
@@ -984,7 +1028,7 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     M, MN, spacing = mesh_surface(MV, MF)
     kind = mesh_kind(M, tol)
     allow = max(tol, M.deflection, M.noise)
-    SV, SF, owner = tessellate(shape, tol * (0.125 if fine else 0.25))
+    SV, SF, owner = tessellate(shape, tol * (0.125 if fine else 0.25), loose=4 * tol)
     if len(SF) == 0:
         return {"empty": True}
     S = Surface(SV, SF, spacing, rng)
