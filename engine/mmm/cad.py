@@ -2366,9 +2366,10 @@ PERIODIC = ("cylinder", "cone", "torus")
 import os as _os
 
 FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") != "0"
-# experimental, off unless MMM_STRAIGHTEN=1: on the owner's mount it left an
-# invalid freeform face where a surface is fitted again during the build
-STRAIGHTEN = _os.environ.get("MMM_STRAIGHTEN") == "1"
+# Saw-tooth borders straightened (Segmenter._straighten_borders); on by
+# default since faces that it would leave broken in the saved file are built
+# again (_broken_when_saved); MMM_STRAIGHTEN=0 turns it off
+STRAIGHTEN = _os.environ.get("MMM_STRAIGHTEN") != "0"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
@@ -2718,6 +2719,15 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
             # (a face whose surface blew up passes the validity check)
             if not BRepCheck_Analyzer(f).IsValid() or face_blown_up(f):
                 bad.add(r)
+        # a face can be valid here and broken in the saved STEP file read
+        # back (a STEP file keeps no edge tolerances: an edge saved with 0.1
+        # reads back with 1e-7): such faces are built again like broken ones
+        # (a straightened border left one on the owner's mount, and the
+        # whole mount fell back to smooth surfaces)
+        broken = _broken_when_saved(asm) - bad
+        if broken:
+            report.log(f"{len(broken)} face(s) that would be broken in the saved file are built again")
+            bad |= broken
         return labels, regions, asm, faces, bad
 
     for rnd in range(max_rounds):
@@ -3101,6 +3111,49 @@ def _flat_facets(seg, faces, max_deg=0.5):
         n = (seg.fn[comp] * seg.fa[comp, None]).sum(0)
         out.append(Region(Plane(P.mean(0), n if np.linalg.norm(n) > 0 else n0), comp, 1.0, False))
     return out
+
+
+def _broken_when_saved(asm):
+    """Regions whose face is invalid once the faces are written to a STEP
+    file and read back."""
+    import os
+    import tempfile
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS_Compound
+
+    from . import stepio
+
+    rs = sorted(asm.region_faces)
+    B = BRep_Builder()
+    comp = TopoDS_Compound()
+    B.MakeCompound(comp)
+    for r in rs:
+        B.Add(comp, asm.region_faces[r])
+    fd, path = tempfile.mkstemp(suffix=".step")
+    os.close(fd)
+    try:
+        stepio.write_step(comp, path)
+        back = stepio.read_step(path)
+    except Exception:
+        return set()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    out = set()
+    exp = TopExp_Explorer(back, TopAbs_FACE)
+    k = 0
+    while exp.More() and k < len(rs):
+        if not BRepCheck_Analyzer(exp.Current()).IsValid():
+            out.add(rs[k])
+        k += 1
+        exp.Next()
+    # (a different number of faces read back: the order can't be trusted)
+    return out if k == len(rs) and not exp.More() else set()
 
 
 def _too_small_for_face(seg, labels, faces, area_k=25.0, width_k=6.0):

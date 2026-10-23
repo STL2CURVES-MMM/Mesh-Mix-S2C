@@ -923,6 +923,27 @@ def test_a_rounded_edge_along_a_curve_becomes_one_fillet(tmp_path, monkeypatch):
     assert res["faces"] <= 14, res["faces"]
 
 
+def test_saved_file_check_keeps_good_faces():
+    """Faces that would be broken in the saved STEP file are found by
+    writing them out and reading them back; good faces must pass, and a
+    face found broken must be the right one (the order is kept)."""
+    from types import SimpleNamespace
+
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from mmm import cad
+
+    faces = {}
+    exp = TopExp_Explorer(BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape(), TopAbs_FACE)
+    while exp.More():
+        faces[3 * len(faces) + 1] = TopoDS.Face(exp.Current())
+        exp.Next()
+    assert cad._broken_when_saved(SimpleNamespace(region_faces=faces)) == set()
+
+
 def test_a_strip_too_small_for_a_face_joins_the_surface_it_lies_on(tmp_path):
     """A region smaller than any valid face (on a printed mount, a strip of
     18 needle triangles inside a cylinder) joins the surface it lies on,
