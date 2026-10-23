@@ -465,7 +465,9 @@ def _face_triangulation(face, lin, share=0.8):
     loc = TopLoc_Location()
     tri = BRep_Tool.Triangulation_s(face, loc)
     props = GProp_GProps()
-    BRepGProp.SurfaceProperties_s(face, props)
+    # (at its default precision OpenCASCADE gave a printed mount's thin face
+    # 48 mm2 for its 15.5)
+    BRepGProp.SurfaceProperties_s(face, props, 1e-6)
     area = abs(props.Mass())
     if not np.isfinite(area) or area <= 0 or _tri_area(tri) >= share * area:
         return face, tri, loc
