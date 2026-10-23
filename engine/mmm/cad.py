@@ -2366,10 +2366,13 @@ PERIODIC = ("cylinder", "cone", "torus")
 import os as _os
 
 FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") != "0"
-# Saw-tooth borders straightened (Segmenter._straighten_borders); on by
-# default since faces that it would leave broken in the saved file are built
-# again (_broken_when_saved); MMM_STRAIGHTEN=0 turns it off
-STRAIGHTEN = _os.environ.get("MMM_STRAIGHTEN") != "0"
+# Saw-tooth borders straightened (Segmenter._straighten_borders): off unless
+# MMM_STRAIGHTEN=1. It smooths fillet borders (owner's rim: 154 -> 50
+# saw-tooth edges), but it leaves sliver faces (rim: 4 -> 18 under one
+# tolerance wide), and on one, 0.05 mm wide, OpenCASCADE's mesher at a
+# slicer's fineness (0.003 or 0.01 mm, angle 0.5, not nearby values) put
+# nodes at the origin: triangles 200 mm long across the part
+STRAIGHTEN = _os.environ.get("MMM_STRAIGHTEN") == "1"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
