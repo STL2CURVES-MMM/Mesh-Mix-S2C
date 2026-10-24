@@ -311,8 +311,12 @@ class Segmenter:
             # its edge fold back, and the face was invalid)
             self._absorb_slivers()
             self._smooth_borders()
-        if STRAIGHTEN:
-            self._straighten_borders()
+        if STRAIGHTEN and self._straighten_borders():
+            # (a border moved past a small region squeezes it to a sliver
+            # of a few triangles; they join a surface they fit, like the
+            # pieces sweeps and fillets leave)
+            self._absorb_slivers()
+            self._smooth_borders()
         self._make_freeform()
         self._fix_apex_cones()
         if self.scan:
@@ -845,11 +849,34 @@ class Segmenter:
             if any(self._pieces(lab == r) > self._pieces_before.get(r, 1) for r in (a, b)):
                 lab[free] = old
                 continue
+            # a cut that squeezes either surface into a strip is undone too:
+            # on a wheel rim one 3.7 tolerances wide became 1.3, and the
+            # strip's face got triangles at the origin in a slicer's mesher
+            after = {r: self._width(lab == r) for r in (a, b)}
+            lab[free] = old
+            before = {r: self._width(lab == r) for r in (a, b)}
+            if any(after[r] < 2 * self.tol and after[r] < before[r] for r in (a, b)):
+                continue
+            lab[free] = new
             changed = True
         if changed:
             # (no refits or merges: the surfaces haven't changed)
             self._rebuild_regions(refit=False, merge=False)
         return changed
+
+    def _width(self, mask):
+        """Mean width of a set of triangles: twice their area over the
+        length of their outline."""
+        faces = np.nonzero(mask)[0]
+        if not len(faces):
+            return np.inf
+        he = (3 * faces[:, None] + np.arange(3)[None]).reshape(-1)
+        twin = self.topo.twin[he]
+        outer = (twin < 0) | ~mask[np.maximum(twin, 0) // 3]
+        a = self.V[self.topo.he_from[he[outer]]]
+        b = self.V[self.topo.he_to[he[outer]]]
+        perim = float(np.linalg.norm(b - a, axis=1).sum())
+        return 2.0 * float(self.fa[faces].sum()) / perim if perim > 0 else np.inf
 
     def _pieces(self, mask):
         """How many separate pieces the triangles in ``mask`` make."""
@@ -2366,13 +2393,13 @@ PERIODIC = ("cylinder", "cone", "torus")
 import os as _os
 
 FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") != "0"
-# Saw-tooth borders straightened (Segmenter._straighten_borders): off unless
-# MMM_STRAIGHTEN=1. It smooths fillet borders (owner's rim: 154 -> 50
-# saw-tooth edges), but it leaves sliver faces (rim: 4 -> 18 under one
-# tolerance wide), and on one, 0.05 mm wide, OpenCASCADE's mesher at a
-# slicer's fineness (0.003 or 0.01 mm, angle 0.5, not nearby values) put
-# nodes at the origin: triangles 200 mm long across the part
-STRAIGHTEN = _os.environ.get("MMM_STRAIGHTEN") == "1"
+# Saw-tooth borders straightened (Segmenter._straighten_borders); on by
+# default, MMM_STRAIGHTEN=0 turns it off. Owner's rim, mount and tire:
+# 154 -> 48, 164 -> 66 and 200 -> 24 saw-tooth edges. The small pieces a cut
+# leaves are absorbed again, and a cut that squeezes a surface into a strip
+# is undone: one 0.05 mm wide got triangles at the origin in a slicer's
+# mesher (OpenCASCADE at 0.003 mm, angle 0.5)
+STRAIGHTEN = _os.environ.get("MMM_STRAIGHTEN") != "0"
 _PLURAL = {"plane": "planes", "cylinder": "cylinders", "cone": "cones", "sphere": "spheres", "torus": "tori", "freeform": "freeform patches"}
 
 
