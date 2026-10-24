@@ -918,9 +918,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Groups of part names as one line ("A, B; C, D"), the first `limit`
+    /// names only and "and N more" after them: a 3MF of 334 touching parts
+    /// listed them all, and the alert's buttons were off the screen.
+    static func shortNameList(_ groups: [[String]], limit: Int = 8) -> String {
+        var out: [String] = []
+        var shown = 0
+        for g in groups {
+            let take = Array(g.prefix(max(0, limit - shown)))
+            if !take.isEmpty { out.append(take.joined(separator: ", ")) }
+            shown += take.count
+        }
+        let rest = groups.reduce(0) { $0 + $1.count } - shown
+        let text = out.joined(separator: "; ")
+        return rest > 0 ? "\(text) and \(rest) more" : text
+    }
+
     /// "split" or "merge"
     private func askTouchingAlert(_ job: Job) -> String {
-        let groups = job.touching.map { $0.joined(separator: ", ") }.joined(separator: "; ")
+        let groups = Self.shortNameList(job.touching)
         let separate = splitAvailable ? "one STEP file each" : "separate solids in one STEP file"
         let a = NSAlert()
         a.messageText = "Parts that touch"

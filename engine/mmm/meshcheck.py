@@ -597,10 +597,26 @@ def union_parts(parts, diag, report=NULL):
     return organise_bodies(shells, report)
 
 
+def short_name_list(groups, limit=8):
+    """Groups of part names as one line ("A, B; C, D"), the first ``limit``
+    names only and "and N more" after them: a 3MF of 334 touching parts
+    listed them all, and the message didn't fit on the screen."""
+    out, shown = [], 0
+    for g in groups:
+        g = [str(x) for x in g]
+        take = g[:max(0, limit - shown)]
+        if take:
+            out.append(", ".join(take))
+        shown += len(take)
+    rest = sum(len(g) for g in groups) - shown
+    text = "; ".join(out)
+    return f"{text} and {rest} more" if rest > 0 else text
+
+
 def touching_issue(groups, names, choice):
     """The mesh check's report on touching parts (choice: ask/split/merge)."""
     n = sum(len(g) for g in groups)
-    which = "; ".join(", ".join(names[k] for k in g) for g in groups)
+    which = short_name_list([[names[k] for k in g] for g in groups])
     problem = f"{_plural(n, 'part')} touch each other ({which})"
     if choice == "merge":
         return _issue("touching_parts", n, "fixed", problem, "Merged them into one solid.")

@@ -310,3 +310,11 @@ def load_and_prepare_arrays(V, F):
         p = os.path.join(d, "m.stl")
         trimesh.Trimesh(V, F, process=False).export(p)
         return load_and_prepare(p)
+
+
+def test_touching_parts_report_keeps_its_list_short():
+    from mmm.meshcheck import touching_issue
+
+    names = [f"Body{i}" for i in range(334)]
+    issue = touching_issue([list(range(334))], names, "ask")
+    assert "and 326 more" in issue["problem"] and "Body8," not in issue["problem"]

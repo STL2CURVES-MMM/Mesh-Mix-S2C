@@ -351,3 +351,15 @@ def test_choosing_the_valid_version(window, meshes):
     # a file with nothing to choose shows no choice
     m.select(next(j for j in m.jobs if j.file_name == "one.stl").id)
     assert wait_until(lambda: not jp.choice_card.isVisible())
+
+
+def test_long_lists_of_touching_parts_are_cut_short():
+    """A 3MF of 334 touching parts listed every name in the question, and
+    its buttons were off the screen."""
+    from mmm_app.main_window import short_name_list
+
+    assert short_name_list([["A", "B"], ["C"]]) == "A, B; C"
+    names = [[f"Body{i}" for i in range(334)]]
+    text = short_name_list(names)
+    assert text == "Body0, Body1, Body2, Body3, Body4, Body5, Body6, Body7 and 326 more"
+    assert short_name_list([["A", "B", "C"], ["D", "E"]], limit=4) == "A, B, C; D and 1 more"
