@@ -18,6 +18,20 @@ from .update_ui import UpdateController, UpdateDialog, schedule_launch_check
 from .widgets import Card, Divider, IconLabel, Label
 
 
+def short_name_list(groups, limit=8):
+    """Groups of part names as one line ("A, B; C, D"), the first ``limit``
+    names only and "and N more" after them: a 3MF of 334 touching parts
+    listed them all, and the question's buttons were off the screen."""
+    out, shown = [], 0
+    for g in groups:
+        take = [str(x) for x in g][:max(0, limit - shown)]
+        if take:
+            out.append(", ".join(take))
+        shown += len(take)
+    rest = sum(len(g) for g in groups) - shown
+    text = "; ".join(out)
+    return f"{text} and {rest} more" if rest > 0 else text
+
 class EngineMissingBanner(Card):
     def __init__(self, parent=None):
         super().__init__(parent, padding=12, radius=10, vertical=False, spacing=10)
@@ -194,7 +208,7 @@ class MainWindow(QMainWindow):
     def ask_touching(self, job):
         """Parts of a 3MF that touch each other: keep them as separate parts
         or merge them into one solid? Returns "split" or "merge"."""
-        groups = "; ".join(", ".join(str(n) for n in g.get("names", [])) for g in job.touching)
+        groups = short_name_list([g.get("names", []) for g in job.touching])
         separate = "one STEP file each" if self.model.split_available else "separate solids in one STEP file"
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)

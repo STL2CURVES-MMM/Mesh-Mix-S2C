@@ -198,12 +198,25 @@ def test_repaired_badge(window, meshes):
     assert by_name["one.stl"].result.repaired == []
     m.select(by_name["was_repaired.stl"].id)
     assert wait_until(lambda: jp.check_pill._text == "Repaired automatically")
-    assert jp.check_pill.toolTip() == REPAIRED_TIP
+    tip = jp.check_pill.toolTip()
+    assert tip.startswith(REPAIRED_TIP) and "Compared with the mesh: 99.8% of the surface" in tip
     m.select(by_name["repaired_issues.stl"].id)
     assert wait_until(lambda: jp.check_pill._text == "1 thing to check")
     assert jp.check_pill.toolTip().startswith("The app repaired what it could")
     m.select(by_name["one.stl"].id)
     assert wait_until(lambda: jp.check_pill._text == "File checked")
+
+
+def test_badge_when_the_shape_strays_from_the_mesh(window, meshes):
+    m = window.model
+    m.add([meshes["rough.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    m.convert_all()
+    assert wait_until(lambda: m.is_idle)
+    jp = window.preview.preview
+    m.select(m.jobs[0].id)
+    assert wait_until(lambda: jp.check_pill._text == "Doesn't match the mesh everywhere")
+    assert "the largest gap is 1.3 mm" in jp.check_pill.toolTip()
 
 
 def test_fine_detail_estimate_matches_engine():
@@ -314,3 +327,39 @@ def test_auto_used_mark_only_for_auto_runs(window, meshes):
     panel.refresh()
     assert [c.preset.value for c in panel.preset_cards if c.auto_picked] == ["cad"]
 
+
+
+def test_choosing_the_valid_version(window, meshes):
+    m = window.model
+    m.add([meshes["rough_twoways.stl"], meshes["one.stl"]])
+    assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
+    m.convert_all()
+    assert wait_until(lambda: m.is_idle)
+    jp = window.preview.preview
+    job = next(j for j in m.jobs if j.file_name == "rough_twoways.stl")
+    m.select(job.id)
+    assert wait_until(lambda: jp.choice_card.isVisible())
+    assert "Two versions" in jp.choice_title.text() and "Valid solid" in jp.choice_text.text()
+    assert jp.closest_btn.isChecked() and not jp.valid_btn.isChecked()
+    assert jp.check_pill._text == "Problem found" and jp.out_path() == job.output_preview
+    jp.valid_btn.click()
+    assert job.result.use_alternative and jp.valid_btn.isChecked() and not jp.closest_btn.isChecked()
+    assert jp.out_path() == job.result.alternative.preview
+    assert wait_until(lambda: jp.check_pill._text != "Problem found")
+    jp.closest_btn.click()
+    assert not job.result.use_alternative
+    # a file with nothing to choose shows no choice
+    m.select(next(j for j in m.jobs if j.file_name == "one.stl").id)
+    assert wait_until(lambda: not jp.choice_card.isVisible())
+
+
+def test_long_lists_of_touching_parts_are_cut_short():
+    """A 3MF of 334 touching parts listed every name in the question, and
+    its buttons were off the screen."""
+    from mmm_app.main_window import short_name_list
+
+    assert short_name_list([["A", "B"], ["C"]]) == "A, B; C"
+    names = [[f"Body{i}" for i in range(334)]]
+    text = short_name_list(names)
+    assert text == "Body0, Body1, Body2, Body3, Body4, Body5, Body6, Body7 and 326 more"
+    assert short_name_list([["A", "B", "C"], ["D", "E"]], limit=4) == "A, B, C; D and 1 more"

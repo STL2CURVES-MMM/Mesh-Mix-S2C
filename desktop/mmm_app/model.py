@@ -1,6 +1,7 @@
 """Jobs, the conversion queue and exporting: everything the window shows,
 without the window itself (a port of the Mac app's AppModel)."""
 import errno
+import math
 import os
 import re
 import shutil
@@ -154,6 +155,56 @@ class MeshCheck:
 
 
 @dataclass
+class Fidelity:
+    """How closely the STEP shape follows the mesh (engine/mmm/fidelity.py)."""
+
+    ok: bool = True
+    tolerance: float = 0.0
+    within2: float = 1.0  # share of the surface within twice the tolerance
+    p99: float = 0.0
+    max: float = 0.0
+    wrong_way: float = 0.0  # share of the surface facing another way than the mesh
+    scan: bool = False  # judged as a noisy scan (its noise is allowed for)
+    rechecked: bool = False  # the first check was close, so it was checked again
+
+    # the engine's limit for wrong_way (engine/mmm/fidelity.py, Verdict)
+    WRONG_WAY_MAX = 0.005
+
+    @classmethod
+    def from_event(cls, d):
+        if not isinstance(d, dict):
+            return None
+        return cls(ok=d.get("ok") is not False, tolerance=_float(d.get("tolerance")),
+                   within2=_float(d.get("within2"), 1.0), p99=_float(d.get("p99")), max=_float(d.get("max")),
+                   wrong_way=_float(d.get("wrong_way")), scan=d.get("mesh_kind") == "scan",
+                   rechecked=d.get("rechecked") is True)
+
+    def summary(self, unit="mm"):
+        if not self.tolerance > 0:
+            return "the details weren't reported"
+        # rounded down, so a result that fails never shows 100.0%
+        pct = math.floor(1000 * min(max(self.within2, 0.0), 1.0) + 1e-6) / 10
+        text = (f"{pct:.1f}% of the surface is within {2 * self.tolerance:.2g} {unit} of the mesh; "
+                f"the largest gap is {self.max:.2g} {unit}")
+        if self.wrong_way > self.WRONG_WAY_MAX:
+            text += f"; {100 * self.wrong_way:.1f}% of it faces another way than the mesh (wrinkles or dents)"
+        if self.scan:
+            text += " (the mesh is a noisy scan, so its noise is allowed for)"
+        if self.rechecked:
+            text += " (checked twice, as the first check was close)"
+        return text
+
+
+def result_unit(job, settings):
+    """The unit a job's result is in: 3MF files carry their own (the engine
+    saves them in mm), others the unit the last conversion used."""
+    if job.extension == "3mf":
+        return "mm"
+    run = job.run_settings or {}
+    return run.get("unit") or settings.unit
+
+
+@dataclass
 class ConversionResult:
     preset: str = ""
     valid: object = None  # True / False / None (not reported)
@@ -170,6 +221,15 @@ class ConversionResult:
     checks: list = field(default_factory=list)
     # repair steps the engine took because the first check found problems
     repaired: list = field(default_factory=list)
+    # how closely the shape follows the mesh (None: not measured)
+    fidelity: object = None
+    # When no method made a shape that follows the mesh, the engine saves
+    # the closest one and offers a valid one too (a ConversionResult whose
+    # output and preview are that file's): the user picks which to export
+    alternative: object = None
+    output: str = ""
+    preview: str = ""
+    use_alternative: bool = False
 
     @classmethod
     def from_event(cls, ev):
@@ -188,11 +248,32 @@ class ConversionResult:
         )
         r.checked = ev.get("checked") is True
         r.repaired = [str(x) for x in ev.get("repaired") or [] if isinstance(x, str)]
+        r.fidelity = Fidelity.from_event(ev.get("fidelity"))
         for c in ev.get("checks") or []:
             if isinstance(c, dict):
                 r.checks.append(CheckIssue(str(c.get("code", "")), str(c.get("level", "warning")),
                                            str(c.get("message", ""))))
+        alt = ev.get("alternative")
+        if isinstance(alt, dict) and isinstance(alt.get("output"), str) and os.path.exists(alt["output"]):
+            a = cls.from_event({k: v for k, v in alt.items() if k != "alternative"})
+            a.preset, a.seconds, a.mesh_volume, a.tolerance = r.preset, r.seconds, r.mesh_volume, r.tolerance
+            a.output = alt["output"]
+            pv = alt.get("preview")
+            a.preview = pv if isinstance(pv, str) and os.path.exists(pv) else ""
+            r.alternative = a
         return r
+
+    @property
+    def chosen(self):
+        """The version the user picked (this one unless they picked the
+        alternative)."""
+        return self.alternative if self.use_alternative and self.alternative is not None else self
+
+    @property
+    def extra_files(self):
+        """The alternative's files (to delete with the result)."""
+        a = self.alternative
+        return [f for f in (a.output, a.preview) if f] if a is not None else []
 
     @property
     def preset_title(self):
@@ -203,8 +284,20 @@ class ConversionResult:
         return any(c.is_error for c in self.checks)
 
     @property
+    def off_mesh(self):
+        """The shape doesn't follow the mesh everywhere."""
+        return self.fidelity is not None and not self.fidelity.ok
+
+    @property
     def has_issues(self):
-        return bool(self.checks) or self.valid is False
+        return bool(self.checks) or self.valid is False or self.off_mesh
+
+
+def _chosen_file(result, path):
+    """The STEP file to export: the alternative when the user picked it."""
+    if result is not None and result.use_alternative and result.alternative is not None:
+        return result.alternative.output
+    return path
 
 
 @dataclass
@@ -303,8 +396,8 @@ class Job(QObject):
         """The converted STEP files waiting in the temporary folder, as
         (source, part index) — the part index is None unless split."""
         if self.is_split:
-            return [(p.output_path, i) for i, p in enumerate(self.part_list) if p.output_path]
-        return [(self.output_path, None)] if self.output_path else []
+            return [(_chosen_file(p.result, p.output_path), i) for i, p in enumerate(self.part_list) if p.output_path]
+        return [(_chosen_file(self.result, self.output_path), None)] if self.output_path else []
 
     @property
     def exported_files(self):
@@ -325,9 +418,9 @@ class Job(QObject):
     def clear_results(self):
         """Drops the results of a previous conversion and returns the
         temporary files to delete (exported files stay where they are)."""
-        old = [self.output_preview, self.output_path]
+        old = [self.output_preview, self.output_path] + (self.result.extra_files if self.result else [])
         for p in self.part_list:
-            old += [p.output_preview, p.output_path]
+            old += [p.output_preview, p.output_path] + (p.result.extra_files if p.result else [])
             p.output_preview = p.output_path = p.exported_path = p.result = None
         self.result = None
         self.output_preview = self.output_path = self.exported_path = None
@@ -642,6 +735,8 @@ class AppModel(QObject):
 
     def _inspect(self, job):
         job.status = JobStatus.INSPECTING
+        job.stage = ""
+        job.progress = 0.0
         self._inspect_waiting.append(job)
         self._pump_inspect()
 
@@ -681,7 +776,17 @@ class AppModel(QObject):
 
         def on_event(ev):
             kind = ev.get("event")
-            if kind == "result":
+            if kind == "stage":
+                # what the mesh check is doing right now
+                job.stage = str(ev.get("stage") or "")
+                if isinstance(ev.get("progress"), (int, float)):
+                    job.progress = max(job.progress, float(ev["progress"]))
+                job.touch()
+            elif kind == "progress":
+                if isinstance(ev.get("progress"), (int, float)):
+                    job.progress = max(job.progress, float(ev["progress"]))
+                    job.touch()
+            elif kind == "result":
                 tri = ev.get("triangles", ev.get("input_triangles"))
                 job.triangles = _int(tri, None) if tri is not None else None
                 job.bodies = _int(ev.get("bodies"), None)
@@ -714,6 +819,8 @@ class AppModel(QObject):
 
         def on_exit(code, _stderr):
             job.task = None
+            job.stage = ""
+            job.progress = 0.0
             if job not in self.jobs:
                 self.discard_previews([prev, part_dir])
                 self._pump_inspect()
@@ -1052,7 +1159,8 @@ class AppModel(QObject):
             if job not in self.jobs:
                 # removed while converting: nothing will show these files
                 parts = [os.path.join(self.preview_dir, f"{job.id}-part{p.index}-out-{stamp}.mmmp") for p in job.part_list]
-                self.discard_previews([result_dir, prev] + parts)
+                extra = [f for r in [job.result] + [p.result for p in job.part_list] if r for f in r.extra_files]
+                self.discard_previews([result_dir, prev] + parts + extra)
                 self._pump()
                 return
             if t.cancelled:
@@ -1133,9 +1241,9 @@ class AppModel(QObject):
 
     @staticmethod
     def preview_files(job):
-        files = [job.input_preview, job.output_preview, job.output_path]
+        files = [job.input_preview, job.output_preview, job.output_path] + (job.result.extra_files if job.result else [])
         for p in job.part_list:
-            files += [p.input_preview, p.output_preview, p.output_path]
+            files += [p.input_preview, p.output_preview, p.output_path] + (p.result.extra_files if p.result else [])
         return [f for f in files if f]
 
     def clear_finished(self):

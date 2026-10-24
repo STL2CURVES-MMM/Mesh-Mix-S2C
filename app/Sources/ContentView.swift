@@ -337,7 +337,15 @@ struct JobRow: View {
                     .lineLimit(1)
                     .helpIfTruncated(job.stage)
             } else if job.status == .inspecting {
-                ThinProgress(value: 0, accent: settings.accent.color, indeterminate: true)
+                // the bar moves once the engine says how far the check is
+                ThinProgress(value: job.progress, accent: settings.accent.color, indeterminate: job.progress <= 0)
+                if !job.stage.isEmpty {
+                    Text(job.stage)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.textDim)
+                        .lineLimit(1)
+                        .helpIfTruncated(job.stage)
+                }
             } else if job.status == .failed, let e = job.error {
                 Text(e)
                     .font(.system(size: 10.5))

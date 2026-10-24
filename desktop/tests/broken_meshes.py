@@ -36,6 +36,9 @@ def cases():
     t = tris(box()); out["duplicates"] = np.vstack([t, t[:3]])
     t = tris(box()); bad = t[:1].copy(); bad[0, 0, 0] = np.nan; out["nan"] = np.vstack([t, bad])
     out["corner_touch"] = np.vstack([tris(box()), tris(box(at=(10, 10, 10)))])
+    # two boxes meeting along an edge, with corners along it (where each
+    # side of each box is a fan of its own)
+    out["edge_touch"] = np.vstack([tris(box().subdivide()), tris(box(at=(10, 10, 0)).subdivide())])
     m = box(); v = np.asarray(m.vertices).copy(); k = int(np.argmax(v.sum(1))); v[k] = [5, 5, -9]
     out["self_crossing"] = v[np.asarray(m.faces)]
     out["overlap"] = np.vstack([tris(box()), tris(box(at=(5, 5, 0)))])

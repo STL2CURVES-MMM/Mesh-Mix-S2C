@@ -97,8 +97,14 @@ struct JobPreview: View {
     /// The selected tab's part when a 3MF is split into parts.
     private var part: JobPart? { job.currentPart }
     private var inURL: URL? { part?.inputPreview ?? job.inputPreview }
-    private var outURL: URL? { job.isSplit ? part?.outputPreview : job.outputPreview }
-    private var shownResult: ConversionResult? { job.isSplit ? part?.result : job.result }
+    private var outURL: URL? {
+        let url = job.isSplit ? part?.outputPreview : job.outputPreview
+        return baseResult.map { $0.chosenPreview(url) } ?? url
+    }
+    /// The result as the engine saved it (with any alternative)
+    private var baseResult: ConversionResult? { job.isSplit ? part?.result : job.result }
+    /// The version the user picked
+    private var shownResult: ConversionResult? { baseResult?.chosen }
     private var previewKey: String { "\(inURL?.path ?? "")|\(outURL?.path ?? "")" }
 
     var body: some View {
@@ -173,7 +179,10 @@ struct JobPreview: View {
                 }
             } else if job.status == .inspecting {
                 ProgressView().tint(settings.accent.color)
-                Text("Reading the file…").foregroundStyle(Theme.textDim).font(.system(size: 12))
+                Text("Checking the mesh").foregroundStyle(Theme.text).font(.system(size: 13, weight: .semibold))
+                Text(job.stage.isEmpty ? "Reading the file…" : job.stage + "…")
+                    .foregroundStyle(Theme.textDim).font(.system(size: 12))
+                    .multilineTextAlignment(.center).frame(maxWidth: 380)
             } else if !job.readable {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 30, weight: .light)).foregroundStyle(Theme.bad)
                 Text("This file can't be read").foregroundStyle(Theme.text).font(.system(size: 13, weight: .semibold))
@@ -302,13 +311,13 @@ struct JobPreview: View {
     }
 
     private func tabIcon(for p: JobPart) -> String {
-        if let r = p.result { return r.hasIssues ? "exclamationmark.circle.fill" : "checkmark.circle.fill" }
+        if let r = p.result?.chosen { return r.hasIssues ? "exclamationmark.circle.fill" : "checkmark.circle.fill" }
         if job.status == .converting || job.status == .queued { return "clock" }
         return "cube"
     }
 
     private func tabColor(for p: JobPart) -> Color {
-        if let r = p.result { return r.hasErrors ? Theme.bad : (r.hasIssues ? Theme.warn : Theme.good) }
+        if let r = p.result?.chosen { return r.hasErrors ? Theme.bad : (r.hasIssues ? Theme.warn : Theme.good) }
         return Theme.textDim
     }
 
@@ -317,23 +326,35 @@ struct JobPreview: View {
         r.repaired.isEmpty ? "" : "The app repaired what it could automatically; this is left:\n"
     }
 
+    private var modelUnit: String { job.resultUnit(settings) }
+
+    private func fitLine(_ r: ConversionResult) -> String {
+        guard let f = r.fidelity else { return "" }
+        return "\nCompared with the mesh: \(f.summary(unit: modelUnit))."
+            + (f.ok ? "" : " It doesn't follow the mesh closely everywhere.")
+    }
+
     @ViewBuilder func checkBadge(_ r: ConversionResult) -> some View {
         if r.hasErrors {
             Pill(text: "Problem found", color: Theme.bad, icon: "xmark")
                 .fixedSize()
-                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n"))
+                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n") + fitLine(r))
         } else if !r.checks.isEmpty {
             Pill(text: r.checks.count == 1 ? "1 thing to check" : "\(r.checks.count) things to check", color: Theme.warn, icon: "exclamationmark")
                 .fixedSize()
-                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n"))
+                .help(repairNote(r) + r.checks.map(\.message).joined(separator: "\n") + fitLine(r))
+        } else if let f = r.fidelity, !f.ok {
+            Pill(text: "Doesn't match the mesh everywhere", color: Theme.warn, icon: "exclamationmark")
+                .fixedSize()
+                .help("The shape was compared with the mesh: \(f.summary(unit: modelUnit)).\nNo method followed it closely everywhere; this is the closest result. A higher quality, or another preset, may do better.")
         } else if r.checked && !r.repaired.isEmpty {
             Pill(text: "Repaired automatically", color: Theme.good, icon: "checkmark")
                 .fixedSize()
-                .help("Reading the STEP file back found small errors, so the app repaired them automatically, the way CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a valid solid and matches the mesh.")
+                .help("Reading the STEP file back found small errors, so the app repaired them automatically, the way CAD programs like Fusion do when they import a file. The repaired file was checked again: it is a valid solid with the mesh's volume." + fitLine(r))
         } else if r.checked {
             Pill(text: "File checked", color: Theme.good, icon: "checkmark")
                 .fixedSize()
-                .help("The STEP file was read back and checked: it is a valid solid and matches the mesh.")
+                .help("The STEP file was read back and checked: it is a valid solid with the mesh's volume." + fitLine(r))
         } else if let v = r.valid {
             Pill(text: v ? "Valid solid" : "Has small errors", color: v ? Theme.good : Theme.warn, icon: v ? "checkmark" : "exclamationmark")
                 .fixedSize()
@@ -541,6 +562,54 @@ struct JobPreview: View {
         return trouble && !showsErrorCard
     }
 
+    private func chooseVersion(_ alt: Bool) {
+        if job.isSplit {
+            if job.partList.indices.contains(job.selectedPart) {
+                job.partList[job.selectedPart].result?.useAlternative = alt
+            }
+        } else {
+            job.result?.useAlternative = alt
+        }
+    }
+
+    private func aboutVersion(_ r: ConversionResult) -> String {
+        (r.valid == true && !r.hasErrors ? "a valid solid" : "has errors that some programs may not open")
+            + "; compared with the mesh: " + (r.fidelity?.summary(unit: modelUnit) ?? "not measured")
+    }
+
+    /// No method followed the mesh everywhere: the closest version and a
+    /// valid one were both saved, and the user picks which to export.
+    @ViewBuilder var choiceCard: some View {
+        if mode == .result, let base = baseResult, let alt = base.alternative {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 7) {
+                    Image(systemName: "square.split.2x1").font(.system(size: 12)).foregroundStyle(Theme.warn)
+                    Text("Two versions were made").font(.system(size: 12, weight: .semibold))
+                }
+                Text("No method made a shape that follows the mesh everywhere, so both are kept for you to pick.\n"
+                     + "• Closest to the mesh: \(aboutVersion(base)).\n"
+                     + "• Valid solid: \(aboutVersion(alt.result)).\n"
+                     + "The one you pick is shown here and exported."
+                     + (job.isExported ? " It was already exported: export again to save this one." : ""))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Picker("", selection: Binding(get: { base.useAlternative }, set: { chooseVersion($0) })) {
+                        Text("Closest to the mesh").tag(false)
+                        Text("Valid solid").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(padding: 10)
+        }
+    }
+
     /// What the check of the saved STEP file found, in plain words.
     @ViewBuilder var issuesCard: some View {
         if mode == .result, let r = shownResult, !r.checks.isEmpty {
@@ -567,6 +636,7 @@ struct JobPreview: View {
         VStack(alignment: .leading, spacing: 8) {
             meshCard
             errorCard
+            choiceCard
             issuesCard
             if showLog && (!job.log.isEmpty || !job.warnings.isEmpty) {
                 ScrollView {

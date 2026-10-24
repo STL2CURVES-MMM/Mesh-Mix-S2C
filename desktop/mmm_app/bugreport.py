@@ -15,7 +15,7 @@ import time
 from types import SimpleNamespace
 
 from . import system
-from .model import RUN_SETTINGS
+from .model import RUN_SETTINGS, result_unit
 from .settings import MAX_FACES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice, preset_title
 from .version import __version__
 
@@ -160,11 +160,21 @@ def build(job, settings):
     if r is not None:
         add(f"  Preset used: {preset_title(r.preset)}; faces {r.faces:,}; solids {r.solids}; shells {r.shells}; "
             f"STEP {_size(r.file_size)}; {r.seconds:.1f} s")
+        if r.fidelity is not None:
+            add(f"  Compared with the mesh: {r.fidelity.summary(result_unit(job, s))}"
+                + ("" if r.fidelity.ok else " (doesn't follow it closely everywhere)"))
         if r.checked:
             add("  STEP file read back and checked" + (" (repaired automatically: " + ", ".join(r.repaired) + ")"
                                                       if r.repaired else ""))
         for c in r.checks:
             add(f"  - {c.level}: {c.message}")
+        a = r.alternative
+        if a is not None:
+            add(f"  Second (valid) version offered: valid {a.valid}; faces {a.faces:,}"
+                + (f"; compared with the mesh: {a.fidelity.summary(result_unit(job, s))}" if a.fidelity else "")
+                + ("; the user picked it" if r.use_alternative else "; the user kept the closest one"))
+            for c in a.checks:
+                add(f"    - {c.level}: {c.message}")
     if job.error:
         add(f"  What went wrong: {job.error}")
         if job.error_reason:

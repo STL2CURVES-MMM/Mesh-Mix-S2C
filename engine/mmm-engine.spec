@@ -6,6 +6,19 @@ from PyInstaller.utils.hooks import collect_submodules
 
 here = os.path.abspath(SPECPATH)
 
+# The commit this engine is built from, logged at the start of every
+# conversion, so a log shows which build made a file (all releases of one
+# version look alike otherwise)
+try:
+    import subprocess
+
+    _sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=here, capture_output=True,
+                          text=True, timeout=30).stdout.strip()
+except Exception:
+    _sha = ""
+with open(os.path.join(here, "mmm", "_build.py"), "w", encoding="utf-8") as _f:
+    _f.write(f"BUILD = {_sha!r}\n")
+
 hidden = (
     collect_submodules("mmm")
     + collect_submodules("OCP")

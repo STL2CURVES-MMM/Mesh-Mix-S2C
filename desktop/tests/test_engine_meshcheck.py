@@ -30,6 +30,7 @@ EXPECTED = {
     "duplicates": ({"duplicates": "fixed"}, 1, 1, True),
     "nan": ({"bad_numbers": "fixed"}, 1, 1, True),
     "corner_touch": ({"pinched": "fixed"}, 2, 2, True),
+    "edge_touch": ({"pinched": "fixed"}, 2, 2, True),
     "self_crossing": ({"self_intersections": "not_fixed"}, 1, 1, False),
     "overlap": ({"overlaps": "action"}, 2, 2, True),
     "nested": ({}, 2, 2, True),
@@ -60,6 +61,22 @@ def test_fixed_box_keeps_its_volume():
         vol = sum(s.volume for b in bodies for s in b)
         expected = 2000.0 if name == "glued_internal_wall" else 1000.0
         assert vol == pytest.approx(expected, rel=1e-3), name
+
+
+def test_pieces_touching_along_an_edge_each_stay_closed():
+    """Around an edge shared by four triangles, each one is paired with its
+    neighbour on its inside, so both boxes close on their own instead of
+    being joined across the edge by slivers."""
+    from mmm.meshio import EdgeTopology, triangles_to_indexed
+
+    V, F = triangles_to_indexed(CASES["edge_touch"])
+    topo = EdgeTopology(V, F)
+    assert topo.n_nonmanifold_edges == 8
+    V2, F2, n = meshcheck.split_pinched(V, F, topo)
+    t2 = EdgeTopology(V2, F2)
+    assert n == 3 and t2.n_nonmanifold_edges == 0 and t2.n_boundary_edges == 0
+    bodies, _, _ = meshcheck.prepare_part(CASES["edge_touch"], "auto", True, NULL, False)
+    assert sorted(s.volume for b in bodies for s in b) == pytest.approx([1000.0, 1000.0], rel=1e-6)
 
 
 def test_merge_overlaps_on_request():
@@ -240,3 +257,64 @@ def test_long_thin_triangles_are_quick():
     t = time.time()
     assert meshcheck.self_intersections(V, F)[0] == 0
     assert time.time() - t < 20
+
+
+def _cup_with_post(open_rim=True):
+    """A cup with a post standing up out of it; the rim's top faces removed
+    leaves two holes that a flat cap could only close by cutting the post."""
+    m3 = pytest.importorskip("manifold3d")
+    cup = m3.Manifold.cube([10, 10, 10]) - m3.Manifold.cube([8, 8, 10]).translate([1, 1, 1])
+    post = m3.Manifold.cylinder(14, 1.0, 1.0, 24).translate([5, 5, 0.5])
+    m = (cup + post).to_mesh()
+    V = np.asarray(m.vert_properties[:, :3], float)
+    F = np.asarray(m.tri_verts, np.int64)
+    if open_rim:
+        T = V[F]
+        n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+        rim = (np.abs(T[:, :, 2] - 10).max(1) < 1e-6) & (n[:, 2] > 0)
+        F = F[~rim]
+    return V, F
+
+
+def test_hole_fills_never_cut_through_the_part():
+    from mmm.meshio import Shell, fill_small_holes
+
+    V, F = _cup_with_post()
+    s = Shell(V, F)
+    assert not s.closed and len(meshcheck._hole_loops(s)) == 2
+    # a cap over either rim hole would pass through the post
+    assert meshcheck.crossings_added(s, fill_small_holes(s)) > 0
+    s2, cut = meshcheck.fill_holes_cleanly(s)
+    assert cut == 2 and not s2.closed
+    # the full check leaves it open and says why, instead of a solid that
+    # passes through itself
+    bodies, info = load_and_prepare_arrays(V, F)
+    holes = next(i for i in info.mesh_check["issues"] if i["code"] == "holes")
+    assert holes["status"] == "not_fixed" and "cut through the part" in holes["result"]
+    assert not any(i["code"] == "self_intersections" for i in info.mesh_check["issues"])
+    # an open box (nothing in the way) is still closed
+    import trimesh
+
+    t = CASES["hole"]
+    bm = trimesh.Trimesh(vertices=t.reshape(-1, 3), faces=np.arange(len(t) * 3).reshape(-1, 3), process=True)
+    s3, cut = meshcheck.fill_holes_cleanly(Shell(np.asarray(bm.vertices), np.asarray(bm.faces, np.int64)))
+    assert cut == 0 and s3.closed
+
+
+def load_and_prepare_arrays(V, F):
+    import tempfile
+
+    import trimesh
+
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "m.stl")
+        trimesh.Trimesh(V, F, process=False).export(p)
+        return load_and_prepare(p)
+
+
+def test_touching_parts_report_keeps_its_list_short():
+    from mmm.meshcheck import touching_issue
+
+    names = [f"Body{i}" for i in range(334)]
+    issue = touching_issue([list(range(334))], names, "ask")
+    assert "and 326 more" in issue["problem"] and "Body8," not in issue["problem"]

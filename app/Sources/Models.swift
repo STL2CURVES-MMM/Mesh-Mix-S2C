@@ -261,8 +261,92 @@ struct ConversionResult {
     /// Repair steps the engine took because the first check found problems
     var repaired: [String] = []
 
+    /// How closely the shape follows the mesh (nil: not measured)
+    var fidelity: Fidelity?
+
+    /// When no method made a shape that follows the mesh, the engine saves
+    /// the closest one and offers a valid one too: the user picks which to export
+    var alternative: AlternativeVersion?
+    var useAlternative = false
+    /// The version the user picked (this one unless they picked the alternative)
+    var chosen: ConversionResult { useAlternative ? alternative?.result ?? self : self }
+    /// The STEP file to export for the version the user picked
+    func chosenFile(_ url: URL?) -> URL? { useAlternative ? alternative?.output ?? url : url }
+    /// The STEP preview of the version the user picked
+    func chosenPreview(_ url: URL?) -> URL? { useAlternative && alternative != nil ? alternative?.preview : url }
+    /// The alternative's files (to delete with the result)
+    var extraFiles: [URL] { alternative.map { [$0.output] + ($0.preview.map { [$0] } ?? []) } ?? [] }
+
     var hasErrors: Bool { checks.contains { $0.isError } }
-    var hasIssues: Bool { !checks.isEmpty || valid == false }
+    /// The shape doesn't follow the mesh everywhere
+    var offMesh: Bool { fidelity.map { !$0.ok } ?? false }
+    var hasIssues: Bool { !checks.isEmpty || valid == false || offMesh }
+}
+
+/// A valid second version of a conversion (see ConversionResult.alternative).
+final class AlternativeVersion {
+    let result: ConversionResult
+    let output: URL
+    let preview: URL?
+    init(result: ConversionResult, output: URL, preview: URL?) {
+        self.result = result
+        self.output = output
+        self.preview = preview
+    }
+}
+
+/// How closely the STEP shape follows the mesh (engine/mmm/fidelity.py).
+struct Fidelity {
+    var ok = true
+    var tolerance = 0.0
+    /// Share of the surface within twice the tolerance
+    var within2 = 1.0
+    var p99 = 0.0
+    var largestGap = 0.0
+    /// Share of the surface facing another way than the mesh
+    var wrongWay = 0.0
+    /// Judged as a noisy scan (its noise is allowed for)
+    var scan = false
+    /// The first check was close, so it was checked again
+    var rechecked = false
+
+    /// The engine's limit for wrongWay (engine/mmm/fidelity.py, Verdict)
+    static let wrongWayMax = 0.005
+
+    init?(event value: Any?) {
+        guard let d = value as? [String: Any] else { return nil }
+        ok = (d["ok"] as? Bool) != false
+        tolerance = d["tolerance"] as? Double ?? 0
+        within2 = d["within2"] as? Double ?? 1
+        p99 = d["p99"] as? Double ?? 0
+        largestGap = d["max"] as? Double ?? 0
+        wrongWay = d["wrong_way"] as? Double ?? 0
+        scan = (d["mesh_kind"] as? String) == "scan"
+        rechecked = (d["rechecked"] as? Bool) == true
+    }
+
+    func summary(unit: String) -> String {
+        guard tolerance > 0 else { return "the details weren't reported" }
+        // rounded down, so a result that fails never shows 100.0%
+        let share = (1000 * Swift.min(Swift.max(within2, 0), 1) + 1e-6).rounded(.down) / 10
+        var text = "\(String(format: "%.1f", share))% of the surface is within \(String(format: "%.2g", 2 * tolerance)) \(unit) of the mesh; "
+            + "the largest gap is \(String(format: "%.2g", largestGap)) \(unit)"
+        if wrongWay > Self.wrongWayMax {
+            text += "; \(String(format: "%.1f", 100 * wrongWay))% of it faces another way than the mesh (wrinkles or dents)"
+        }
+        if scan { text += " (the mesh is a noisy scan, so its noise is allowed for)" }
+        if rechecked { text += " (checked twice, as the first check was close)" }
+        return text
+    }
+}
+
+extension Job {
+    /// The unit this job's result is in: 3MF files carry their own (the
+    /// engine saves them in mm), others the unit the last conversion used.
+    func resultUnit(_ settings: Settings) -> String {
+        if url.pathExtension.lowercased() == "3mf" { return "mm" }
+        return (runSettings?.unit ?? settings.unit).rawValue
+    }
 }
 
 /// One problem found when the saved STEP file was checked.
@@ -356,9 +440,21 @@ extension ConversionResult {
         )
         checked = ev["checked"] as? Bool ?? false
         repaired = ev["repaired"] as? [String] ?? []
+        fidelity = Fidelity(event: ev["fidelity"])
         checks = (ev["checks"] as? [[String: Any]] ?? []).map {
             CheckIssue(code: $0["code"] as? String ?? "", level: $0["level"] as? String ?? "warning",
                        message: $0["message"] as? String ?? "")
+        }
+        if var alt = ev["alternative"] as? [String: Any], let o = alt["output"] as? String,
+           FileManager.default.fileExists(atPath: o) {
+            alt.removeValue(forKey: "alternative")
+            var a = ConversionResult(event: alt)
+            a.preset = preset
+            a.seconds = seconds
+            a.meshVolume = meshVolume
+            a.tolerance = tolerance
+            let pv = (alt["preview"] as? String).flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+            alternative = AlternativeVersion(result: a, output: URL(fileURLWithPath: o), preview: pv)
         }
     }
 }
@@ -499,9 +595,11 @@ final class Job: ObservableObject, Identifiable {
     /// The converted STEP files waiting in the temporary folder (part index for split 3MFs)
     var resultFiles: [(source: URL, part: Int?)] {
         if isSplit {
-            return partList.indices.compactMap { i in partList[i].outputURL.map { ($0, i) } }
+            return partList.indices.compactMap { i in
+                partList[i].outputURL.map { (partList[i].result?.chosenFile($0) ?? $0, i) }
+            }
         }
-        return outputURL.map { [($0, nil)] } ?? []
+        return outputURL.map { [(result?.chosenFile($0) ?? $0, nil)] } ?? []
     }
     /// Every STEP file the user exported from this job
     var exportedFiles: [URL] {
@@ -514,10 +612,11 @@ final class Job: ObservableObject, Identifiable {
     /// Drops the results of a previous conversion and returns the temporary
     /// files to delete (exported files stay where they are).
     func clearResults() -> [URL] {
-        var old: [URL] = []
+        var old: [URL] = result?.extraFiles ?? []
         if let o = outputPreview { old.append(o) }
         if let o = outputURL { old.append(o) }
         for i in partList.indices {
+            old += partList[i].result?.extraFiles ?? []
             if let o = partList[i].outputPreview { old.append(o) }
             if let o = partList[i].outputURL { old.append(o) }
             partList[i].outputPreview = nil
@@ -694,9 +793,17 @@ final class AppModel: ObservableObject {
             return
         }
         job.task = t
+        job.stage = ""
+        job.progress = 0
         t.onEvent = { [weak self, weak job] ev in
             guard let self, let job else { return }
-            if ev["event"] as? String == "result" {
+            if ev["event"] as? String == "stage" {
+                // what the mesh check is doing right now
+                job.stage = ev["stage"] as? String ?? ""
+                if let p = ev["progress"] as? Double { job.progress = Swift.max(job.progress, p) }
+            } else if ev["event"] as? String == "progress" {
+                if let p = ev["progress"] as? Double { job.progress = Swift.max(job.progress, p) }
+            } else if ev["event"] as? String == "result" {
                 job.triangles = ev["triangles"] as? Int ?? ev["input_triangles"] as? Int
                 job.bodies = ev["bodies"] as? Int
                 job.openShells = ev["open_shells"] as? Int
@@ -734,6 +841,8 @@ final class AppModel: ObservableObject {
                 return
             }
             job.task = nil
+            job.stage = ""
+            job.progress = 0
             if status == 0 && !t.cancelled {
                 job.inputPreview = prev
                 job.status = .ready
@@ -809,9 +918,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Groups of part names as one line ("A, B; C, D"), the first `limit`
+    /// names only and "and N more" after them: a 3MF of 334 touching parts
+    /// listed them all, and the alert's buttons were off the screen.
+    static func shortNameList(_ groups: [[String]], limit: Int = 8) -> String {
+        var out: [String] = []
+        var shown = 0
+        for g in groups {
+            let take = Array(g.prefix(max(0, limit - shown)))
+            if !take.isEmpty { out.append(take.joined(separator: ", ")) }
+            shown += take.count
+        }
+        let rest = groups.reduce(0) { $0 + $1.count } - shown
+        let text = out.joined(separator: "; ")
+        return rest > 0 ? "\(text) and \(rest) more" : text
+    }
+
     /// "split" or "merge"
     private func askTouchingAlert(_ job: Job) -> String {
-        let groups = job.touching.map { $0.joined(separator: ", ") }.joined(separator: "; ")
+        let groups = Self.shortNameList(job.touching)
         let separate = splitAvailable ? "one STEP file each" : "separate solids in one STEP file"
         let a = NSAlert()
         a.messageText = "Parts that touch"
@@ -1127,7 +1252,9 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             guard let job, self.jobs.contains(where: { $0 === job }) else {
                 // removed while converting: nothing will show these files
-                self.discardPreviews([resultDir, prev] + partPreviews)
+                // and the valid second versions' previews, if any (pipeline.alternative_version)
+                let extra = ([prev] + partPreviews).map { $0.deletingPathExtension().appendingPathExtension("valid.mmmp") }
+                self.discardPreviews([resultDir, prev] + partPreviews + extra)
                 self.pump()
                 return
             }
@@ -1218,8 +1345,8 @@ final class AppModel: ObservableObject {
     }
 
     private static func previewFiles(of job: Job) -> [URL?] {
-        [job.inputPreview, job.outputPreview, job.outputURL]
-            + job.partList.flatMap { [$0.inputPreview, $0.outputPreview, $0.outputURL] }
+        [job.inputPreview, job.outputPreview, job.outputURL] + (job.result?.extraFiles ?? [])
+            + job.partList.flatMap { [$0.inputPreview, $0.outputPreview, $0.outputURL] + ($0.result?.extraFiles ?? []) }
     }
 
     func clearFinished() {

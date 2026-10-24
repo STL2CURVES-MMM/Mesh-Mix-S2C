@@ -204,16 +204,17 @@ def glued_sheets(V, F, diag, topo=None):
     return wall[lab], int(wall.sum())
 
 
-def pinched_vertices(F, topo, nv):
+def pinched_vertices(F, topo, nv, twin=None):
     """Corner groups per vertex: a vertex whose triangles form more than one
     fan (joined through shared edges) is a pinch point. Returns
     (corner_labels, n_pinched) where corner_labels gives each face corner
-    (3*f + i) the id of its fan."""
+    (3*f + i) the id of its fan. twin: half-edge pairs to join fans
+    through (topo.twin by default)."""
     nf = len(F)
     if nf == 0:
         return np.zeros(0, np.int64), 0
     vert = F.reshape(-1)
-    twin = topo.twin
+    twin = topo.twin if twin is None else twin
     rows, cols = [], []
     for i in range(3):
         h = 3 * np.arange(nf) + i  # half-edge from corner i to corner i+1
@@ -322,14 +323,15 @@ def _box_neighbours(lo, hi, which):
         yield int(b), near[near != b]
 
 
-def self_intersections(V, F):
+def self_intersections(V, F, pairs=False):
     """Pairs of triangles (not sharing a corner) whose surfaces cross.
-    Returns (count, faces involved). A uniform grid finds candidates (tested
-    as they're found, so memory stays small); the exact test checks every
-    edge of each triangle against the other."""
+    Returns (count, faces involved), or with ``pairs`` (count, the crossing
+    pairs as an (n, 2) array). A uniform grid finds candidates (tested as
+    they're found, so memory stays small); the exact test checks every edge
+    of each triangle against the other."""
     nf = len(F)
     if nf < 4:
-        return 0, np.zeros(0, np.int64)
+        return 0, np.zeros((0, 2) if pairs else 0, np.int64)
     T = V[F]
     lo, hi = T.min(1), T.max(1)
     ext = (hi - lo).max(1)
@@ -374,9 +376,112 @@ def self_intersections(V, F):
             hits.append(_crossing(T, lo, hi, F, np.sort(np.stack([np.full(len(nb), b), nb], 1), axis=1)))
     hits = [h for h in hits if len(h)]
     if not hits:
-        return 0, np.zeros(0, np.int64)
+        return 0, np.zeros((0, 2) if pairs else 0, np.int64)
     hp = np.unique(np.concatenate(hits), axis=0)
-    return len(hp), np.unique(hp.reshape(-1))
+    return len(hp), (hp if pairs else np.unique(hp.reshape(-1)))
+
+
+def added_triangles(old, new):
+    """Which triangles of shell ``new`` are not in shell ``old`` (made by a
+    repair: a hole fill, say), matched by their corner positions."""
+    def keys(V, F):
+        P = np.round(V[F], 7).reshape(len(F), 3, 3)
+        P = np.sort(P.view([("", P.dtype)] * 3).reshape(len(F), 3), axis=1)
+        return P
+    if len(old.F) == 0:
+        return np.ones(len(new.F), bool)
+    ko, kn = keys(old.V, old.F), keys(new.V, new.F)
+    have = set(map(bytes, np.ascontiguousarray(ko)))
+    return np.array([bytes(k) not in have for k in np.ascontiguousarray(kn)], bool)
+
+
+def crossings_added(old, new):
+    """Crossings in ``new`` that a repair made: pairs where at least one
+    triangle is new (a fill that cuts through the part, say)."""
+    k, pr = self_intersections(new.V, new.F, pairs=True)
+    if not k:
+        return 0
+    new_tri = added_triangles(old, new)
+    return int(new_tri[pr].any(1).sum())
+
+
+def _hole_fills(V, loop):
+    """Ways to close a hole (loop in fill order), simplest first: a fan
+    around its centre, then a flat triangulation in the hole's own plane
+    (which fits a hole whose centre lies outside it, or behind the part)."""
+    loop = np.asarray(loop, np.int64)
+    if len(loop) == 3:
+        yield V, loop[None]
+        return
+    V2 = np.vstack([V, V[loop].mean(0)[None]])
+    c = len(V)
+    yield V2, np.stack([loop, np.roll(loop, -1), np.full(len(loop), c)], 1)
+    import manifold3d
+
+    P = V[loop]
+    o = P.mean(0)
+    _, _, vt = np.linalg.svd(P - o)
+    Q = np.c_[(P - o) @ vt[0], (P - o) @ vt[1]]
+    try:
+        t = np.asarray(manifold3d.triangulate([Q]), np.int64).reshape(-1, 3)
+    except Exception:
+        return
+    if len(t) != len(loop) - 2:
+        return  # the outline overlaps itself in that plane
+    tris = loop[t]
+    # facing the same way as the loop runs
+    n = np.cross(V[tris[:, 1]] - V[tris[:, 0]], V[tris[:, 2]] - V[tris[:, 0]]).sum(0)
+    ref = np.cross(P - o, np.roll(P, -1, 0) - o).sum(0)
+    yield V, (tris if n @ ref >= 0 else tris[:, ::-1])
+
+
+def fill_holes_cleanly(shell):
+    """Each hole closed on its own (see _hole_fills), keeping only the fills
+    that cut through nothing: a big hole whose edge isn't flat (the
+    open back of a wheel, a car's window) would otherwise be capped by a
+    surface passing through the part behind it. Returns (shell, holes left
+    open because every fill would cut through the part); the shell stays
+    open when any hole is left."""
+    topo = shell.topo
+    if topo.n_nonmanifold_edges:
+        return shell, 0
+    loops = _hole_loops(shell)
+    if not loops:
+        return shell, 0
+    V, F, left = shell.V, shell.F, 0
+    E = np.sort(np.stack([F, np.roll(F, -1, 1)], 2).reshape(-1, 2), 1)
+    edges = set(map(tuple, E.tolist()))
+    # a corner where two holes meet (pinched) can't be followed reliably
+    starts = topo.he_from[np.nonzero(topo.boundary_he)[0]]
+    u, c = np.unique(starts, return_counts=True)
+    pinched = set(u[c > 1].tolist())
+    for loop in loops:
+        loop = loop[::-1]  # boundary half-edges run a->b; the fill runs b->a
+        if len(loop) < 3 or pinched.intersection(loop) or len(set(loop)) != len(loop):
+            continue  # left open, but not because of a cut
+        for V2, tris in _hole_fills(V, loop):
+            # a diagonal between two corners that are already joined elsewhere
+            # would leave an edge shared by three or more triangles
+            e = np.sort(np.stack([tris, np.roll(tris, -1, 1)], 2).reshape(-1, 2), 1)
+            ring = {(min(a, b), max(a, b)) for a, b in zip(loop, np.roll(loop, -1))}
+            inner = [tuple(x) for x in e.tolist() if tuple(x) not in ring]
+            if inner and (len(set(inner)) * 2 != len(inner) or any(x in edges for x in inner)):
+                continue
+            # tested against the triangles near it only (earlier fills included)
+            T = V2[F]
+            flo, fhi = V2[tris].min((0, 1)), V2[tris].max((0, 1))
+            pad = 1e-9 * max(1.0, float(np.abs(V2).max()))
+            near = np.nonzero(((T.min(1) <= fhi + pad) & (T.max(1) >= flo - pad)).all(1))[0]
+            k, pr = self_intersections(V2, np.vstack([F[near], tris]), pairs=True)
+            if not (k and (pr >= len(near)).any()):
+                V, F = V2, np.vstack([F, tris])
+                edges.update(inner)
+                break
+        else:
+            left += 1  # every fill would cut through the part
+    if len(F) == len(shell.F):
+        return shell, left
+    return Shell(V, F), left
 
 
 def overlapping_bodies(bodies, exclude=None):
@@ -492,10 +597,26 @@ def union_parts(parts, diag, report=NULL):
     return organise_bodies(shells, report)
 
 
+def short_name_list(groups, limit=8):
+    """Groups of part names as one line ("A, B; C, D"), the first ``limit``
+    names only and "and N more" after them: a 3MF of 334 touching parts
+    listed them all, and the message didn't fit on the screen."""
+    out, shown = [], 0
+    for g in groups:
+        g = [str(x) for x in g]
+        take = g[:max(0, limit - shown)]
+        if take:
+            out.append(", ".join(take))
+        shown += len(take)
+    rest = sum(len(g) for g in groups) - shown
+    text = "; ".join(out)
+    return f"{text} and {rest} more" if rest > 0 else text
+
+
 def touching_issue(groups, names, choice):
     """The mesh check's report on touching parts (choice: ask/split/merge)."""
     n = sum(len(g) for g in groups)
-    which = "; ".join(", ".join(names[k] for k in g) for g in groups)
+    which = short_name_list([[names[k] for k in g] for g in groups])
     problem = f"{_plural(n, 'part')} touch each other ({which})"
     if choice == "merge":
         return _issue("touching_parts", n, "fixed", problem, "Merged them into one solid.")
@@ -643,10 +764,65 @@ def close_cracks(V, F, diag):
     return V, F, max(0, before - EdgeTopology(V, F).n_boundary_edges) // 2
 
 
+def pair_tangled(V, F, topo):
+    """topo.twin with the edges shared by 4, 6, ... triangles paired too:
+    where two pieces of a part touch along an edge (a rib over a notch cut
+    under it, two blocks meeting at a corner), each triangle is paired with
+    the one next to it round the edge on its inside, so each piece closes
+    on its own and they meet along the line instead of being joined across
+    it. Edges that can't be paired that way (odd counts, triangles on top
+    of each other, a twisted surface) are left unpaired."""
+    twin = topo.twin.copy()
+    hs = np.nonzero(topo.nonmanifold_he)[0]
+    if not len(hs):
+        return twin
+    a, b = topo.he_from[hs], topo.he_to[hs]
+    key = np.minimum(a, b) * len(V) + np.maximum(a, b)
+    order = np.argsort(key, kind="stable")
+    hs, key = hs[order], key[order]
+    starts = np.r_[0, np.nonzero(np.diff(key))[0] + 1, len(key)]
+    for s, e in zip(starts[:-1], starts[1:]):
+        g = hs[s:e]
+        if len(g) % 2:
+            continue
+        lo = min(topo.he_from[g[0]], topo.he_to[g[0]])
+        hi = max(topo.he_from[g[0]], topo.he_to[g[0]])
+        d = V[hi] - V[lo]
+        L = np.linalg.norm(d)
+        if L == 0:
+            continue
+        d = d / L
+        e1 = np.cross(d, np.eye(3)[int(np.argmin(np.abs(d)))])
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(d, e1)
+        f = g // 3
+        third = F[f, (g % 3 + 2) % 3]
+        w = V[third] - V[lo]
+        w -= np.outer(w @ d, d)
+        th = np.arctan2(w @ e2, w @ e1)
+        srt = np.argsort(th)
+        g, th, f = g[srt], th[srt], f[srt]
+        if np.min(np.diff(np.r_[th, th[0] + 2 * np.pi])) < 1e-6:
+            continue  # triangles on top of each other
+        n = np.cross(V[F[f, 1]] - V[F[f, 0]], V[F[f, 2]] - V[F[f, 0]])
+        # the inside is behind each triangle: towards the next one round the
+        # edge (increasing angle) when -n turns that way
+        up = (-n * np.cross(d, w[srt])).sum(1) > 0
+        k = len(g)
+        mate = np.where(up, (np.arange(k) + 1) % k, (np.arange(k) - 1) % k)
+        if not (mate[mate] == np.arange(k)).all():
+            continue
+        if (topo.he_from[g] == topo.he_from[g[mate]]).any():
+            continue  # same direction: a twisted surface
+        twin[g] = g[mate]
+    return twin
+
+
 def split_pinched(V, F, topo):
     """Give every fan of triangles around a pinched vertex its own copy of
-    the vertex, so the surface no longer touches itself at a point."""
-    lab, n = pinched_vertices(F, topo, len(V))
+    the vertex, so the surface no longer touches itself at a point (or
+    along a line, where pieces touch along an edge: see pair_tangled)."""
+    lab, n = pinched_vertices(F, topo, len(V), pair_tangled(V, F, topo))
     if n == 0:
         return V, F, 0
     vert = F.reshape(-1)
@@ -863,18 +1039,29 @@ def _merge_once(bodies, groups, diag, report):
 # ----------------------------------------------------------------------------
 
 
-def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=False):
+def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=False, label=""):
     """Check and fix one part. Returns (bodies, info, issues).
     repair: "off" (only check, plus the basic clean-up every conversion
-    needs), "auto" or "aggressive" (MeshFix for every open shell)."""
+    needs), "auto" or "aggressive" (MeshFix for every open shell).
+    Each step is reported as a stage (with ``label`` after its name), so the
+    app can show what is being checked and fixed."""
     fixing = repair != "off"
+
+    def step(name, a, b):
+        report.step(name + label, a, b)
+
     issues = []
     info = MeshInfo()
     tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
     info.input_triangles = int(len(tris))
+    from . import __version__, build_id
+
+    b = build_id()
+    report.log(f"Engine {__version__}" + (f" (build {b})" if b else ""))
     report.log(f"Read {len(tris):,} triangles")
 
     # 1. broken numbers
+    step("Checking for broken and squashed triangles", 0.0, 0.08)
     finite = np.isfinite(tris).all(axis=(1, 2))
     n_bad = int((~finite).sum())
     if n_bad:
@@ -909,6 +1096,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
 
     # 3. zero-thickness internal walls (closed flat pieces, and pairs of
     # sheets glued face to face)
+    step("Looking for hidden internal walls", 0.08, 0.22)
     n_walls = n_wall_tris = 0
     for _ in range(4):
         topo = EdgeTopology(V, F)
@@ -930,6 +1118,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
 
     # 4. tiny cracks
     if fixing:
+        step("Joining tiny cracks", 0.22, 0.28)
         V, F, n_cracks = close_cracks(V, F, diag)
         if n_cracks:
             issues.append(_issue("cracks", n_cracks, "fixed",
@@ -937,6 +1126,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
                                  "Joined them."))
 
     # 5. flipped triangles
+    step("Checking which way the triangles face", 0.28, 0.34)
     topo = EdgeTopology(V, F)
     F, conflicts, n_flipped = fix_winding(V, F, topo, count_flips=True)
     if n_flipped:
@@ -948,6 +1138,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
                              "its inside and outside can't be told apart", "Left as it is."))
 
     # 6. pinched points
+    step("Checking for pinched points", 0.34, 0.38)
     topo = EdgeTopology(V, F)
     if fixing:
         V, F, n_pinch = split_pinched(V, F, topo)
@@ -966,6 +1157,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
 
     # 7. debris
     if remove_debris and len(shells) > 1:
+        step("Removing loose debris", 0.38, 0.40)
         areas = [face_normals_areas(s.V, s.F)[1].sum() for s in shells]
         amax = max(areas)
         biggest = int(np.argmax(areas))
@@ -986,7 +1178,10 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     n_holes = n_tangled = 0
     big_holes = 0
     holes_left = tangled_left = 0
+    holes_cut = 0  # left open: filling them would cut through the part
     fixed = []
+    if any(not s.closed for s in shells):
+        step("Filling holes and untangling edges" if fixing else "Checking for holes", 0.40, 0.52)
     for s in shells:
         if s.closed:
             fixed.append(s)
@@ -1023,6 +1218,18 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
                 report.warn(f"Full mesh repair failed ({e}); the mesh was converted as it is.")
         if s2.closed and _thin(s2.V, s2.F, diag):
             s2 = s
+        if s2 is not s and crossings_added(s, s2):
+            # a fill cuts through the part (a big hole whose edge isn't flat):
+            # each hole is filled on its own, and the ones that can't be
+            # filled cleanly are left open
+            s3, cut = fill_holes_cleanly(s)
+            if s3.closed and _thin(s3.V, s3.F, diag):
+                s3, cut = s, 0
+            holes_cut += cut
+            report.log(f"Filling {_plural(len(loops), 'hole')} would have cut through the part; "
+                       + ("each was filled on its own instead" if not cut else
+                          f"{_plural(cut, 'hole')} left open"))
+            s2 = s3
         if s2.closed:
             info.repaired += 1
             fixed.extend(split_shells(s2.V, s2.F))
@@ -1043,7 +1250,9 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
         if big_holes:
             msg += f" ({_plural(big_holes, 'big one')})"
         res = "Filled them." if ok else ("Mesh repair is off." if not fixing else
-                                         f"Filled {n_holes - holes_left:,}; {holes_left:,} couldn't be closed.")
+                                         f"Filled {n_holes - holes_left:,}; {holes_left:,} couldn't be closed"
+                                         + (f" ({holes_cut:,} because filling them would cut through the part)"
+                                            if holes_cut else "") + ".")
         if ok and big_holes:
             res = "Filled them. Big holes are filled with a simple surface, so check that the shape looks right."
         issues.append(_issue("holes", n_holes, "fixed" if ok else "not_fixed", msg, res))
@@ -1052,19 +1261,27 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     n_cross = 0
     many = False  # too many crossings in a shell to repair them
     crossing = {}  # id(shell) -> crossings left in it
+    cross_open = 0  # of them in open surfaces (not repaired)
     out = []
+    step("Looking for surfaces that pass through themselves", 0.52, 0.70)
     for s in shells:
-        if not s.closed:
-            out.append(s)
-            continue
         k, _ = self_intersections(s.V, s.F)
         s.crossings = k
         if not k:
             out.append(s)
             continue
         n_cross += k
+        if not s.closed:
+            # an open surface that crosses itself is reported, not fixed
+            # (the fixer needs a closed surface)
+            cross_open += k
+            crossing[id(s)] = k
+            out.append(s)
+            continue
         if too_many_crossings(k, s.n_faces):
             many = True
+        if fixing and not too_many_crossings(k, s.n_faces):
+            step("Fixing surfaces that pass through themselves", 0.70, 0.84)
         s2 = fix_self_intersections(s, report) if fixing and not too_many_crossings(k, s.n_faces) else None
         if s2 is not None:
             parts = split_shells(s2.V, s2.F)
@@ -1093,10 +1310,13 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
     def broken(body):
         return any(id(sh) in crossing for sh in body)
 
+    if len(bodies) > 1:
+        step("Checking for overlapping pieces", 0.84, 0.92)
     groups = overlapping_bodies(bodies)
     if groups:
         n = sum(len(g) for g in groups)
         if merge:
+            step("Merging overlapping pieces", 0.92, 1.0)
             clean = overlapping_bodies(bodies, exclude=broken)
             bodies, _, _ = merge_overlaps(bodies, clean, diag, report, exclude=broken)
             # what still overlaps after merging
@@ -1124,9 +1344,12 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
         else:
             if not fixing:
                 why = "Mesh repair is off."
+            elif cross_open == cross_left:
+                why = ("They are in pieces that aren't closed, which can't be repaired automatically. The "
+                       "conversion works around them, but check the result.")
             elif many:
-                why = ("Too many to repair automatically without risking the shape. Scans often have tiny folds "
-                       "like these; the conversion smooths over them, but check the result.")
+                why = ("Too many to repair automatically without risking the shape. The conversion works around "
+                       "them, but check the result.")
             else:
                 why = ("They couldn't be removed without changing the shape. The conversion usually copes with a "
                        "few; if the result looks wrong, fix them in a mesh editor.")
@@ -1175,7 +1398,8 @@ def verify_bodies(bodies, diag, merge=False):
                 problems.append("duplicate triangles are left")
             if topo.n_nonmanifold_edges:
                 problems.append("tangled edges are left")
-            if topo.same_dir.any():
+            # (on an open surface they're twisted spots, reported as such)
+            if topo.same_dir.any() and s.closed:
                 problems.append("some triangles still face the wrong way")
             _, k = pinched_vertices(s.F, topo, len(s.V))
             if k:
@@ -1187,7 +1411,7 @@ def verify_bodies(bodies, diag, merge=False):
             problems.append("a part is still inside out")
     # counted again unless the check already counted this very shell
     per_shell = {id(s): s.crossings if s.crossings is not None else self_intersections(s.V, s.F)[0]
-                 for b in bodies for s in b if s.closed}
+                 for b in bodies for s in b}
     crossings = sum(per_shell.values())
     if crossings:
         problems.append(f"the surface still passes through itself in {_plural(crossings, 'place')}")

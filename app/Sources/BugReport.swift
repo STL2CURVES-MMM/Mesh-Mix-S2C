@@ -188,12 +188,24 @@ enum BugReport {
         if let r = job.result {
             add("  Preset used: \(r.presetTitle); faces \(grouped(r.faces)); solids \(r.solids); shells \(r.shells); "
                 + "STEP \(size(r.fileSize)); \(String(format: "%.1f", r.seconds)) s")
+            if let f = r.fidelity {
+                add("  Compared with the mesh: \(f.summary(unit: job.resultUnit(s)))"
+                    + (f.ok ? "" : " (doesn't follow it closely everywhere)"))
+            }
             if r.checked {
                 let repaired = r.repaired.isEmpty ? "" : " (repaired automatically: " + r.repaired.joined(separator: ", ") + ")"
                 add("  STEP file read back and checked" + repaired)
             }
             for c in r.checks {
                 add("  - \(c.level): \(c.message)")
+            }
+            if let a = r.alternative?.result {
+                add("  Second (valid) version offered: valid \(a.valid.map { String($0) } ?? "nil"); faces \(grouped(a.faces))"
+                    + (a.fidelity.map { "; compared with the mesh: \($0.summary(unit: job.resultUnit(s)))" } ?? "")
+                    + (r.useAlternative ? "; the user picked it" : "; the user kept the closest one"))
+                for c in a.checks {
+                    add("    - \(c.level): \(c.message)")
+                }
             }
         }
         if let e = job.error {

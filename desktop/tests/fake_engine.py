@@ -74,6 +74,28 @@ def mesh_check(name, merge, touching="ask"):
     return {"status": status, "issues": issues, "verified": {"ready": ready, "problems": problems}}
 
 
+def _log_line(path, line):
+    """Append one line to the shared log. Two engines started together
+    (Convert all) append at once, and on Windows one line could overwrite
+    the other: a lock file lets one write at a time."""
+    lock = path + ".lock"
+    for _ in range(500):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            time.sleep(0.01)
+    else:
+        fd = None  # (a lock left behind: write anyway)
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    finally:
+        if fd is not None:
+            os.close(fd)
+            os.remove(lock)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd")
@@ -103,8 +125,7 @@ def main():
     args, rest = ap.parse_known_args()
     name = os.path.basename(args.input).lower()
     if os.environ.get("FAKE_ENGINE_LOG"):
-        with open(os.environ["FAKE_ENGINE_LOG"], "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(sys.argv[1:]) + "\n")
+        _log_line(os.environ["FAKE_ENGINE_LOG"], json.dumps(sys.argv[1:]))
     if not os.path.exists(args.input):
         emit({"event": "error", "message": "FileNotFoundError: The file couldn't be found."})
         return 1
@@ -124,6 +145,12 @@ def main():
         if "broken" in name:
             emit({"event": "error", "message": "MeshError: This file isn't a mesh the app can read."})
             return 1
+        emit({"event": "stage", "stage": "Reading the file", "progress": 0.0})
+        emit({"event": "stage", "stage": "Looking for hidden internal walls", "progress": 0.3})
+        if "slowread" in name:
+            for k in range(100):
+                time.sleep(0.05)
+                emit({"event": "progress", "stage": "Looking for hidden internal walls", "progress": 0.3 + k / 200})
         preview(args.preview)
         ev = {"event": "result", "triangles": 2_060_000 if "dense" in name else 1234, "bodies": 2 if parts else 1,
               "open_shells": 0,
@@ -156,9 +183,30 @@ def main():
     emit({"event": "warning", "message": "A small warning."})
     checks = [{"code": "gaps", "level": "warning", "message": "There is 1 open edge."}] if "issues" in name else []
     base = {"preset": "cad", "valid": True, "solids": 1, "shells": 1, "faces": 69, "seconds": 1.5,
-            "volume": 100.0, "mesh_volume": 100.0, "tolerance": 0.05, "checked": True, "checks": checks}
+            "volume": 100.0, "mesh_volume": 100.0, "tolerance": 0.05, "checked": True, "checks": checks,
+            "fidelity": {"ok": "rough" not in name, "tolerance": 0.05, "within": 0.99, "within2": 0.998,
+                         "p99": 0.04 if "rough" not in name else 0.4, "max": 0.12 if "rough" not in name else 1.3,
+                         "wrong_way": 0.001}}
     if "repaired" in name:
         base["repaired"] = ["read back and saved again"]
+
+    def alternative(out, pv):
+        """No method followed the mesh: a valid second version to choose from."""
+        if "twoways" not in name:
+            return {}
+        alt = os.path.splitext(out)[0] + ".valid.step"
+        with open(alt, "w", encoding="utf-8") as fh:
+            fh.write("ISO-10303-21; valid version\n")
+        alt_pv = os.path.splitext(pv)[0] + ".valid.mmmp" if pv else None
+        preview(alt_pv, 50)
+        return {"alternative": {"output": alt, "preview": alt_pv, "valid": True, "checked": True, "checks": [],
+                                "solids": 1, "shells": 1, "faces": 420, "file_size": os.path.getsize(alt),
+                                "fidelity": {"ok": False, "tolerance": 0.05, "within": 0.85, "within2": 0.9,
+                                             "p99": 0.6, "max": 1.5, "wrong_way": 0.002}}}
+
+    if "twoways" in name:
+        base["valid"] = False
+        base["checks"] = [{"code": "bad_faces", "level": "error", "message": "2 faces have errors."}]
     if args.split:
         for k, out in enumerate(args.part_output):
             with open(out, "w", encoding="utf-8") as fh:
@@ -166,12 +214,13 @@ def main():
             pv = args.part_preview[k] if k < len(args.part_preview) else None
             preview(pv, k * 20)
             emit({"event": "part", "part": k, "name": ["Left", "Right"][k % 2], "output": out, "preview": pv,
-                  "file_size": os.path.getsize(out), **base})
+                  "file_size": os.path.getsize(out), **base, **(alternative(out, pv) if k == 1 else {})})
     else:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write("ISO-10303-21; fake\n")
     preview(args.preview)
     emit({"event": "result", "output": args.output, "file_size": os.path.getsize(args.output), **base,
+          **({} if args.split else alternative(args.output, args.preview)),
           "mesh_check": mesh_check(name, args.merge_overlaps, getattr(args, "touching_parts", "ask"))})
     return 0
 
