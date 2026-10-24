@@ -2823,7 +2823,7 @@ def _inaccurate_regions(seg, labels, asm, tol, share=0.05, count=3, far_count=No
         return set()
     rng = np.random.default_rng(0)
     V, F = seg.V, seg.F
-    SV, SF, owner = tessellate_faces([f for _, f in items], tol * 0.25, loose=4 * tol)
+    SV, SF, owner = tessellate_faces([f for _, f in items], tol * 0.25)
     if len(SF) == 0:
         return set()
     own_region = np.array([r for r, _ in items], dtype=np.int64)[owner]

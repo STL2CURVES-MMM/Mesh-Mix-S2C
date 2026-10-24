@@ -181,7 +181,7 @@ def test_an_edge_far_off_its_face_keeps_a_matching_tolerance():
     d = c.DN(c.FirstParameter(), 1)
     lifted = Geom_Line(gp_Pnt(p0.X(), p0.Y(), 0.3), gp_Dir(d))
     BRep_Builder().UpdateEdge(edges[0], lifted, 1e-7)
-    fidelity._loosen_far_edges(face, 0.1)
+    assert fidelity._loosen_far_edges(face, 0.1) == {0}
     assert abs(BRep_Tool.Tolerance_s(edges[0]) - 0.33) < 0.01
     assert all(BRep_Tool.Tolerance_s(e) <= 1e-6 for e in edges[1:])
 

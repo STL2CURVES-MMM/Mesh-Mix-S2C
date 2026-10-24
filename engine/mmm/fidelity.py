@@ -93,7 +93,10 @@ def _loosen_far_edges(shape, limit, n=24):
     get that distance back as their tolerance. Left at 1e-7, an edge 0.27 mm
     off a fitted strip on a wheel rim kept OpenCASCADE's mesher refining for
     minutes without end (the conversion hung); the other edges keep the
-    smallest tolerance, so correct faces are still meshed finely."""
+    smallest tolerance, so correct faces are still meshed finely. Returns
+    the places (in the shape's face order) of the faces such edges bound:
+    their triangles may stand off the surface by as much, and tessellate
+    puts them back on it."""
     from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d
     from OCP.BRepLib import BRepLib
@@ -102,7 +105,7 @@ def _loosen_far_edges(shape, limit, n=24):
     from OCP.TopoDS import TopoDS
 
     B = BRep_Builder()
-    raised = False
+    loose_edges = []
     faces = TopExp_Explorer(shape, TopAbs_FACE)
     while faces.More():
         face = TopoDS.Face(faces.Current())
@@ -123,10 +126,43 @@ def _loosen_far_edges(shape, limit, n=24):
                 continue
             if gap > limit and gap > BRep_Tool.Tolerance_s(edge):
                 B.UpdateEdge(edge, 1.1 * gap)
-                raised = True
-    if raised:
+                loose_edges.append(edge)
+    if loose_edges:
         # (their vertices must be at least as loose as the edges)
         BRepLib.UpdateTolerances_s(shape)
+    # the faces such an edge bounds, by their place in the shape
+    touched = set()
+    if loose_edges:
+        faces = TopExp_Explorer(shape, TopAbs_FACE)
+        k = 0
+        while faces.More():
+            edges = TopExp_Explorer(faces.Current(), TopAbs_EDGE)
+            while edges.More():
+                if any(edges.Current().IsSame(e) for e in loose_edges):
+                    touched.add(k)
+                    break
+                edges.Next()
+            k += 1
+            faces.Next()
+    return touched
+
+
+def _onto_surface(face, P):
+    """Points moved onto the face's surface (to its nearest point)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.gp import gp_Pnt
+
+    surf = BRep_Tool.Surface_s(face)
+    sas = ShapeAnalysis_Surface(surf)
+    out = np.array(P, dtype=float)
+    for i, p in enumerate(P):
+        try:
+            uv = sas.ValueOfUV(gp_Pnt(*p), 1e-7)
+            out[i] = surf.Value(uv.X(), uv.Y()).Coord()
+        except Exception:
+            pass
+    return out
 
 
 def tessellate(shape, deflection, angle=0.25, loose=None):
@@ -168,9 +204,14 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
             B.Add(comp, f)
     copy = _round_trip(comp)
     ShapeFix_ShapeTolerance().SetTolerance(copy, 1e-7)
-    # (edges further off than ``loose``, 4 tolerances where the callers
-    # know the tolerance, keep their real distance as tolerance)
-    _loosen_far_edges(copy, 32 * deflection if loose is None else loose)
+    # (edges further off than ``loose`` keep their real distance as
+    # tolerance; None leaves every edge at 1e-7, as the build loop needs:
+    # loosened there, a worm gear's correct faces looked off the mesh and
+    # were rebuilt as patches, 141 -> 273 faces)
+    touched = _loosen_far_edges(copy, loose) if loose is not None else set()
+    # (the copy holds the faces that aren't blown up, in order)
+    kept = [fi for fi, b in enumerate(blown) if not b]
+    touched_orig = {kept[k] for k in touched if k < len(kept)}
     BRepMesh_IncrementalMesh(copy, deflection, False, angle, True)
     copied = TopExp_Explorer(copy, TopAbs_FACE)
     retry = []
@@ -203,6 +244,11 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
             for i in range(1, n + 1):
                 p = tri.Node(i).Transformed(trsf)
                 P[i - 1] = (p.X(), p.Y(), p.Z())
+            if fi in touched_orig:
+                # (meshed at a loose edge's tolerance: back onto the surface,
+                # or a worm gear's correct faces looked off the mesh and were
+                # rebuilt as patches, 141 -> 273 faces)
+                P = _onto_surface(face, P)
             m = tri.NbTriangles()
             T = np.empty((m, 3), dtype=np.int64)
             for i in range(1, m + 1):
