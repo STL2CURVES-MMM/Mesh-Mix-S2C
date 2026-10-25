@@ -1,4 +1,15 @@
-# Manifold Mesh Mix
+<img src="app/Resources/AppIcon-1024.png" alt="Mesh Mix-S2C logo" width="128" align="right">
+
+# Mesh Mix-S2C (formerly Manifold Mesh Mix)
+
+> **Manifold Mesh Mix is merging with [stl2curves](https://github.com/Duvdivan/stl2curves) and is now called Mesh Mix-S2C.**
+> The two projects were built separately and turned out to be good at different things. Manifold Mesh Mix has the desktop apps, the mesh check and repair, smooth surfaces for organic shapes and scans, and the check of every result against the mesh. stl2curves, by Duvdivan, has very precise detection of holes, fillets and screw threads, and spots parts that were scaled or drawn in inches so it can snap them back to round sizes. Together they make one converter that is better than either one alone.
+>
+> The project now lives in a shared GitHub organization run by both authors, Tuna-The-First and Duvdivan, and stays free and open source (AGPL-3.0).
+>
+> - **Right now:** the latest release is still **1.6.0**, the Manifold Mesh Mix engine described below.
+> - **Coming next: 2.0.0**, the first release with the merged engine. Early tests on more than 170 files are very promising, and it's still being tested and tuned.
+> - **Already have the app?** You don't need to do anything. The ⬇ update button finds 2.0.0 automatically when it's released, because GitHub forwards the old address to this one.
 
 An app for **macOS, Windows and Linux** that turns 3D-printing meshes (**STL, 3MF, OBJ, PLY**) into **editable STEP files** you can open in Fusion, SolidWorks, FreeCAD or Onshape. The STEP files are made of real CAD surfaces: flat faces, holes and cylinders, cones, spheres, fillets, gear teeth and smooth freeform surfaces. You can select, measure and edit them like a part you modelled yourself.
 
@@ -40,7 +51,7 @@ It's made for real-world files, including messy ones: CAD exports, coarse OpenSC
 
 ## Download
 
-Get the newest version from the [Releases page](https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix/releases/latest):
+Get the newest version from the [Releases page](https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C/releases/latest):
 
 | System | File | Notes |
 |---|---|---|
@@ -88,7 +99,7 @@ Every file is checked when you add it, and again right before it's converted. Th
 
 ### When something goes wrong
 
-If a conversion fails, the app says what went wrong and **why**, in plain words (for example that the file itself is the problem, or that the computer ran out of memory). **Save Report…** writes a small text file to send with a bug report ([open an issue](https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix/issues) and attach it). It has the app and system versions, your settings, the mesh check, the error and its technical details, and the log. It doesn't have the mesh itself, and the file's folder and your user name are removed from it.
+If a conversion fails, the app says what went wrong and **why**, in plain words (for example that the file itself is the problem, or that the computer ran out of memory). **Save Report…** writes a small text file to send with a bug report ([open an issue](https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C/issues) and attach it). It has the app and system versions, your settings, the mesh check, the error and its technical details, and the log. It doesn't have the mesh itself, and the file's folder and your user name are removed from it.
 
 ### Presets
 
@@ -117,6 +128,14 @@ Higher quality tightens the fitting tolerance and adds surface detail, but takes
 **Best quality keeps fine detail.** In the *Best quality* part of the slider (85% and up), organic shapes get more surfaces the denser the mesh is, so sculpted texture like cracks, scales and tool marks survives. At the far right the surfaces stay within a few hundredths of a millimeter of a typical sculpt. Dense meshes then make much bigger STEP files and take a lot longer: a 2-million-triangle bust took about 20 minutes and made a 130 MB file, instead of about 8 minutes and 25 MB. When that's about to happen, a warning under the slider gives the expected file size. It needs a few GB of memory. A **Smooth surface limit** (Advanced) turns it off.
 
 ## Building from source
+
+**Getting the code:** download only the latest version, not the whole history:
+
+```
+git clone --depth 1 https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C
+```
+
+The current files are under 4 MB. The full history is about 120 MB, because it still contains large test files that were removed later, so a plain `git clone` downloads far more than you need. If you only want to use the app, download it from the [Releases page](https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C/releases/latest) instead; no cloning needed.
 
 All three versions share the conversion engine in `engine/`. The version number lives in `VERSION`.
 
