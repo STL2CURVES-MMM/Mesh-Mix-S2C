@@ -37,11 +37,17 @@ TRANSIENT = ("shared_as",)      # (a handle on a worker processes' copy: not to 
 
 def _source(item):
     package = __name__.rsplit(".", 1)[0]
-    if isinstance(item, tuple):
-        module = sys.modules.get(f"{package}.{item[0]}") or __import__(f"{package}.{item[0]}", fromlist=["_"])
-        return inspect.getsource(getattr(module, item[1]))
-    module = sys.modules.get(f"{package}.{item}") or __import__(f"{package}.{item}", fromlist=["_"])
-    return Path(module.__file__).read_text(encoding="utf-8")
+    try:
+        if isinstance(item, tuple):
+            module = sys.modules.get(f"{package}.{item[0]}") or __import__(f"{package}.{item[0]}", fromlist=["_"])
+            return inspect.getsource(getattr(module, item[1]))
+        module = sys.modules.get(f"{package}.{item}") or __import__(f"{package}.{item}", fromlist=["_"])
+        return Path(module.__file__).read_text(encoding="utf-8")
+    except (OSError, TypeError):
+        # (a built app has no source files; its code can't change between two of its
+        # runs, so the program itself stands for the code: the merged engine and our own
+        # run alongside it, which takes its stages up again, are the same program)
+        return f"{item} {sys.executable} {os.path.getmtime(sys.executable)}"
 
 
 class Cache:
