@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stl2curves studio</title>
+<style>
+  :root { --bg:#1e1e1e; --panel:#252526; --box:#2d2d30; --line:#3c3c3f; --text:#ddd; --dim:#999;
+          --accent:#f0a020; --bad:#e05050; --good:#5bbf6a; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+               font: 13px/1.4 system-ui, "Segoe UI", sans-serif; }
+  #app { display:flex; height:100%; }
+  #side { width:330px; min-width:330px; background:var(--panel); border-right:1px solid var(--line);
+          overflow-y:auto; padding:12px; }
+  #view { flex:1; position:relative; }
+  #view canvas { display:block; }
+  h1 { font-size:14px; margin:0 0 10px; letter-spacing:.04em; }
+  h1 span { color:var(--accent); }
+  .box { background:var(--box); border:1px solid var(--line); border-radius:4px; padding:8px 10px; margin-bottom:8px; }
+  .box h2 { font-size:12px; margin:0 0 6px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); }
+  label.row { display:flex; align-items:center; justify-content:space-between; margin:4px 0; gap:8px; }
+  label.row code { color:var(--dim); font-size:11px; }
+  input[type=number] { width:80px; background:#1b1b1c; color:var(--text); border:1px solid var(--line); border-radius:3px; padding:2px 4px; }
+  button { background:#3a3a3d; color:var(--text); border:1px solid #4a4a4e; border-radius:3px; padding:4px 10px;
+           cursor:pointer; font:inherit; }
+  button:hover:not(:disabled) { background:#46464a; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.on { background:var(--accent); color:#111; border-color:var(--accent); }
+  button.go { background:#4a3a10; border-color:var(--accent); }
+  .buttons { display:flex; gap:6px; flex-wrap:wrap; }
+  #status { white-space:pre-wrap; font: 12px/1.45 ui-monospace, Consolas, monospace; color:var(--dim); min-height:3em; }
+  #status .err { color:var(--bad); }
+  .legend { display:grid; grid-template-columns: 14px 1fr; gap:3px 6px; font-size:12px; }
+  .sw { width:14px; height:14px; border-radius:2px; display:inline-block; }
+  #groups .g { display:flex; align-items:center; gap:6px; padding:2px 4px; border-radius:3px; cursor:pointer; }
+  #groups .g.cur { outline:1px solid var(--accent); }
+  #groups .g .n { color:var(--dim); margin-left:auto; }
+  #groups .g .o { color:var(--dim); font-size:11px; }
+  #groups .g button { padding:0 6px; }
+  #toolbar { position:absolute; top:10px; left:10px; right:10px; display:flex; gap:6px; flex-wrap:wrap; pointer-events:none; }
+  #toolbar > * { pointer-events:auto; }
+  #toolbar .sep { width:12px; }
+  #tip { position:absolute; pointer-events:none; background:rgba(20,20,20,.92); border:1px solid var(--line);
+         border-radius:3px; padding:4px 8px; font-size:12px; display:none; max-width:420px; }
+  #help { position:absolute; bottom:10px; left:10px; color:var(--dim); font-size:12px; }
+  #busy { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+          background:rgba(0,0,0,.35); font-size:15px; }
+  .file { display:flex; gap:6px; align-items:center; }
+  .file span { color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <h1><span>stl2curves</span> studio</h1>
+    <div class="box">
+      <div class="file"><button id="open">Open STL…</button><span id="name">no mesh</span></div>
+      <input id="file" type="file" accept=".stl" hidden>
+    </div>
+    <div class="box">
+      <h2>Parameters</h2>
+      <label class="row">Sewing tolerance (mm) <code>--tol</code><input id="tol" type="number" step="0.005" min="0.001" value="0.01"></label>
+      <label class="row">Rebuild at design size <code>--true-size</code><input id="truesize" type="checkbox"></label>
+      <label class="row">Simplify (mm) <code>--simplify</code>
+        <span><input id="simpauto" type="checkbox" checked> auto <input id="simp" type="number" step="0.001" value="0.005" disabled></span></label>
+      <label class="row">Time limit (s) <code>--time-limit</code><input id="limit" type="number" step="30" value="300"></label>
+      <label class="row" title="How far smooth surfaces and fillets on rough meshes may stray from the mesh: more rebuilds more of the part as curves, less keeps it closer to the mesh">Accuracy (mm) <code>--accuracy</code><input id="accuracy" type="number" step="0.01" min="0.001" value="0.1"></label>
+    </div>
+    <div class="box">
+      <div class="buttons">
+        <button id="analyze" class="go" disabled>1. Analyze</button>
+        <button id="convert" class="go" disabled>2. Convert</button>
+        <button id="download" disabled>Save STEP</button>
+      </div>
+    </div>
+    <div class="box">
+      <h2>Merge groups</h2>
+      <div style="color:var(--dim);font-size:12px;margin-bottom:6px">After Convert, areas left as triangles show
+        <span style="color:#ff3b30">red</span>. Paint one that should be a single face (a missed fillet, a hole),
+        one group per face, and Convert again: each group is fitted with one cylinder, cone or sphere if it lies
+        on one, else a smooth surface.</div>
+      <div id="groups"></div>
+      <div class="buttons" style="margin-top:6px">
+        <button id="newgroup">+ New group</button>
+        <button id="cleargroups">Clear all</button>
+      </div>
+    </div>
+    <div class="box"><h2>Status</h2><div id="status">Open an STL file to begin.</div></div>
+    <div class="box"><h2>Colours</h2><div class="legend" id="legend"></div></div>
+  </div>
+  <div id="view">
+    <div id="toolbar">
+      <button id="vAnalysis" class="on">Analysis</button>
+      <button id="vResult" disabled>Result</button>
+      <span class="sep"></span>
+      <button id="tOrbit" class="on" title="Drag to turn the view">Orbit</button>
+      <button id="tBrush" title="Drag to paint the current group (Shift: erase)">Brush</button>
+      <button id="tFeature" title="Click a detected feature to add it whole (Shift: remove)">Pick feature</button>
+      <label style="display:flex;align-items:center;gap:4px;background:#2d2d30;padding:0 6px;border-radius:3px">
+        brush <input id="radius" type="range" min="0.2" max="10" step="0.1" value="1.5"> <span id="radiusv">1.5</span> mm</label>
+      <span class="sep"></span>
+      <button id="tEdges" class="on" title="Outlines between features (and the result's edges)">Outlines</button>
+      <button id="tTris" title="Every mesh triangle">Triangles</button>
+      <button id="tFit">Fit view</button>
+    </div>
+    <div id="tip"></div>
+    <div id="help">Left drag: turn · right drag: pan · wheel: zoom · in Brush/Pick mode, right drag turns the view</div>
+    <div id="busy">working…</div>
+  </div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const KIND = {
+  cylinder: ['#4d8ce6', 'cylinder (hole, pin, rounded edge)'], cone: ['#f29933', 'cone (chamfer, countersink)'],
+  torus: ['#59bf66', 'torus (rounded edge round a curve)'], sphere: ['#a666d9', 'sphere (rounded corner, dome)'],
+  pipe: ['#3fb3b3', 'swept rounded edge'], freeform: ['#a8774f', 'freeform surface'],
+  blend: ['#d24f86', 'smooth blend'], thread: ['#e3cf3c', 'screw thread'], extrusion: ['#8a8af0', 'extruded profile'],
+  none: ['#c8c8cc', 'flat face, or left as triangles'],
+  left: ['#ff3b30', 'left as triangles by the last Convert: paint it to rescue it'],
+};
+const GROUP = ['#20e0ff', '#ff5ae0', '#7dff4a', '#ffffff', '#ff8a30', '#b0a0ff', '#30ffa0', '#ff9d9d'];
+const $ = id => document.getElementById(id);
+// (faces pushed back a little, so the lines drawn on them show)
+const OFFSET = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
+
+// ---------------------------------------------------------------- scene
+const view = $('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#202022');
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100000);
+camera.up.set(0, 0, 1);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a96, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+scene.add(sun);
+const analysisGroup = new THREE.Group(), resultGroup = new THREE.Group();
+scene.add(analysisGroup, resultGroup);
+resultGroup.visible = false;
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize); resize();
+(function loop() {
+  requestAnimationFrame(loop); controls.update();
+  sun.position.copy(camera.position); renderer.render(scene, camera);
+})();
+
+function fit(obj) {
+  const box = new THREE.Box3().setFromObject(obj);
+  if (box.isEmpty()) return;
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(1, -1.4, 0.9).normalize().multiplyScalar(r * 2.6));
+  camera.near = r / 200; camera.far = r * 50; camera.updateProjectionMatrix();
+}
+
+// ---------------------------------------------------------------- state
+let bodies = [];            // {mesh, owner, features, cent, base, paint}
+let groups = [];            // {name, color}
+let current = -1, tool = 'orbit', edgesOn = true, trianglesOn = false, haveResult = false;
+
+const legend = $('legend');
+for (const [k, [c, text]] of Object.entries(KIND))
+  legend.insertAdjacentHTML('beforeend', `<span class="sw" style="background:${c}"></span><span>${text}</span>`);
+
+function status(text, err) { $('status').innerHTML = err ? `<span class="err">${text}</span>` : text; }
+// While busy, the step the conversion is on and how long it has been at it (a long
+// analysis otherwise looks hung).
+let busyTimer = null;
+function busy(on, text) {
+  $('busy').style.display = on ? 'flex' : 'none';
+  $('busy').textContent = text || 'working…';
+  clearInterval(busyTimer); busyTimer = null;
+  if (!on || location.protocol === 'file:') return;
+  const start = Date.now(), head = text || 'working…';
+  const clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  busyTimer = setInterval(async () => {
+    try {
+      const j = await (await fetch('/api/progress')).json();
+      if (!busyTimer) return;
+      const total = (Date.now() - start) / 1000;
+      $('busy').innerHTML = `<div style="text-align:center;line-height:1.6">${head} ${clock(total)}` +
+        (j.step ? `<br><span style="opacity:.75">${j.step} (${clock(j.seconds)})</span>` : '') + '</div>';
+    } catch (e) { /* the next tick will tell */ }
+  }, 1000);
+}
+function decode(b64, Type) {
+  const s = atob(b64), u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+  return new Type(u.buffer);
+}
+async function api(path, body) {
+  const r = await fetch(path, { method: 'POST', body: body instanceof Blob ? body : JSON.stringify(body || {}) });
+  let j;
+  try { j = await r.json(); } catch (e) { throw new Error(`${path}: ${r.status} ${r.statusText}`); }
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function params() {
+  return { tol: +$('tol').value, true_size: $('truesize').checked,
+           simplify: $('simpauto').checked ? 'auto' : +$('simp').value, time_limit: +$('limit').value,
+           accuracy: +$('accuracy').value };
+}
+$('simpauto').onchange = () => { $('simp').disabled = $('simpauto').checked; };
+
+// ---------------------------------------------------------------- open / analyze / convert
+$('open').onclick = () => $('file').click();
+$('file').onchange = async () => {
+  const f = $('file').files[0]; if (!f) return;
+  busy(true, 'uploading…');
+  try {
+    const j = await api('/api/upload?name=' + encodeURIComponent(f.name), f);
+    opened(j.name);
+  } catch (e) { status(e.message, true); }
+  busy(false);
+};
+function opened(name) {
+  $('name').textContent = name; $('analyze').disabled = false; $('convert').disabled = true;
+  $('download').disabled = true; $('vResult').disabled = true;
+  clearScene(analysisGroup); clearScene(resultGroup); bodies = []; groups = []; current = -1; renderGroups();
+  status(`${name} ready: press Analyze.`);
+}
+function clearScene(g) { while (g.children.length) { const o = g.children.pop(); o.geometry?.dispose(); o.material?.dispose(); } }
+
+$('analyze').onclick = async () => {
+  busy(true, 'analyzing… (the first time takes a while; later runs reuse it)');
+  const t = performance.now();
+  try {
+    const j = await api('/api/analyze', params());
+    clearScene(analysisGroup); bodies = [];
+    for (const b of j.bodies) bodies.push(makeBody(b));
+    fit(analysisGroup); show('analysis');
+    const counts = {};
+    for (const b of bodies) for (const f of b.features) counts[f.label] = (counts[f.label] || 0) + 1;
+    status(`${j.triangles.toLocaleString()} triangles, ${bodies.length} bod${bodies.length > 1 ? 'ies' : 'y'}` +
+           (j.repairs.length ? `\nmended: ${j.repairs.join('; ')}` : '') +
+           (j.mesh_left && j.mesh_left.length ? `\nnot mended: ${j.mesh_left.join('; ')}` : '') +
+           `\nfound: ${Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(', ') || 'nothing curved'}` +
+           `\n${j.cached.length ? 'reused saved stages: ' + j.cached.join(', ') : 'analysis ' + j.seconds + ' s'}` +
+           `\n(${((performance.now() - t) / 1000).toFixed(1)} s)`);
+    $('convert').disabled = false;
+    if (!groups.length) newGroup();
+    if (location.hash === '#demo') demo();
+  } catch (e) { status(e.message, true); }
+  busy(false);
+};
+
+$('convert').onclick = async () => {
+  const req = params(); req.groups = [];
+  groups.forEach((g, gi) => bodies.forEach((b, bi) => {
+    const tris = [];
+    for (let t = 0; t < b.paint.length; t++) if (b.paint[t] === gi) tris.push(t);
+    if (tris.length) req.groups.push({ body: bi, tris, name: g.name });
+  }));
+  busy(true, 'converting…');
+  try {
+    const j = await api('/api/convert', req);
+    showResult(j);
+    let nleft = 0;
+    j.left.forEach((b64, bi) => { const n = markLeft(bodies[bi], decode(b64, Uint8Array)); nleft += n; });
+    let text = `${j.faces.toLocaleString()} faces, volume ${j.volume.toLocaleString()} mm³, ` +
+               `${j.valid ? 'valid solid' : 'NOT a valid solid'}` +
+               (j.file_ok === false ? ', STEP does not read back exactly' : '') +
+               `\n${j.left_faceted} feature(s) left faceted · STEP ${j.step_kb} KB · ${j.seconds} s`;
+    for (const g of j.groups) text += `\n${g.group}: ${g.label} (${g.detail}): ${g.outcome}`;
+    for (const g of groups) g.outcome = (j.groups.find(r => r.group === g.name) || {}).outcome || '';
+    renderGroups();
+    if (nleft) text += `\n${nleft.toLocaleString()} triangles came out as faces of their own: red here, and ` +
+                       'in Analysis, where you paint (Brush or Pick feature takes you there)';
+    status(text, !j.valid);
+    $('download').disabled = false;
+    if (location.hash === '#demo' && demoRound === 1) setTimeout(demo, 50);
+  } catch (e) { status(e.message, true); }
+  busy(false);
+};
+$('download').onclick = () => { window.location = '/api/step'; };
+
+// ---------------------------------------------------------------- analysis view
+function makeBody(b) {
+  const pos = decode(b.positions, Float32Array), owner = decode(b.owner, Int32Array);
+  const n = owner.length, base = new Float32Array(n * 9), cent = new Float32Array(n * 3);
+  const col = new THREE.Color();
+  for (let t = 0; t < n; t++) {
+    const k = owner[t], kind = k >= 0 ? b.features[k].kind : 'none';
+    col.set((KIND[kind] || KIND.freeform)[0]);
+    for (let v = 0; v < 3; v++) base.set([col.r, col.g, col.b], t * 9 + v * 3);
+    for (let a = 0; a < 3; a++) cent[t * 3 + a] = (pos[t * 9 + a] + pos[t * 9 + 3 + a] + pos[t * 9 + 6 + a]) / 3;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(base.slice(), 3));
+  geom.computeVertexNormals();
+  const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true,
+                                                                      roughness: .75, metalness: .05, side: THREE.DoubleSide, ...OFFSET }));
+  analysisGroup.add(mesh);
+  const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geom),
+                                      new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: .15 }));
+  wire.visible = trianglesOn; wire.userData.triangles = true; analysisGroup.add(wire);
+  const og = new THREE.BufferGeometry();
+  og.setAttribute('position', new THREE.BufferAttribute(decode(b.outline, Float32Array), 3));
+  const outline = new THREE.LineSegments(og, new THREE.LineBasicMaterial({ color: 0x000000 }));
+  outline.visible = edgesOn; analysisGroup.add(outline);
+  const body = { mesh, wire, owner, features: b.features, cent, base, paint: new Int16Array(n).fill(-1) };
+  mesh.userData.body = body;
+  return body;
+}
+function markLeft(body, left) {
+  const col = new THREE.Color(KIND.left[0]), all = [];
+  let n = 0;
+  for (let t = 0; t < left.length; t++) {
+    const k = body.owner[t], kind = k >= 0 ? body.features[k].kind : 'none';
+    const c = left[t] ? col : new THREE.Color((KIND[kind] || KIND.freeform)[0]);
+    if (left[t]) n++;
+    for (let v = 0; v < 3; v++) body.base.set([c.r, c.g, c.b], t * 9 + v * 3);
+    all.push(t);
+  }
+  body.left = left;
+  recolour(body, all);
+  return n;
+}
+function recolour(body, tris) {
+  const c = body.mesh.geometry.attributes.color, g = new THREE.Color();
+  for (const t of tris) {
+    const p = body.paint[t];
+    if (p >= 0) {
+      g.set(groups[p].color);
+      for (let v = 0; v < 3; v++) c.array.set([g.r, g.g, g.b], t * 9 + v * 3);
+    } else c.array.set(body.base.subarray(t * 9, t * 9 + 9), t * 9);
+  }
+  c.needsUpdate = true;
+}
+function show(which) {
+  analysisGroup.visible = which === 'analysis'; resultGroup.visible = which === 'result';
+  $('vAnalysis').classList.toggle('on', which === 'analysis'); $('vResult').classList.toggle('on', which === 'result');
+}
+$('vAnalysis').onclick = () => show('analysis');
+$('vResult').onclick = () => show('result');
+$('tFit').onclick = () => fit(analysisGroup.visible ? analysisGroup : resultGroup);
+$('tEdges').onclick = () => {
+  edgesOn = !edgesOn; $('tEdges').classList.toggle('on', edgesOn);
+  for (const o of [...analysisGroup.children, ...resultGroup.children])
+    if (o.isLineSegments && !o.userData.triangles) o.visible = edgesOn;
+};
+$('tTris').onclick = () => {
+  trianglesOn = !trianglesOn; $('tTris').classList.toggle('on', trianglesOn);
+  for (const o of analysisGroup.children) if (o.userData.triangles) o.visible = trianglesOn;
+};
+$('radius').oninput = () => { $('radiusv').textContent = $('radius').value; };
+
+function showResult(j) {
+  clearScene(resultGroup);
+  const pos = decode(j.positions, Float32Array), kind = decode(j.kind, Uint8Array);
+  const col = new Float32Array(pos.length), g = new THREE.Color();
+  for (let t = 0; t < kind.length; t++) {
+    g.set((KIND[j.kinds[kind[t]]] || KIND.freeform)[0]);
+    for (let v = 0; v < 3; v++) col.set([g.r, g.g, g.b], t * 9 + v * 3);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geom.computeVertexNormals();
+  resultGroup.add(new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .6, metalness: .05,
+                                                                         side: THREE.DoubleSide, ...OFFSET })));
+  const eg = new THREE.BufferGeometry();
+  eg.setAttribute('position', new THREE.BufferAttribute(decode(j.edges, Float32Array), 3));
+  const lines = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: 0x000000 }));
+  lines.visible = edgesOn; resultGroup.add(lines);
+  haveResult = true; $('vResult').disabled = false; show('result');
+}
+
+// ---------------------------------------------------------------- groups
+function newGroup() {
+  groups.push({ name: `group ${groups.length + 1}`, color: GROUP[groups.length % GROUP.length] });
+  current = groups.length - 1; renderGroups();
+}
+function renderGroups() {
+  const el = $('groups'); el.innerHTML = '';
+  groups.forEach((g, i) => {
+    let n = 0; for (const b of bodies) for (const p of b.paint) if (p === i) n++;
+    const row = document.createElement('div');
+    row.className = 'g' + (i === current ? ' cur' : '');
+    row.innerHTML = `<span class="sw" style="background:${g.color}"></span><span>${g.name}</span><span class="n">${n} triangles</span>` +
+                    (g.outcome ? `<span class="o" title="what the last Convert made of it">${g.outcome}</span>` : '');
+    const del = document.createElement('button'); del.textContent = '×'; del.title = 'delete this group';
+    del.onclick = ev => { ev.stopPropagation(); deleteGroup(i); };
+    row.appendChild(del);
+    row.onclick = () => { current = i; renderGroups(); };
+    el.appendChild(row);
+  });
+}
+function allTris(b) { return Array.from({ length: b.paint.length }, (_, t) => t); }
+function deleteGroup(i) {
+  for (const b of bodies)
+    for (let t = 0; t < b.paint.length; t++) {
+      if (b.paint[t] === i) b.paint[t] = -1;
+      else if (b.paint[t] > i) b.paint[t]--;
+    }
+  groups.splice(i, 1);
+  if (current > i) current--;
+  current = Math.min(current, groups.length - 1);
+  for (const b of bodies) recolour(b, allTris(b));
+  renderGroups();
+}
+$('newgroup').onclick = () => newGroup();
+$('cleargroups').onclick = () => {
+  for (const b of bodies) { b.paint.fill(-1); recolour(b, allTris(b)); }
+  groups = []; newGroup();
+};
+
+// ---------------------------------------------------------------- tools: hover, brush, pick
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+function hit(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  const meshes = bodies.map(b => b.mesh);
+  const h = ray.intersectObjects(meshes, false)[0];
+  return h ? { body: h.object.userData.body, tri: h.faceIndex, point: h.point } : null;
+}
+function setTool(t) {
+  tool = t;
+  for (const [id, name] of [['tOrbit', 'orbit'], ['tBrush', 'brush'], ['tFeature', 'feature']])
+    $(id).classList.toggle('on', tool === name);
+  controls.mouseButtons = tool === 'orbit'
+    ? { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }
+    : { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+}
+$('tOrbit').onclick = () => setTool('orbit');
+$('tBrush').onclick = () => { setTool('brush'); if (bodies.length) show('analysis'); };
+$('tFeature').onclick = () => { setTool('feature'); if (bodies.length) show('analysis'); };
+
+function paintAt(h, erase) {
+  if (current < 0) newGroup();
+  const b = h.body, value = erase ? -1 : current, changed = [];
+  if (tool === 'feature') {
+    const k = b.owner[h.tri];
+    for (let t = 0; t < b.owner.length; t++)
+      if ((k >= 0 ? b.owner[t] === k : t === h.tri) && b.paint[t] !== value) { b.paint[t] = value; changed.push(t); }
+  } else {
+    const r2 = (+$('radius').value) ** 2, p = h.point, c = b.cent;
+    for (let t = 0; t < b.paint.length; t++) {
+      const dx = c[t * 3] - p.x, dy = c[t * 3 + 1] - p.y, dz = c[t * 3 + 2] - p.z;
+      if (dx * dx + dy * dy + dz * dz <= r2 && b.paint[t] !== value) { b.paint[t] = value; changed.push(t); }
+    }
+  }
+  if (changed.length) recolour(b, changed);
+}
+let painting = false;
+renderer.domElement.addEventListener('pointerdown', ev => {
+  if (ev.button !== 0 || tool === 'orbit' || !bodies.length) return;
+  if (!analysisGroup.visible) { show('analysis'); return; }    // (painting is on the mesh)
+  const h = hit(ev); if (!h) return;
+  painting = tool === 'brush'; paintAt(h, ev.shiftKey);
+  if (!painting) renderGroups();
+});
+renderer.domElement.addEventListener('pointermove', ev => {
+  const tip = $('tip');
+  if (!analysisGroup.visible || !bodies.length) { tip.style.display = 'none'; return; }
+  const h = hit(ev);
+  if (painting && h) paintAt(h, ev.shiftKey);
+  if (!h) { tip.style.display = 'none'; return; }
+  const k = h.body.owner[h.tri], f = k >= 0 ? h.body.features[k] : null;
+  const left = h.body.left && h.body.left[h.tri];
+  tip.innerHTML = (f ? `<b>${f.label}</b><br>${f.detail}` : 'flat facet (a flat face, or left as triangles)') +
+                  (left ? '<br><span style="color:#ff6b60">left as triangles by the last Convert: paint to rescue</span>' : '');
+  const r = view.getBoundingClientRect();
+  tip.style.left = (ev.clientX - r.left + 14) + 'px'; tip.style.top = (ev.clientY - r.top + 14) + 'px';
+  tip.style.display = 'block';
+});
+window.addEventListener('pointerup', () => { if (painting) { painting = false; renderGroups(); } });
+renderer.domElement.addEventListener('pointerleave', () => { $('tip').style.display = 'none'; });
+
+// self-test (page opened with #demo): convert, paint everything left as triangles into one group, convert again
+let demoRound = 0;
+async function demo() {
+  if (demoRound++ === 0) { $('convert').click(); return; }
+  const b = bodies[0], changed = [], c = b.cent, lefts = [];
+  for (let t = 0; t < b.paint.length; t++) if (b.left && b.left[t]) lefts.push(t);
+  const d2 = (s, t) => (c[s*3]-c[t*3])**2 + (c[s*3+1]-c[t*3+1])**2 + (c[s*3+2]-c[t*3+2])**2;
+  let best = -1, most = 0;          // (the leftover spot with most leftovers within 2 mm)
+  for (let i = 0; i < lefts.length; i += Math.max(1, lefts.length >> 9)) {
+    let n = 0; for (const t of lefts) if (d2(lefts[i], t) < 4) n++;
+    if (n > most) { most = n; best = lefts[i]; }
+  }
+  if (best >= 0) for (const t of lefts) if (d2(best, t) < 9) { b.paint[t] = 0; changed.push(t); }
+  recolour(b, changed); renderGroups(); show('analysis');
+  if (changed.length) setTimeout(() => $('convert').click(), 50);
+}
+
+// Opened as a file (double-clicked), the page has no server to convert with: go to a
+// studio that is running, or say how to start one.
+if (location.protocol === 'file:') {
+  const home = 'http://127.0.0.1:8765/';
+  fetch(home + 'api/state', { mode: 'no-cors' }).then(() => { location.href = home; }, () => {
+    $('busy').style.display = 'flex';
+    $('busy').innerHTML = `<div style="max-width:440px;line-height:1.5;background:#222;padding:18px 22px;border-radius:6px">
+      <b>The studio isn't running.</b><br>This page does its work through a small program on
+      this computer. Double-click <b>studio.bat</b> in the stl2curves folder (or drop an STL
+      file on it), or run <code>python -m stl2curves.studio</code>; it opens the page itself.
+      Keep its window open while you work.</div>`;
+  });
+} else {
+  // a mesh given on the command line
+  fetch('/api/state').then(r => r.json()).then(j => { if (j.name) { opened(j.name); if (j.auto) $('analyze').click(); } });
+}
+</script>
+</body>
+</html>
