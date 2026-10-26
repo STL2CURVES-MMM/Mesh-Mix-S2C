@@ -1,4 +1,14 @@
 """CAD preset: recognise analytic surfaces and build an editable B-rep."""
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-25 for the stl2curves merged engine (stl2curves/merged.py): surfaces
+# stl2curves found come in "locked" (_locked): borders move, the surface is never refitted,
+# simplified, swallowed by a sweep or a fillet chain, and survives merges; faces still
+# broken after build_cad_shell's rounds become flat faces of their own triangles.
+# Modified 2026-10-26: after its rounds build_cad_shell checks the faces once more written
+# as one shell, as the file holds them, and faces broken that way become flat faces of their
+# own triangles (the rounds' check writes a loose compound, which read back clean while the
+# saved file broke two faces: Rak Uni-USB); a triangle whose direction isn't trusted
+# (Segmenter.unsure) must still face within the tilt noise can give it (Segmenter.cos_ok).
 import numpy as np
 
 from OCP.BRep import BRep_Tool
@@ -31,6 +41,11 @@ from .topology import RegionGraph
 # ----------------------------------------------------------------------------
 # Segmentation
 # ----------------------------------------------------------------------------
+
+
+def _locked(prim):
+    """A surface stl2curves found (merged engine): kept exactly as it came."""
+    return getattr(prim, "locked", False)
 
 
 class Region:
@@ -92,6 +107,17 @@ class Segmenter:
         # triangles whose direction says nothing: tiny ones, and on a scan
         # the ones thin enough for the noise to tilt
         self.unsure = self.tiny | noisy if self.scan else self.tiny
+        # the direction each triangle must agree with a surface's within: a thin
+        # one on a scan can be tilted by noise as measured above, so it may
+        # disagree by that much more, but not by more (tiny ones by anything).
+        # Taken as no limit at all, the thin triangles of a blind hole's floor,
+        # every corner on the hole's rim, joined its wall on a CAD mesh taken for
+        # a scan by its slivers (Rak Uni-USB: 34 of them, at 90 degrees to it),
+        # and the wall's border cut 51 degrees of the rim straight across, 0.17
+        # mm inside it
+        tilt = np.arctan(3.4 * self.noise / np.maximum(h, 1e-30))
+        self.cos_ok = np.where(self.tiny, -1.0, np.where(
+            self.unsure, np.cos(np.minimum(np.pi, np.radians(normal_deg) + tilt)), self.cos_n))
         self.refit_planes = self.scan
         self.label = -np.ones(nf, dtype=np.int64)
         self._stamp = np.zeros(nf, dtype=np.int64)
@@ -156,7 +182,7 @@ class Segmenter:
     def accept(self, prim, sense, faces, tol=None):
         tol = self.tol if tol is None else tol
         d, cs = self.face_error(prim, sense, faces)
-        return (d <= tol) & ((cs >= self.cos_n) | self.unsure[faces])
+        return (d <= tol) & (cs >= self.cos_ok[faces])
 
     def region_points(self, faces, with_weights=False):
         """Vertices of faces with normals averaged over these faces only.
@@ -528,7 +554,7 @@ class Segmenter:
         """Replace a surface by a simpler kind when that fits the same faces
         (a torus with a huge ring radius is really a cylinder, etc.)."""
         kinds = self.SIMPLER.get(prim.kind, ())
-        if not kinds:
+        if not kinds or _locked(prim):
             return prim, sense
         P, N, ok, W = self.region_points(faces, True)
         classes = {"plane": Plane, "cylinder": Cylinder, "sphere": Sphere, "cone": Cone}
@@ -592,7 +618,7 @@ class Segmenter:
                 if regs[r].weak:
                     continue  # weak (single facet) regions dissolve readily
                 d, cs = self.face_error(regs[r].prim, regs[r].sense, bfaces[m])
-                own[m] = np.where((cs >= self.cos_n) | self.unsure[bfaces[m]], d, np.inf)
+                own[m] = np.where(cs >= self.cos_ok[bfaces[m]], d, np.inf)
             best_err = own.copy()
             for j in range(3):
                 cl = nbl[bfaces, j]
@@ -604,7 +630,7 @@ class Segmenter:
                     if reg.weak:
                         continue
                     d, cs = self.face_error(reg.prim, reg.sense, bfaces[m])
-                    e = np.where((cs >= self.cos_n) | self.unsure[bfaces[m]], d, np.inf)
+                    e = np.where(cs >= self.cos_ok[bfaces[m]], d, np.inf)
                     e = np.where(e <= self.tol, e, np.inf)
                     idx = np.nonzero(m)[0]
                     better = e < best_err[idx] - 0.05 * self.tol
@@ -1044,6 +1070,8 @@ class Segmenter:
             regs = np.unique(lab[faces])
             if len(regs) < min_regions:
                 continue  # already one or two faces: nothing to gain
+            if any(_locked(self.regions[r].prim) for r in regs):
+                continue  # (stl2curves' surfaces stay: see _locked)
             # one good analytic surface covering nearly all of it stays
             areas = np.bincount(np.searchsorted(regs, lab[faces]), weights=fa[faces])
             top = self.regions[regs[int(np.argmax(areas))]]
@@ -1184,7 +1212,7 @@ class Segmenter:
         nr, nf = len(regs), len(F)
         rad = np.full(nr, np.nan)
         for i, reg in enumerate(regs):
-            if reg.weak or not len(reg.faces):
+            if reg.weak or not len(reg.faces) or _locked(reg.prim):
                 continue
             if reg.kind in ("torus", "cylinder") and not hasattr(reg.prim, "motion"):
                 rad[i] = reg.prim.r
@@ -1464,7 +1492,7 @@ class Segmenter:
             faces = order[starts[k]:starts[k + 1]]
             r = old[lab[faces[0]]]
             prim, sense = r.prim, r.sense
-            if not refit:
+            if not refit or _locked(prim):
                 pass
             elif prim.kind not in ("plane", "freeform") and faces.size >= 3:
                 P, N, ok, W = self.region_points(faces, True)
@@ -1522,6 +1550,9 @@ class Segmenter:
             if f not in roots:
                 roots[f] = len(out)
                 out.append(Region(regs[f].prim, [], regs[f].sense, regs[f].weak))
+            elif _locked(r.prim) and not _locked(out[roots[f]].prim):
+                # (a surface stl2curves found, locked, outlives an equal fitted one)
+                out[roots[f]].prim, out[roots[f]].sense = r.prim, r.sense
             out[roots[f]].faces.append(r.faces)
         newlab = np.empty_like(lab)
         for r in out:
@@ -2817,6 +2848,33 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
         if len(bad2) < len(bad):
             labels, regions, asm, faces, bad = labels2, regions2, asm2, faces2, bad2
+    # Faces still broken after every round become flat faces made of their own
+    # triangles, as stl2curves leaves a patch it can't build faceted (merged engine):
+    # one 5-triangle freeform cell, the only invalid face of 356, failed Rak N-USB's
+    # whole body, which then went to another method (775 faces instead of 356).
+    last = {r for r in bad if r < len(regions) and _facets_ok(seg, regions[r].faces)}
+    if last:
+        labels2, regions2 = _demote(seg, labels, regions, set(), facet=last)
+        labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
+        if len(bad2) < len(bad):
+            report.log(f"{len(last)} face(s) that still wouldn't build became flat faces of their own triangles")
+            labels, regions, asm, faces, bad = labels2, regions2, asm2, faces2, bad2
+    # The rounds check each face written out with the others as a loose compound; the
+    # saved file holds them as one shell, whose neighbours share each edge's single curve,
+    # and that can break faces the compound check passes (and pass ones it flags: on
+    # stl2step's test17 the two disagreed both ways). Checked the shell's way during the
+    # rounds, faces that later rounds would have mended anyway were rebuilt (test17: 200
+    # faces became 225), so it is done once, here: faces still broken that way become
+    # flat faces of their own triangles, which follow the mesh exactly (Rak Uni-USB: two
+    # freeform faces broke on read-back and the whole merged result was lost).
+    saved = {r for r in _broken_when_saved(asm, shell=True) if r < len(regions)}
+    if saved:
+        flat = {r for r in saved if _facets_ok(seg, regions[r].faces)}
+        labels2, regions2 = _demote(seg, labels, regions, saved - flat, facet=flat)
+        labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
+        if len(_broken_when_saved(asm2, shell=True)) < len(saved) and len(bad2) <= len(bad):
+            report.log(f"{len(saved)} face(s) that would be broken in the saved file were built again")
+            labels, regions, asm, faces, bad = labels2, regions2, asm2, faces2, bad2
     if replaced:
         report.log(f"{replaced} surface(s) rebuilt as freeform (B-spline) faces")
     bad_faces = [f for f in faces if not BRepCheck_Analyzer(f).IsValid()]
@@ -3143,23 +3201,28 @@ def _flat_facets(seg, faces, max_deg=0.5):
     return out
 
 
-def _broken_when_saved(asm):
+def _broken_when_saved(asm, shell=False):
     """Regions whose face is invalid once the faces are written to a STEP
-    file and read back."""
+    file and read back: as a loose compound, or with ``shell`` as one
+    shell, as the saved file holds them (neighbours then share each edge's
+    single 3D curve; a solid made of the shell reads back the same)."""
     import os
     import tempfile
 
     from OCP.BRep import BRep_Builder
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.TopAbs import TopAbs_FACE
-    from OCP.TopoDS import TopoDS_Compound
+    from OCP.TopoDS import TopoDS_Compound, TopoDS_Shell
 
     from . import stepio
 
     rs = sorted(asm.region_faces)
     B = BRep_Builder()
-    comp = TopoDS_Compound()
-    B.MakeCompound(comp)
+    comp = TopoDS_Shell() if shell else TopoDS_Compound()
+    if shell:
+        B.MakeShell(comp)
+    else:
+        B.MakeCompound(comp)
     for r in rs:
         B.Add(comp, asm.region_faces[r])
     fd, path = tempfile.mkstemp(suffix=".step")

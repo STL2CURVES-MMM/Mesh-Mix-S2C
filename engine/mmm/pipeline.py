@@ -1,4 +1,11 @@
 """Conversion pipeline and presets."""
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-25 for the stl2curves merged engine (stl2curves/merged.py): convert()
+# takes a front end (stl2curves' reading, mending and features) and seeded segmentations;
+# Options.judge_floor (a least tolerance for the fit check), Options.fewest_faces (of
+# the CAD results that pass, the one with the fewest faces), Options.enough (no
+# fallback methods once a rival conversion passes) and Options.smooth_elsewhere (no
+# smooth surfaces for seeded bodies), all off by default.
 import os
 import time
 
@@ -64,6 +71,17 @@ class Options:
         self.merge_overlaps = bool(kw.get("merge_overlaps", False))
         # 3MF parts that touch each other: "ask" / "split" (keep separate) / "merge"
         self.touching_parts = kw.get("touching_parts") or "ask"
+        # (stl2curves merged engine) the fit check's tolerance never below this (model
+        # units; 0 = MMM's own, from the body's size), and of the CAD results that pass,
+        # the one with the fewest faces kept (see _fewest)
+        self.judge_floor = float(kw.get("judge_floor", 0.0))
+        self.fewest_faces = bool(kw.get("fewest_faces", False))
+        # (stl2curves merged engine) a callable, true once a rival conversion of the whole
+        # file passes: a body's fallback methods are then not tried (rivals.Judges.passing)
+        self.enough = kw.get("enough")
+        # (stl2curves merged engine) smooth surfaces for seeded bodies are tried elsewhere
+        # (MMM alone runs alongside): not here
+        self.smooth_elsewhere = bool(kw.get("smooth_elsewhere", False))
 
 
 # ----------------------------------------------------------------------------
@@ -216,7 +234,7 @@ NEARLY_ALL = 0.98
 CLEARLY_CLOSER = 1.0
 
 KIND_WORDS = {"smooth": "smooth surfaces", "cad": "CAD faces", "precise": "precise CAD faces",
-              "faceted": "flat faces (exactly like the mesh)"}
+              "faceted": "flat faces (exactly like the mesh)", "stl2curves": "stl2curves' sewn CAD faces"}
 
 
 def _judge(shape, body, tol, kind, report):
@@ -269,6 +287,41 @@ def fidelity_summary(items):
 def _best(cands):
     cands = [c for c in cands if c is not None]
     return max(cands, key=lambda c: c.rank()) if cands else None
+
+
+# (stl2curves merged engine) the kinds of result made of CAD faces, and how much closer to
+# the fewest faces a passing result must come to be kept for following the mesh better
+CAD_KINDS = ("cad", "precise", "stl2curves")
+FEWER_FACES = 0.05
+
+
+def _face_count(shape):
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    n, ex = 0, TopExp_Explorer(shape, TopAbs_FACE)
+    while ex.More():
+        n += 1
+        ex.Next()
+    return n
+
+
+def _fewest(cands, best):
+    """Of the CAD results that pass the fit check, the one with the fewest faces (the
+    closer one when their counts are within FEWER_FACES): both pass, so the one easier
+    to edit wins. On Rak's N-type tensioner MMM's closest-first choice took 1,706 flat
+    faces over CAD faces 163-253 strong (stl2curves merged engine)."""
+    if best is None or not best.good or best.kind not in CAD_KINDS:
+        return best
+    rivals = [c for c in cands if c is not None and c.good and c.kind in CAD_KINDS]
+    if len(rivals) < 2:
+        return best
+    n = {id(c): _face_count(c.shape) for c in rivals}
+    fewest = min(rivals, key=lambda c: n[id(c)])
+    near = [c for c in rivals if n[id(c)] <= n[id(fewest)] * (1 + FEWER_FACES)]
+    closest = max(near, key=lambda c: c.verdict.score)
+    # (closeness decides only by a clear margin: measurement noise mustn't)
+    return closest if closest.verdict.score > fewest.verdict.score + CLEARLY_CLOSER else fewest
 
 
 def _broken(check):
@@ -397,14 +450,22 @@ def auto_tolerance(diag, preset, quality=0.7):
     return 5e-4 * diag * factor
 
 
-def convert(input_path, output_path, opts=None, report=NULL):
+def convert(input_path, output_path, opts=None, report=NULL, front=None):
+    """front (stl2curves' merged engine, see stl2curves/merged.py): reads and prepares
+    the mesh instead of load_and_prepare, returning (bodies, info, seeded), seeded[k]
+    (if there) making body k's segmentation, seeded with stl2curves' features, for a
+    tolerance: (preset, segs) in place of choose_preset_body's."""
     opts = opts or Options()
     t0 = time.time()
+    seeded, extra = {}, {}
     with report.section(0.0, 0.08):
-        bodies, info = load_and_prepare(
-            input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout,
-            merge=opts.merge_overlaps, touching=opts.touching_parts,
-        )
+        if front is not None:
+            bodies, info, seeded, extra = front(input_path, opts, report)
+        else:
+            bodies, info = load_and_prepare(
+                input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout,
+                merge=opts.merge_overlaps, touching=opts.touching_parts,
+            )
     diag = info.diag
     # 3MF files store their unit, and the reader turns it into millimetres;
     # other formats have none, so their numbers are in the chosen unit
@@ -470,7 +531,12 @@ def convert(input_path, output_path, opts=None, report=NULL):
         preset = req
         segs = None
         body_opts = opts
-        if preset in ("auto", "precise"):
+        if preset == "auto" and bi in seeded:
+            # (stl2curves found features here: CAD faces, segmented from them)
+            report.stage("Segmenting what stl2curves left" + label, lo, lo + 0.2 * (hi - lo))
+            preset, segs = seeded[bi](body_tol(body, "cad"))
+            report.log("Using CAD (stl2curves' features, MMM's segmentation of the rest)")
+        elif preset in ("auto", "precise"):
             report.stage("Analysing shape" + label, lo, lo + 0.2 * (hi - lo))
             kind, segs = choose_preset_body(body, body_tol(body, "cad" if preset == "auto" else "precise"), q, report)
             if preset == "precise":
@@ -502,7 +568,8 @@ def convert(input_path, output_path, opts=None, report=NULL):
                 return None
             if shape is None:
                 return None
-            c = _judge(shape, body, btol, kind, report) if opts.validate else _Candidate(shape, kind, True, None)
+            c = (_judge(shape, body, max(btol, opts.judge_floor), kind, report) if opts.validate
+                 else _Candidate(shape, kind, True, None))
             tried.append(c)
             return c
 
@@ -518,10 +585,11 @@ def convert(input_path, output_path, opts=None, report=NULL):
             return convert_body_smooth(B, body, btol, o or body_opts, report)
 
         def plan():
-            """The other methods, in the order they're tried."""
+            """The other methods, in the order they're tried (a front end's own
+            candidates first: stl2curves' sewn faces, see merged.py)."""
             if preset in ("cad", "precise"):
-                return [("smooth", "Fitting smooth surfaces", lambda: smooth())]
-            out = []
+                return list(extra.get(bi, [])) + [("smooth", "Fitting smooth surfaces", lambda: smooth())]
+            out = list(extra.get(bi, []))
             if looks_mechanical(body):
                 out.append(("cad", "Recognising CAD features", lambda: cad("cad")))
             denser = min(1.0, body_opts.quality + 0.2)
@@ -565,6 +633,17 @@ def convert(input_path, output_path, opts=None, report=NULL):
                        + ("" if first.verdict.ok else ", which isn't close enough")
                        + ("" if first.valid else "; the shape also has errors") + ".")
         for kind, stage, make in plan():
+            if opts.enough is not None and opts.enough():
+                report.log("Another conversion of the whole file already follows the mesh, so no other "
+                           "method is tried here (the results are compared at the end)")
+                break
+            if kind == "smooth" and bi in seeded and (any(c.good for c in tried) or opts.smooth_elsewhere):
+                # (a mechanical body, seeded with stl2curves' features, that already has
+                # good CAD faces: smooth surfaces never win there, and on Rak N-USB
+                # trying them took over 100 s; nor when MMM alone runs alongside, which
+                # tries them itself wherever its own rules call for them: in six tries
+                # on seeded bodies they never won, and Rak Uni-USB spent 380 s on them)
+                continue
             if borderline:
                 report.log(f"Also trying {stage[0].lower() + stage[1:]}, to keep whichever follows the mesh better")
                 report.stage(f"{stage} too (the first result only just passed)" + label, lo, hi)
@@ -574,7 +653,7 @@ def convert(input_path, output_path, opts=None, report=NULL):
             c = attempt(kind, make, stage)
             if c is not None and c.good and not borderline:
                 break
-        if not any(c.good for c in tried):
+        if not any(c.good for c in tried) and not (opts.enough is not None and opts.enough()):
             # the faceted shape follows the mesh exactly: the last resort
             # when nothing smoother does (only for meshes small enough
             # to give a file of reasonable size)
@@ -589,13 +668,18 @@ def convert(input_path, output_path, opts=None, report=NULL):
             # CAD faces for a mechanical part) stays, unless the other is
             # clearly closer
             best = first
+        closest = best
+        if opts.fewest_faces:
+            best = _fewest(tried, best)
         if best is None:
             if errors:
                 raise errors[0]  # a fault in the converter, not in the file
             return None, preset
         if best is not first:
             report.warn(("One part was" if name is None else f"“{name}” was")
-                        + f" saved with {KIND_WORDS[best.kind]}, because they follow the mesh more closely"
+                        + f" saved with {KIND_WORDS[best.kind]}, because "
+                        + ("they follow the mesh more closely" if best is closest else
+                           "they follow the mesh closely enough with fewer faces")
                         + ("." if first is None or first.valid else " and have no errors."))
         if not best.verdict.ok:
             report.warn(("The" if name is None else f"“{name}”:") + " converted shape doesn't follow the mesh everywhere: "
@@ -622,11 +706,19 @@ def convert(input_path, output_path, opts=None, report=NULL):
         if done:
             c = _best(done)
             how = f"{KIND_WORDS[c.kind]} instead"
+        elif bi in seeded and preset in ("cad", "precise") and (
+                opts.smooth_elsewhere or (opts.enough is not None and opts.enough())):
+            # (stl2curves merged engine: a seeded body's other method would be smooth
+            # surfaces, which MMM alone, running alongside, tries itself; Rak Uni-USB
+            # spent 140 s on them here after its saved file broke, and lost anyway)
+            report.log("No other method is tried for this part here: the conversions running alongside cover it")
+            return None, preset, ""
         else:
             shape, kind, how = _alt_shape(bi, preset)
             if shape is None or not opts.validate:
                 return shape, kind, how
-            c = _judge(shape, body, body_tol(body, kind if kind != "faceted" else "cad"), kind, report)
+            c = _judge(shape, body, max(body_tol(body, kind if kind != "faceted" else "cad"), opts.judge_floor),
+                       kind, report)
         if c.verdict is not None and not c.verdict.ok:
             report.log(f"The other method doesn't follow the mesh closely enough ({c.verdict.summary(unit)}), "
                        "so the first version was kept.")

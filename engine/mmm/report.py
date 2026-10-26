@@ -1,5 +1,8 @@
 """Progress / log reporting.
 
+Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+Modified 2026-10-25 for the stl2curves merged engine: JSON events carry their time ("t").
+
 The macOS app runs the engine as a subprocess and reads one JSON object per
 line from stdout. When run by hand, messages are printed as plain text.
 """
@@ -21,6 +24,8 @@ class Reporter:
 
     def _emit(self, obj):
         if self.json_mode:
+            # (seconds since the start, for timing the stages: stl2curves merged engine)
+            obj.setdefault("t", round(time.time() - self.t0, 2))
             self.stream.write(json.dumps(obj) + "\n")
             self.stream.flush()
         elif not self.quiet:

@@ -20,6 +20,11 @@ largest gap, how much of the surface faces the wrong way, and where the
 worst spot is, so a conversion can be rejected (and another method tried)
 before it is saved.
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-25 for the stl2curves merged engine: tessellate() meshes each face from
+# a copy of its own (no edges shared, copied in memory after one round trip), 166x quicker
+# on one body where OpenCASCADE ground on. The KD-tree queries use every core (workers=-1;
+# the same answers).
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -196,13 +201,25 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
     # and meshed as it is: coarsely, and its distances from the mesh show
     # what it is
     blown = [face_blown_up(f) for f in faces]
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
     B = BRep_Builder()
     comp = TopoDS_Compound()
     B.MakeCompound(comp)
     for f, b in zip(faces, blown):
         if not b:
             B.Add(comp, f)
-    copy = _round_trip(comp)
+    # (read back once, then each face copied on its own, so no edge is shared: meshed with
+    # their edges shared at 1e-7, 86 faces of the companion enclosure's merged CAD faces
+    # took OpenCASCADE 665 s where one by one they took 10 s, and copied apart 4 s in one
+    # call; the distances need no shared edges, see Surface and its _refine. A file round
+    # trip per face cost test12 35 s; in memory the copies are the same, 14x quicker)
+    copy = TopoDS_Compound()
+    B.MakeCompound(copy)
+    ex = TopExp_Explorer(_round_trip(comp), TopAbs_FACE)
+    while ex.More():
+        B.Add(copy, BRepBuilderAPI_Copy(ex.Current(), True, False).Shape())
+        ex.Next()
     ShapeFix_ShapeTolerance().SetTolerance(copy, 1e-7)
     # (edges further off than ``loose`` keep their real distance as
     # tolerance; None leaves every edge at 1e-7, as the build loop needs:
@@ -601,7 +618,7 @@ class Surface:
         V, F = self.V, self.F
         for s in range(0, len(P), chunk):
             Q = P[s:s + chunk]
-            _, idx = self.tree.query(Q, k=min(k, len(self.points)))
+            _, idx = self.tree.query(Q, k=min(k, len(self.points)), workers=-1)
             idx = np.atleast_2d(idx)
             if idx.shape[0] != len(Q):
                 idx = idx.T
@@ -656,7 +673,7 @@ class Surface:
             return
         tree, A, B, C, parent, rp = self._pieces()
         r = dist + rp * (1 + 1e-9) + 1e-12
-        counts = tree.query_ball_point(P, r, return_length=True)
+        counts = tree.query_ball_point(P, r, return_length=True, workers=-1)
         cum = np.cumsum(counts)
         start = 0
         while start < len(P):
@@ -666,7 +683,7 @@ class Surface:
             if end - start == 1 and counts[start] > max_pairs:
                 start = end  # (a point far from everything: the first answer stays)
                 continue
-            res = tree.query_ball_point(P[start:end], r[start:end], return_sorted=False)
+            res = tree.query_ball_point(P[start:end], r[start:end], return_sorted=False, workers=-1)
             lens = np.fromiter((len(x) for x in res), dtype=np.int64, count=len(res))
             if lens.sum():
                 k = np.fromiter(itertools.chain.from_iterable(res), dtype=np.int64, count=int(lens.sum()))
@@ -942,7 +959,7 @@ def _coherent(P, flags, rho, k=48):
     if not flags.any():
         return flags
     tree = cKDTree(P)
-    _, idx = tree.query(P[flags], k=min(k, len(P)), distance_upper_bound=rho)
+    _, idx = tree.query(P[flags], k=min(k, len(P)), distance_upper_bound=rho, workers=-1)
     idx = np.atleast_2d(idx)
     valid = idx < len(P)
     hit = np.where(valid, flags[np.minimum(idx, len(P) - 1)], False)
