@@ -24,7 +24,6 @@ own, and the best of the three finished results is saved (rivals.py).
 import math
 import os
 import shutil
-import sys
 import tempfile
 import time
 
@@ -498,7 +497,7 @@ def front(path, opts, report):
     # They are stopped, not kept for a next part as stl2curves keeps them: each holds a copy
     # of the mesh, and three merged conversions at once, each with this pool and our own
     # run's, took 38 GB in 89 processes on medium meshes
-    run = _OurRun(path) if parts_on_file and any(p[1] for p in parts) and RIVALS else None
+    run = _OurRun(path) if parts_on_file and any(p[1] for p in parts) and getattr(opts, "rivals", RIVALS) else None
     workers.stop()
 
     def sewn(k):
@@ -537,10 +536,8 @@ class _OurRun:
         self.dir = tempfile.mkdtemp(prefix="stl2curves_ours_")
         self.out = os.path.join(self.dir, os.path.splitext(os.path.basename(str(path)))[0] + ".step")
         env = dict(os.environ, STL2CURVES_CACHE=stages.FOLDER)
-        # (the folder holding the stl2curves and mmm packages: engine/ in the repository)
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.proc = subprocess.Popen([sys.executable, "-E", "-s", "-m", "stl2curves", str(path), "--out", self.dir],
-                                     cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.proc = rivals.popen(["-m", "stl2curves", str(path), "--out", self.dir], env=env,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self._shape = False
         _running.append(self)
 
@@ -563,10 +560,7 @@ class _OurRun:
 
     def stop(self):
         import shutil
-        import subprocess
-        if self.proc.poll() is None:
-            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True)
-            self.proc.wait()
+        rivals.kill(self.proc)
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -595,22 +589,35 @@ def _nearest_solid(shape, shell):
     return best if gap <= BOX_MATCH * float(np.linalg.norm(hi - lo)) * 6 else None
 
 
-def convert_file(path, out, quality_=None, report=None):
+def _rivals_fit(base):
+    """Whether the rivals can make what these settings ask for: they convert in
+    millimetres at the engine's own tolerance with no face limit, so a file asked for in
+    inches, at a tolerance or with a face limit is made by the merged pipeline alone."""
+    return base is None or (base.unit == "mm" and not base.tolerance and not base.max_faces)
+
+
+def convert_file(path, out, quality_=None, report=None, base=None):
     """Convert one mesh file with the merged engine into the STEP file out: MMM's result
-    dict (faces, validity, how closely it follows the mesh...)."""
+    dict (faces, validity, how closely it follows the mesh...). base: the settings the
+    engine's command line was given (mmm.pipeline.Options: unit, tolerance, repair,
+    preview...), which the merged pipeline keeps."""
     report = report or Reporter()
     t0 = time.time()
     stl = str(path).lower().endswith(".stl")
     n = convert.load_stl(path)[1].shape[0] if stl else 0
     q = quality_ if quality_ is not None else quality(n)
+    use = stl and RIVALS and _rivals_fit(base)
     # MMM's engine alone from the start, and our own conversion once our first stages are
     # saved (see _OurRun): rivals to the merged result (see rivals.py). (3MF projects go
     # to MMM's own reader unseeded, so MMM alone would only repeat them.)
-    if stl and RIVALS:
+    if use:
         _running.append(rivals.MMMAlone(path, q))
     judges = rivals.Judges(path, _running)
-    opts = mpipe.Options(preset="auto", quality=q, judge_floor=rivals.JUDGE_FLOOR, fewest_faces=True,
-                         enough=judges.passing, smooth_elsewhere=stl and RIVALS)
+    opts = mpipe.Options(**(base.__dict__ if base is not None else {}))
+    opts.preset = base.preset if base is not None and base.preset == "cad" else "auto"
+    opts.quality = q
+    opts.judge_floor, opts.fewest_faces, opts.enough = rivals.JUDGE_FLOOR, True, judges.passing
+    opts.smooth_elsewhere = opts.rivals = use
     own_cache = not stages.FOLDER
     if own_cache:
         stages.FOLDER = tempfile.mkdtemp(prefix="stl2curves_stages_")
@@ -632,6 +639,8 @@ def convert_file(path, out, quality_=None, report=None):
         if _running:
             res = rivals.settle(out, res, judges, time.time() - t0, report)
             res["seconds"] = round(time.time() - t0, 2)
+            if res.get("kept", "merged") != "merged" and opts.preview:
+                _preview_again(out, opts.preview, report)
             report.result(res)
         return res
     finally:
@@ -644,11 +653,26 @@ def convert_file(path, out, quality_=None, report=None):
             stages.FOLDER = None
 
 
+def _preview_again(step, preview, report):
+    """The app's preview of the file a rival made (the merged pipeline's preview shows its
+    own result)."""
+    from mmm import stepio
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    try:
+        shape = stepio.read_step(step)
+        box = Bnd_Box()
+        BRepBndLib.Add_s(shape, box)
+        diag = float(np.linalg.norm(np.subtract(box.CornerMax().Coord(), box.CornerMin().Coord())))
+        stepio.export_preview(shape, preview, diag)
+    except Exception as e:
+        report.warn(f"The 3D preview couldn't be made ({e}); the STEP file itself is fine.")
+
+
 def main(argv=None):
     import argparse
     import json
     import os
-    import sys
     ap = argparse.ArgumentParser(prog="stl2curves (merged)", description=__doc__.strip().splitlines()[0])
     ap.add_argument("input")
     ap.add_argument("-o", "--output")

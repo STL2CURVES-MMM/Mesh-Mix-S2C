@@ -50,18 +50,45 @@ if os.environ.get("STL2CURVES_DEADLINE"):
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _python(args, out_log, env=None):
-    """A process of this engine's own Python (no user site, no PYTHON* settings: -E -s;
-    not -I, which would drop the working folder, where the packages are, from the path)."""
-    with open(out_log, "wb") as log:
-        return subprocess.Popen([sys.executable, "-E", "-s", *args], cwd=ROOT, env=env or os.environ.copy(),
-                                stdout=log, stderr=subprocess.STDOUT)
+def command(args):
+    """The command line for `python -m MODULE ...` (args: "-m", MODULE, ...): this
+    engine's own Python from source (no user site, no PYTHON* settings: -E -s; not -I,
+    which would drop the working folder, where the packages are, from the path); in the
+    built app, the engine program itself, which runs the module (engine/mmm_engine.py's
+    --run-module), since a frozen program has no Python to start with -m."""
+    if args[0] != "-m":
+        raise ValueError("expected -m MODULE ...")
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-module", *args[1:]]
+    return [sys.executable, "-E", "-s", *args]
 
 
-def _kill(proc):
-    if proc.poll() is None:
+def popen(args, **kw):
+    """subprocess.Popen of command(args), in a process group of its own off Windows, so
+    kill() ends its children too (our own run has a pool of worker processes)."""
+    if os.name != "nt":
+        kw.setdefault("start_new_session", True)
+    return subprocess.Popen(command(args), cwd=ROOT, **kw)
+
+
+def kill(proc):
+    """End a process started by popen and everything it started."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
-        proc.wait()
+    else:
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+    proc.wait()
+
+
+def _python(args, out_log, env=None):
+    with open(out_log, "wb") as log:
+        return popen(args, env=env or os.environ.copy(), stdout=log, stderr=subprocess.STDOUT)
 
 
 class MMMAlone:
@@ -73,14 +100,15 @@ class MMMAlone:
         self.out = os.path.join(self.dir, "mmm.step")
         env = dict(os.environ, OMP_NUM_THREADS=BLAS_THREADS, OPENBLAS_NUM_THREADS=BLAS_THREADS,
                    MKL_NUM_THREADS=BLAS_THREADS)
+        # (--engine mmm: MMM's own pipeline, not the merged one the CLI's Auto now runs)
         args = ["-m", "mmm.cli", "convert", str(path), "-o", self.out, "--preset", "auto",
-                "--quality", str(quality), "--json"]
+                "--quality", str(quality), "--json", "--engine", "mmm"]
         if str(path).lower().endswith(".3mf"):
             args += ["--layout", layout]
         self.proc = _python(args, os.path.join(self.dir, "mmm.jsonl"), env)
 
     def stop(self):
-        _kill(self.proc)
+        kill(self.proc)
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -201,13 +229,13 @@ class Judges:
         return False
 
     def stop(self, name):
-        _kill(self.procs[name][0])
+        kill(self.procs[name][0])
 
     def close(self):
         self.done.set()
         self.thread.join()
         for proc, _, _ in self.procs.values():
-            _kill(proc)
+            kill(proc)
         shutil.rmtree(self.work, ignore_errors=True)
 
 
@@ -286,11 +314,34 @@ def settle(out, res, judges, elapsed, report):
         for n, c in cards.items()) + (f"; merged {res.get('faces')} faces, not judged" if hopeless else "")
         + ("; the merged pipeline was stopped at its deadline" if res.get("stopped") else "")
         + f": {win} kept")
+    res["kept"] = win
     if win != "merged":
         c = cards[win]
         shutil.copyfile(judges.procs[win][2], out)
-        res.update(faces=c["faces"], solids=c["solids"], valid=c["valid"], preset=win, fidelity=None,
-                   file_size=os.path.getsize(out))
+        # (preset: what the apps show Auto chose, so the kept result's own: our sewn faces
+        # are CAD faces; MMM alone says which it used in its log. The merged pipeline's
+        # second version, if it offered one, is its own, not the kept file's)
+        res.update(faces=c["faces"], solids=c["solids"], valid=c["valid"], fidelity=None,
+                   preset=_preset_of(win, judges), file_size=os.path.getsize(out))
+        res.pop("alternative", None)
     return res
+
+
+def _preset_of(name, judges):
+    """The preset the rival called name used ("cad" unless its log says otherwise)."""
+    import json
+    for r in judges.rivals:
+        log = os.path.join(r.dir, "mmm.jsonl") if r.name == name else None
+        if log and os.path.exists(log):
+            preset = "cad"
+            with open(log, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"result"' in line:
+                        try:
+                            preset = json.loads(line).get("preset") or preset
+                        except ValueError:
+                            pass
+            return preset
+    return "cad"
 
 

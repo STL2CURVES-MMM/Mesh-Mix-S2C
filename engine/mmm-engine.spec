@@ -21,6 +21,8 @@ with open(os.path.join(here, "mmm", "_build.py"), "w", encoding="utf-8") as _f:
 
 hidden = (
     collect_submodules("mmm")
+    # the merged engine (its Studio page and VTK renderer aren't part of conversions)
+    + collect_submodules("stl2curves", filter=lambda n: n not in ("stl2curves.render", "stl2curves.studio"))
     + collect_submodules("OCP")
     + [
         "scipy.sparse.csgraph._validation",

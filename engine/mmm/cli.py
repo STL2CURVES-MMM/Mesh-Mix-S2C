@@ -3,6 +3,10 @@
     mmm-engine convert INPUT [-o OUTPUT] [--preset auto|exact|cad|smooth] ...
     mmm-engine inspect INPUT [--preview FILE]
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-26 for Mesh Mix-S2C: Auto and CAD on an STL go through the merged engine
+# (stl2curves/merged.py: stl2curves' features seed this engine's CAD build, raced against
+# both programs alone); --engine mmm keeps this engine's own pipeline.
 import argparse
 import json
 import os
@@ -114,6 +118,13 @@ def _inspect(args, rep):
     rep.result(d)
 
 
+def _merged(args):
+    """Whether a conversion goes through the merged engine: Auto and CAD on an STL (3MF
+    projects, split into parts, and the Smooth and Precise presets stay this engine's own)."""
+    return (args.engine == "merged" and args.preset in ("auto", "cad") and not args.split
+            and args.input.lower().endswith(".stl"))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="mmm-engine", description="Manifold Mesh Mix STL to STEP engine")
     sub = p.add_subparsers(dest="cmd")
@@ -126,7 +137,8 @@ def main(argv=None):
     c.add_argument("--keep-debris", action="store_true")
     c.add_argument("--unit", default="mm", choices=["mm", "cm", "m", "in", "um", "ft"])
     c.add_argument("--tolerance", type=float, default=None, help="absolute fit tolerance (model units)")
-    c.add_argument("--quality", "--detail", dest="quality", type=float, default=0.7, help="0 = fastest, 1 = best quality")
+    c.add_argument("--quality", "--detail", dest="quality", type=float, default=None,
+                   help="0 = fastest, 1 = best quality (default: by the mesh's size for the merged engine, 0.7 otherwise)")
     c.add_argument("--layout", default="parts", choices=["parts", "plate"], help="3MF: one copy of each part, or the full build plate")
     c.add_argument("--max-faces", type=int, default=0)
     c.add_argument("--preview", default=None, help="write a preview file for the app")
@@ -135,6 +147,9 @@ def main(argv=None):
     c.add_argument("--part-output", action="append", default=[], help="with --split: output file for part 1, 2, ... (repeat)")
     c.add_argument("--part-preview", action="append", default=[], help="with --split: preview file for part 1, 2, ... (repeat)")
     c.add_argument("--json", action="store_true", help="JSON-lines progress on stdout")
+    c.add_argument("--engine", default="merged", choices=["merged", "mmm"],
+                   help="merged: stl2curves' features and this engine's CAD build, for Auto and CAD on an STL "
+                        "(the default); mmm: this engine's own pipeline")
 
     c.add_argument("--merge-overlaps", action="store_true", help="join overlapping pieces of a part into one solid")
     c.add_argument("--touching-parts", default="ask", choices=TOUCHING,
@@ -210,7 +225,7 @@ def main(argv=None):
             remove_debris=not args.keep_debris,
             unit=args.unit,
             tolerance=args.tolerance,
-            quality=args.quality,
+            quality=args.quality if args.quality is not None else 0.7,
             layout=args.layout,
             max_faces=args.max_faces,
             preview=args.preview,
@@ -221,7 +236,12 @@ def main(argv=None):
             merge_overlaps=args.merge_overlaps,
             touching_parts=args.touching_parts,
         )
-        res = convert(args.input, out, opts, rep)
+        if _merged(args):
+            from stl2curves import merged
+
+            res = merged.convert_file(args.input, out, args.quality, rep, base=opts)
+        else:
+            res = convert(args.input, out, opts, rep)
         if not rep.json_mode:
             print(json.dumps({k: v for k, v in res.items() if k != "input"}, indent=1))
         return 0
