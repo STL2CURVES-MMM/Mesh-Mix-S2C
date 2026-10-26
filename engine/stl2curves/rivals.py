@@ -330,6 +330,12 @@ def settle(out, res, judges, elapsed, report):
         res.update(faces=c["faces"], solids=c["solids"], valid=c["valid"], fidelity=None,
                    preset=_preset_of(win, judges), file_size=os.path.getsize(out))
         res.pop("alternative", None)
+        # the merged pipeline's checks were of its own file (or are missing when it was
+        # stopped), so read the kept file back the way the apps' check does
+        from mmm import stepio
+        check = stepio.verify_step(str(out), expected_solids=c["solids"] or 1,
+                                   mesh_volume=res.get("mesh_volume") or 0.0)
+        res.update(checked=check["checked"], check_ok=check["ok"], checks=check["issues"])
     return res
 
 
