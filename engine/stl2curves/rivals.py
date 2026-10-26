@@ -50,16 +50,22 @@ if os.environ.get("STL2CURVES_DEADLINE"):
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+ENTRY = os.path.join(ROOT, "mmm_engine.py")
+
+
 def command(args):
-    """The command line for `python -m MODULE ...` (args: "-m", MODULE, ...): this
-    engine's own Python from source (no user site, no PYTHON* settings: -E -s; not -I,
-    which would drop the working folder, where the packages are, from the path); in the
-    built app, the engine program itself, which runs the module (engine/mmm_engine.py's
-    --run-module), since a frozen program has no Python to start with -m."""
+    """The command line for `python -m MODULE ...` (args: "-m", MODULE, ...): the engine's
+    entry point with --run-module MODULE, which runs the module after making sure the
+    process can't outlive this one (engine/mmm_engine.py); in the built app that is the
+    engine program itself (a frozen program has no Python to start with -m), from source
+    this Python with the entry script (no user site, no PYTHON* settings: -E -s; not -I,
+    which would drop the working folder, where the packages are, from the path)."""
     if args[0] != "-m":
         raise ValueError("expected -m MODULE ...")
     if getattr(sys, "frozen", False):
         return [sys.executable, "--run-module", *args[1:]]
+    if os.path.exists(ENTRY):
+        return [sys.executable, "-E", "-s", ENTRY, "--run-module", *args[1:]]
     return [sys.executable, "-E", "-s", *args]
 
 
