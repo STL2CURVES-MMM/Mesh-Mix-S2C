@@ -118,6 +118,7 @@ enum BugReport {
         add("Created:   \(df.string(from: Date()))")
         add("App:       Mesh Mix-S2C \(Updater.currentVersion) (\(installed ? "installed app" : "development build"))")
         add("System:    \(systemLine)")
+        add("Theme:     \(s.theme.rawValue), accent \(s.accent.rawValue)")
         add("Toolkit:   SwiftUI (native macOS app)")
         add("")
         add("File")

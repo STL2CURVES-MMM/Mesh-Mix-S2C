@@ -23,7 +23,7 @@ struct EmptyPreview: View {
         ZStack {
             LinearGradient(colors: [Color(nsColor: Theme.viewportTop), Color(nsColor: Theme.viewportBottom)],
                            startPoint: .top, endPoint: .bottom)
-            GridPattern().stroke(Color.white.opacity(0.035), lineWidth: 1)
+            GridPattern().stroke(Theme.ink(0.035), lineWidth: 1)
             VStack(spacing: 14) {
                 ZStack {
                     Circle().fill(settings.accent.color.opacity(0.10)).frame(width: 110, height: 110)
@@ -59,8 +59,8 @@ struct FeatureChip: View {
             Text(text).font(.system(size: 11, weight: .medium))
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Capsule().fill(Theme.card))
-        .overlay(Capsule().strokeBorder(Theme.stroke))
+        .background(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).fill(Theme.card))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).strokeBorder(Theme.stroke))
     }
 }
 
@@ -755,18 +755,18 @@ struct FileTab: View {
                         .font(Theme.mono(9.5, .semibold))
                         .foregroundStyle(Theme.textDim)
                         .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.white.opacity(0.07)))
+                        .background(RoundedRectangle(cornerRadius: Theme.rSmall, style: .continuous).fill(Theme.ink(0.07)))
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(maxWidth: maxWidth)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? settings.accent.color.opacity(0.14) : (hover ? Color.white.opacity(0.06) : Theme.card.opacity(0.7)))
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
+                    .fill(selected ? settings.accent.color.opacity(0.14) : (hover ? Theme.ink(0.06) : Theme.card.opacity(0.7)))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
                     .strokeBorder(selected ? settings.accent.color.opacity(0.7) : Theme.stroke, lineWidth: 1)
             )
             .contentShape(Rectangle())
@@ -789,8 +789,8 @@ struct StatChip: View {
                 .lineLimit(1).helpIfTruncated(value)
         }
         .padding(.horizontal, 9).padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.card.opacity(0.92)))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.stroke))
+        .background(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).fill(Theme.card.opacity(0.92)))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).strokeBorder(Theme.stroke))
     }
 }
 
@@ -1101,13 +1101,13 @@ struct PresetCard: View {
 
     private var iconBackground: Color {
         if let c = markColor { return c.opacity(0.18) }
-        return Color.white.opacity(0.05)
+        return Theme.ink(0.05)
     }
 
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
                     .fill(iconBackground)
                 Image(systemName: preset.icon)
                     .font(.system(size: 13, weight: .semibold))

@@ -6,11 +6,22 @@ struct ContentView: View {
     @EnvironmentObject var settings: Settings
     @EnvironmentObject var updater: Updater
     @LocalState private var dropTargeted = false
+    @Environment(\.colorScheme) private var systemScheme
 
     var accent: Color { settings.accent.color }
 
+    /// The theme in force, made current (Theme.palette) before any view below
+    /// reads its colours; the views are rebuilt (.id) when it or the accent
+    /// changes, so the switch is live. (Match system: the colour scheme seen
+    /// here is the computer's, as no scheme is asked for then.)
+    private var themeKey: String {
+        Theme.palette = settings.theme.palette(systemDark: systemScheme == .dark)
+        return "\(Theme.palette.name)-\(settings.accent.rawValue)"
+    }
+
     var body: some View {
-        HStack(spacing: 0) {
+        let key = themeKey
+        return HStack(spacing: 0) {
             Sidebar(dropTargeted: $dropTargeted)
                 .frame(width: 310)
             Divider().overlay(Theme.stroke)
@@ -21,9 +32,11 @@ struct ContentView: View {
             SettingsPanel()
                 .frame(width: 300)
         }
+        .id(key)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
         .tint(accent)
+        .preferredColorScheme(settings.theme.scheme)
         .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in
             loadDropped(providers)
             return true
@@ -76,8 +89,8 @@ struct EngineMissingBanner: View {
                     .font(.system(size: 12))
             }
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Theme.card))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.warn.opacity(0.5)))
+            .background(RoundedRectangle(cornerRadius: Theme.rMed).fill(Theme.card))
+            .overlay(RoundedRectangle(cornerRadius: Theme.rMed).strokeBorder(Theme.warn.opacity(0.5)))
             .padding(.top, 12)
             Spacer()
         }
@@ -156,7 +169,7 @@ struct BrandHeader: View {
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
                     .fill(LinearGradient(colors: [settings.accent.color.opacity(0.9), settings.accent.color.opacity(0.45)],
                                          startPoint: .topLeading, endPoint: .bottomTrailing))
                 Image(systemName: "point.3.filled.connected.trianglepath.dotted")
@@ -177,7 +190,7 @@ struct BrandHeader: View {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 13, weight: .semibold))
                     .frame(width: 26, height: 26)
-                    .background(Circle().fill(Color.white.opacity(0.07)))
+                    .background(Circle().fill(Theme.ink(0.07)))
                     .overlay(alignment: .topTrailing) {
                         if updater.availableVersion != nil {
                             Circle().fill(settings.accent.color).frame(width: 8, height: 8)
@@ -243,11 +256,11 @@ struct DropZone: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 18)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rBig, style: .continuous)
                     .fill(targeted ? settings.accent.color.opacity(0.08) : Theme.card)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rBig, style: .continuous)
                     .strokeBorder(style: StrokeStyle(lineWidth: 1.3, dash: [6, 5]))
                     .foregroundStyle(targeted ? settings.accent.color : Theme.strokeStrong)
             )
@@ -386,7 +399,7 @@ struct JobRow: View {
             Image(systemName: name)
                 .font(.system(size: 10, weight: .bold))
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.white.opacity(0.07)))
+                .background(Circle().fill(Theme.ink(0.07)))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

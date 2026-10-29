@@ -52,7 +52,7 @@ struct ExportSheet: View {
     var header: some View {
         HStack(spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous).fill(accent.opacity(0.16))
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).fill(accent.opacity(0.16))
                 Image(systemName: "square.and.arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(accent)
             }
             .frame(width: 36, height: 36)
@@ -192,8 +192,8 @@ struct ExportSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.bad.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.bad.opacity(0.4)))
+        .background(RoundedRectangle(cornerRadius: Theme.rMed).fill(Theme.bad.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rMed).strokeBorder(Theme.bad.opacity(0.4)))
     }
 
     var footer: some View {
@@ -270,8 +270,8 @@ struct ExportSheet: View {
             }
             .padding(18)
             .frame(width: 440)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.card))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.strokeStrong))
+            .background(RoundedRectangle(cornerRadius: Theme.rBig, style: .continuous).fill(Theme.card))
+            .overlay(RoundedRectangle(cornerRadius: Theme.rBig, style: .continuous).strokeBorder(Theme.strokeStrong))
             .shadow(color: .black.opacity(0.5), radius: 20)
         }
     }

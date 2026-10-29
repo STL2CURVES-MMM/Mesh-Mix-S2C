@@ -133,6 +133,8 @@ final class Settings: ObservableObject {
     @Published var plateLayout: PlateLayout { didSet { d.set(plateLayout.rawValue, forKey: "plateLayout") } }
     @Published var replaceExisting: Bool { didSet { d.set(replaceExisting, forKey: "replaceExisting") } }
     @Published var parallelJobs: Int { didSet { d.set(parallelJobs, forKey: "parallelJobs") } }
+    /// Dark (the default), Light, Original (1.6.0's look) or Match system.
+    @Published var theme: ThemeChoice { didSet { d.set(theme.rawValue, forKey: "theme") } }
     @Published var accent: AccentChoice { didSet { d.set(accent.rawValue, forKey: "accent") } }
     @Published var convertOnDrop: Bool { didSet { d.set(convertOnDrop, forKey: "convertOnDrop") } }
     @Published var revealWhenDone: Bool { didSet { d.set(revealWhenDone, forKey: "revealWhenDone") } }
@@ -159,7 +161,10 @@ final class Settings: ObservableObject {
         plateLayout = PlateLayout(rawValue: d.string(forKey: "plateLayout") ?? "") ?? .parts
         replaceExisting = d.object(forKey: "replaceExisting") as? Bool ?? false
         parallelJobs = d.object(forKey: "parallelJobs") as? Int ?? 2
-        accent = AccentChoice(rawValue: d.string(forKey: "accent") ?? "") ?? .cyan
+        theme = ThemeChoice(rawValue: d.string(forKey: "theme") ?? "") ?? .dark
+        // (Matte blue since 2.0: only an accent someone chose was ever stored, so
+        // that one is kept, and one never chosen becomes Matte blue)
+        accent = AccentChoice(rawValue: d.string(forKey: "accent") ?? "") ?? .matte
         convertOnDrop = d.object(forKey: "convertOnDrop") as? Bool ?? false
         revealWhenDone = d.object(forKey: "revealWhenDone") as? Bool ?? false
         splitParts = d.object(forKey: "splitParts") as? Bool ?? true

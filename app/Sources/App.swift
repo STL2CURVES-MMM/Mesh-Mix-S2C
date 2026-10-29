@@ -122,7 +122,7 @@ struct ManifoldMeshMixApp: App {
                 .environmentObject(settings)
                 .environmentObject(updater)
                 .frame(width: 420)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(settings.theme.scheme)
         }
     }
 }
@@ -134,10 +134,13 @@ struct PreferencesView: View {
     var body: some View {
         Form {
             Section("Appearance") {
+                Picker("Theme", selection: $settings.theme) {
+                    ForEach(ThemeChoice.allCases) { t in Text(t.title).tag(t) }
+                }
                 Picker("Accent color", selection: $settings.accent) {
                     ForEach(AccentChoice.allCases) { a in
                         HStack {
-                            Circle().fill(a.color).frame(width: 10, height: 10)
+                            Circle().fill(a.baseColor).frame(width: 10, height: 10)
                             Text(a.title)
                         }
                         .tag(a)
