@@ -3215,7 +3215,7 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # once _settle_tolerances has raised their tolerances to the gap: it
         # counts as broken too (cause 18: Rak 19007-SMA-USB had a freeform face
         # with three edges 13-25 mm off it, read as valid with a 25 mm tolerance)
-        gaps = {r for r, f in asm.region_faces.items() if r not in bad and _edge_gap(f) > EDGE_GAP * tol}
+        gaps = {r for r, f in asm.region_faces.items() if r not in bad and _edge_gap(f, EDGE_GAP * tol) > EDGE_GAP * tol}
         if gaps:
             report.log(f"{len(gaps)} face(s) with edges far off their surface are built again")
             bad |= gaps
@@ -3656,16 +3656,22 @@ def _turn_pieces(seg, faces, o, u, v, ang):
     return (pieces, float(uc)) if len(pieces) > 1 else None
 
 
-def _edge_gap(face):
+def _edge_gap(face, limit=0.0):
     """How far the face's edges really are from its surface: the largest distance,
     over a few points along each edge, between the edge's own curve and its curve on
     this face's surface at the same parameter. (An edge's tolerance says only how far
     OpenCASCADE was told to allow, and _settle_tolerances raises it to whatever the gap
-    is; this measures the gap itself.)"""
+    is; this measures the gap itself.) An edge past ``limit`` that way is measured again
+    by projecting its points onto the surface, which a curve on the surface parameterised
+    differently from the edge doesn't fool (checked on Rak 19007-SMA-USB read back: such
+    edges read 0.2-0.4 mm at the same parameter and 0.000 mm projected, while the real
+    gaps read the same both ways)."""
     from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
 
     worst = 0.0
     try:
+        surf = None
         ex = TopExp_Explorer(face, TopAbs_EDGE)
         while ex.More():
             e = TopoDS.Edge(ex.Current())
@@ -3675,9 +3681,17 @@ def _edge_gap(face):
             c3 = BRepAdaptor_Curve(e)
             cs = BRepAdaptor_Curve(e, face)
             a, b = c3.FirstParameter(), c3.LastParameter()
-            for k in range(EDGE_GAP_SAMPLES + 1):
-                t = a + (b - a) * k / EDGE_GAP_SAMPLES
-                worst = max(worst, c3.Value(t).Distance(cs.Value(t)))
+            ts = [a + (b - a) * k / EDGE_GAP_SAMPLES for k in range(EDGE_GAP_SAMPLES + 1)]
+            gap = max(c3.Value(t).Distance(cs.Value(t)) for t in ts)
+            if gap > limit:
+                if surf is None:
+                    surf = BRep_Tool.Surface_s(face)
+                proj = 0.0
+                for t in ts:
+                    pr = GeomAPI_ProjectPointOnSurf(c3.Value(t), surf)
+                    proj = max(proj, pr.LowerDistance() if pr.NbPoints() else gap)
+                gap = min(gap, proj)
+            worst = max(worst, gap)
     except Exception:
         return 0.0      # (an edge with no curve on the face: the validity check reports it)
     return worst
