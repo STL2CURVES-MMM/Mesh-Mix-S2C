@@ -9,6 +9,10 @@
 # own triangles (the rounds' check writes a loose compound, which read back clean while the
 # saved file broke two faces: Rak Uni-USB); a triangle whose direction isn't trusted
 # (Segmenter.unsure) must still face within the tilt noise can give it (Segmenter.cos_ok).
+# Modified 2026-10-29 for Mesh Mix-S2C (cause 18): a face with an edge further than
+# EDGE_GAP tolerances from its own surface counts as broken in build_cad_shell's rounds
+# (_edge_gap), like an invalid one: _settle_tolerances raised such edges' tolerances until
+# the face passed, which hid edges up to 25 mm off a freeform face (Rak 19007-SMA-USB).
 # Modified 2026-10-28: convert_body_cad keeps the healed shape only when it is better
 # (pipeline.fix_acceptable: valid, volume of the mesh's sign and size), and turns a body
 # that comes out inside out the right way round (pipeline.orient_like_mesh).
@@ -3207,6 +3211,14 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
             # (a face whose surface blew up passes the validity check)
             if not BRepCheck_Analyzer(f).IsValid() or face_blown_up(f):
                 bad.add(r)
+        # a face whose edges stand far off its surface passes the check above
+        # once _settle_tolerances has raised their tolerances to the gap: it
+        # counts as broken too (cause 18: Rak 19007-SMA-USB had a freeform face
+        # with three edges 13-25 mm off it, read as valid with a 25 mm tolerance)
+        gaps = {r for r, f in asm.region_faces.items() if r not in bad and _edge_gap(f) > EDGE_GAP * tol}
+        if gaps:
+            report.log(f"{len(gaps)} face(s) with edges far off their surface are built again")
+            bad |= gaps
         # a face can be valid here and broken in the saved STEP file read
         # back (a STEP file keeps no edge tolerances: an edge saved with 0.1
         # reads back with 1e-7): such faces are built again like broken ones
@@ -3495,6 +3507,8 @@ def _half_turns(r, p, cen):
     return parts
 
 
+EDGE_GAP = 20.0         # tolerances: an edge this far from its face's surface makes the face broken (cause 18)
+EDGE_GAP_SAMPLES = 16   # points compared along each edge
 TURN_SPLIT = True       # cut surfaces winding over a turn into one face a turn
 TURN_SNAP = False       # move a cut's corners onto its meridian (off: on the owner's n-mount it made the cut cone pieces stray from the mesh, 231 faces against 193 without it)
 TURN_GAP_DEG = 15.0     # degrees: a region whose triangles leave a gap this wide round its axis is under one turn
@@ -3640,6 +3654,33 @@ def _turn_pieces(seg, faces, o, u, v, ang):
         comp[comp == c] = int(np.bincount(other).argmax())
     pieces = [faces[comp == c] for c in np.unique(comp)]
     return (pieces, float(uc)) if len(pieces) > 1 else None
+
+
+def _edge_gap(face):
+    """How far the face's edges really are from its surface: the largest distance,
+    over a few points along each edge, between the edge's own curve and its curve on
+    this face's surface at the same parameter. (An edge's tolerance says only how far
+    OpenCASCADE was told to allow, and _settle_tolerances raises it to whatever the gap
+    is; this measures the gap itself.)"""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    worst = 0.0
+    try:
+        ex = TopExp_Explorer(face, TopAbs_EDGE)
+        while ex.More():
+            e = TopoDS.Edge(ex.Current())
+            ex.Next()
+            if BRep_Tool.Degenerated_s(e):
+                continue
+            c3 = BRepAdaptor_Curve(e)
+            cs = BRepAdaptor_Curve(e, face)
+            a, b = c3.FirstParameter(), c3.LastParameter()
+            for k in range(EDGE_GAP_SAMPLES + 1):
+                t = a + (b - a) * k / EDGE_GAP_SAMPLES
+                worst = max(worst, c3.Value(t).Distance(cs.Value(t)))
+    except Exception:
+        return 0.0      # (an edge with no curve on the face: the validity check reports it)
+    return worst
 
 
 def _settle_tolerances(shape, tol):
