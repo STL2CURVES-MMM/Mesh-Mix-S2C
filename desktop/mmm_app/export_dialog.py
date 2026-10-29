@@ -312,7 +312,7 @@ class ExportDialog(QDialog):
             self.failure_card.lay.addLayout(row)
         if any(f.is_permission for f in self.failures):
             if system.IS_WINDOWS:
-                help_text = ("If Controlled folder access is on in Windows Security, allow Manifold Mesh Mix under "
+                help_text = ("If Controlled folder access is on in Windows Security, allow Mesh Mix-S2C under "
                              "Ransomware protection. Or choose another folder to export to.")
             else:
                 help_text = "Choose another folder to export to, or check that you may write to this one."

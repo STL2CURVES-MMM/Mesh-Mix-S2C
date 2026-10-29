@@ -166,7 +166,7 @@ struct BrandHeader: View {
             .frame(width: 34, height: 34)
             .shadow(color: settings.accent.color.opacity(0.45), radius: 8)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Manifold Mesh Mix")
+                Text("Mesh Mix-S2C")
                     .font(.system(size: 15, weight: .bold))
                 Text("STL → STEP converter")
                     .font(.system(size: 11))

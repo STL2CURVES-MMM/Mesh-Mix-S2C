@@ -32,7 +32,7 @@ done
 [ -d "$NEW/Contents/MacOS" ] || fail "The downloaded update is incomplete."
 
 OLD="$DEST.old-$$"
-mv "$DEST" "$OLD" 2>/dev/null || fail "macOS didn't allow replacing the app. Allow Manifold Mesh Mix under System Settings → Privacy & Security → App Management, or drag the new version into Applications yourself."
+mv "$DEST" "$OLD" 2>/dev/null || fail "macOS didn't allow replacing the app. Allow Mesh Mix-S2C under System Settings → Privacy & Security → App Management, or drag the new version into Applications yourself."
 if /usr/bin/ditto "$NEW" "$DEST"; then
   rm -rf "$OLD"
 else

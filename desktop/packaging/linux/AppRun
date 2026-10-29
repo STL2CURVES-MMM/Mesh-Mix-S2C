@@ -1,4 +1,4 @@
 #!/bin/sh
-# Starts Manifold Mesh Mix from inside the AppImage.
+# Starts Mesh Mix-S2C from inside the AppImage.
 HERE="$(dirname "$(readlink -f "$0")")"
 exec "$HERE/usr/lib/manifold-mesh-mix/ManifoldMeshMix" "$@"

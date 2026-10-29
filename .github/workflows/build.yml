@@ -1,4 +1,4 @@
-# Builds and tests Manifold Mesh Mix on Linux, Windows and macOS.
+# Builds and tests Mesh Mix-S2C on Linux, Windows and macOS.
 #
 # Every push: build all three, run the unit tests, the engine test suite on
 # the built engine, the app's scripted self-test (real conversions and
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14.7"
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -76,15 +76,15 @@ jobs:
       - name: App self-test (AppImage)
         run: >
           xvfb-run -a -s "-screen 0 1600x1000x24"
-          .venv/bin/python desktop/tests/run_selftest.py dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage selftest-linux
+          .venv/bin/python desktop/tests/run_selftest.py dist-desktop/MeshMix-S2C-*-Linux-x86_64.AppImage selftest-linux
           --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl "fixtures/Messy cube.stl"
           --big tests/models/huge_scan_blob.stl
       - name: Self-update test (AppImage)
-        run: xvfb-run -a -s "-screen 0 1600x1000x24" .venv/bin/python desktop/tests/appimage_update_test.py dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" .venv/bin/python desktop/tests/appimage_update_test.py dist-desktop/MeshMix-S2C-*-Linux-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
-          path: dist-desktop/ManifoldMeshMix-*-Linux-x86_64.AppImage
+          path: dist-desktop/MeshMix-S2C-*-Linux-x86_64.AppImage
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
@@ -104,7 +104,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14.7"
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -140,11 +140,11 @@ jobs:
           --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl "fixtures/Messy cube.stl"
           --big tests/models/huge_scan_blob.stl
       - name: Install, self-update and uninstall test
-        run: .venv/Scripts/python.exe desktop/tests/windows_update_test.py dist-desktop/ManifoldMeshMix-*-Windows-x64-Setup.exe
+        run: .venv/Scripts/python.exe desktop/tests/windows_update_test.py dist-desktop/MeshMix-S2C-*-Windows-x64-Setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: dist-desktop/ManifoldMeshMix-*-Windows-x64-Setup.exe
+          path: dist-desktop/MeshMix-S2C-*-Windows-x64-Setup.exe
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
@@ -161,7 +161,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14.7"
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Python environment
@@ -177,15 +177,15 @@ jobs:
         run: ./build.sh --zip
       - name: App self-test
         run: >
-          python3 desktop/tests/run_selftest.py "dist/Manifold Mesh Mix.app/Contents/MacOS/ManifoldMeshMix" selftest-macos
+          python3 desktop/tests/run_selftest.py "dist/Mesh Mix-S2C.app/Contents/MacOS/ManifoldMeshMix" selftest-macos
           --files fixtures/cad_bracket_fillets.stl fixtures/two_parts.3mf "fixtures/Peça ção teste.stl" fixtures/organic_metaballs.stl "fixtures/Messy cube.stl"
           --big tests/models/huge_scan_blob.stl
       - name: Self-update test
-        run: python3 app/Tests/update_test.py "dist/Manifold Mesh Mix.app"
+        run: python3 app/Tests/update_test.py "dist/Mesh Mix-S2C.app"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-zip
-          path: dist/ManifoldMeshMix-*-macOS-arm64.zip
+          path: dist/MeshMix-S2C-*-macOS-arm64.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
@@ -241,4 +241,4 @@ jobs:
           notes=".github/release-notes/${TAG}.md"
           if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
           gh release create "$TAG" release/* --target "$GITHUB_SHA" \
-            --title "Manifold Mesh Mix ${TAG#v}" "${how[@]}"
+            --title "Mesh Mix-S2C ${TAG#v}" "${how[@]}"

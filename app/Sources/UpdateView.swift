@@ -98,7 +98,7 @@ struct UpdateView: View {
         let current = Updater.currentVersion
         switch state {
         case .idle, .checking: return "You have version \(current)."
-        case .current: return "Version \(current) is the newest version of Manifold Mesh Mix for macOS."
+        case .current: return "Version \(current) is the newest version of Mesh Mix-S2C for macOS."
         case .available:
             if let p = updater.installProblem { return "You have version \(current). \(p)" }
             return "You have version \(current). Install and Restart downloads it, checks it, installs it and opens the app again."

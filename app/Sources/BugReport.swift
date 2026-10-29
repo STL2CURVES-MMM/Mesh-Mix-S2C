@@ -113,10 +113,10 @@ enum BugReport {
         df.locale = Locale(identifier: "en_US_POSIX")
         df.dateFormat = "yyyy-MM-dd HH:mm"
         let installed = Bundle.main.bundleURL.pathExtension == "app"
-        add("Manifold Mesh Mix - problem report")
+        add("Mesh Mix-S2C - problem report")
         add(String(repeating: "=", count: 34))
         add("Created:   \(df.string(from: Date()))")
-        add("App:       Manifold Mesh Mix \(Updater.currentVersion) (\(installed ? "installed app" : "development build"))")
+        add("App:       Mesh Mix-S2C \(Updater.currentVersion) (\(installed ? "installed app" : "development build"))")
         add("System:    \(systemLine)")
         add("Toolkit:   SwiftUI (native macOS app)")
         add("")
@@ -241,7 +241,7 @@ enum BugReport {
     }
 
     static func defaultName(for job: Job) -> String {
-        AppModel.safeFileName("Manifold Mesh Mix report - \(job.name)") + ".txt"
+        AppModel.safeFileName("Mesh Mix-S2C report - \(job.name)") + ".txt"
     }
 
     static func save(job: Job, settings: Settings, to url: URL) throws {

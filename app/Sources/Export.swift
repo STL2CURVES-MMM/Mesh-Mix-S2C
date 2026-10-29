@@ -173,7 +173,7 @@ struct ExportSheet: View {
                 }
             }
             if permission {
-                Text("To allow it, open Privacy Settings, choose Files & Folders, and turn on the folder under Manifold Mesh Mix. Or choose another folder to export to.")
+                Text("To allow it, open Privacy Settings, choose Files & Folders, and turn on the folder under Mesh Mix-S2C. Or choose another folder to export to.")
                     .font(.system(size: 11)).foregroundStyle(Theme.textDim)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {

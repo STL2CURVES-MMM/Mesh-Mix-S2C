@@ -1,6 +1,6 @@
 """End-to-end test of the Windows installer and self-update (run on Windows).
 
-    python windows_update_test.py path/to/ManifoldMeshMix-X-Windows-x64-Setup.exe
+    python windows_update_test.py path/to/MeshMix-S2C-X-Windows-x64-Setup.exe
 
 1. Installs silently for the current user and checks the files and the
    "Open with" registration.
@@ -25,7 +25,7 @@ import threading
 import time
 import winreg
 
-APP = os.path.join(os.environ["LOCALAPPDATA"], "Programs", "Manifold Mesh Mix")
+APP = os.path.join(os.environ["LOCALAPPDATA"], "Programs", "Mesh Mix-S2C")
 EXE = os.path.join(APP, "ManifoldMeshMix.exe")
 
 
@@ -66,7 +66,7 @@ def main():
     # 2. self-update
     site = os.path.join(work, "site")
     os.makedirs(site)
-    name = "ManifoldMeshMix-9.9.9-Windows-x64-Setup.exe"
+    name = "MeshMix-S2C-9.9.9-Windows-x64-Setup.exe"
     shutil.copy2(setup, os.path.join(site, name))
     with open(os.path.join(setup), "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()

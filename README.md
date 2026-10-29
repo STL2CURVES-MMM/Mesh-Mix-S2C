@@ -141,10 +141,10 @@ All three versions share the conversion engine in `engine/`. The version number 
 
 ### macOS
 
-Needs macOS 14 or newer on Apple silicon, the Xcode command line tools and Python 3.12.
+Needs macOS 14 or newer on Apple silicon, the Xcode command line tools and Python 3.14.
 
 ```
-python3.12 -m venv .venv
+python3.14 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ./build.sh            # builds dist/Manifold Mesh Mix.app (Swift app + bundled engine)
 ./build.sh --install  # also copies it to /Applications
@@ -153,10 +153,10 @@ python3.12 -m venv .venv
 
 ### Windows and Linux
 
-One Qt (PySide6) app in `desktop/` builds both. Needs Python 3.12; Windows also needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) for the installer.
+One Qt (PySide6) app in `desktop/` builds both. Needs Python 3.14; Windows also needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) for the installer.
 
 ```
-python3.12 -m venv .venv                       # Windows: py -3.12 -m venv .venv
+python3.14 -m venv .venv                       # Windows: py -3.14 -m venv .venv
 .venv/bin/pip install -r requirements.txt -r desktop/requirements.txt
 .venv/bin/python desktop/build.py               # Windows: .venv\Scripts\python desktop\build.py
 ```

@@ -83,11 +83,11 @@ def server(tmp_path, monkeypatch):
 
 
 def asset(ver="9.9.9"):
-    return f"ManifoldMeshMix-{ver}{updater.asset_suffix()}"
+    return f"MeshMix-S2C-{ver}{updater.asset_suffix()}"
 
 
 def test_check_finds_newer_version(server):
-    server.publish("v9.9.9", {asset(): b"new app", "ManifoldMeshMix-9.9.9-Other-OS.bin": b"x"})
+    server.publish("v9.9.9", {asset(): b"new app", "MeshMix-S2C-9.9.9-Other-OS.bin": b"x"})
     info = updater.check()
     assert info.version == "9.9.9" and info.asset_name == asset() and info.notes == "Fixes things."
 
@@ -98,7 +98,7 @@ def test_check_up_to_date(server):
 
 
 def test_check_errors(server):
-    server.publish("v9.9.9", {"ManifoldMeshMix-9.9.9-Other-OS.bin": b"x"})
+    server.publish("v9.9.9", {"MeshMix-S2C-9.9.9-Other-OS.bin": b"x"})
     with pytest.raises(updater.UpdateError, match="no download for"):
         updater.check()
     server.publish("v9.9.9", {asset(): b"x"}, sums=False)

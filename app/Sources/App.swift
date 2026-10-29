@@ -51,7 +51,7 @@ struct ManifoldMeshMixApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Manifold Mesh Mix") {
+        WindowGroup("Mesh Mix-S2C") {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(settings)
@@ -83,7 +83,7 @@ struct ManifoldMeshMixApp: App {
         .defaultSize(width: 1280, height: 780)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About Manifold Mesh Mix") { Support.showAbout() }
+                Button("About Mesh Mix-S2C") { Support.showAbout() }
             }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { updater.checkFromMenu() }

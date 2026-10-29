@@ -1,4 +1,4 @@
-# Conversion engine (Python 3.12)
+# Conversion engine (Python 3.14.7, the same as the merged engine)
 cadquery-ocp==8.0.1.1.0
 numpy==2.5.4
 scipy==1.18.1

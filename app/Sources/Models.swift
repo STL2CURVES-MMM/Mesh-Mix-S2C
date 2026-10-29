@@ -883,7 +883,7 @@ final class AppModel: ObservableObject {
             job.reinspecting = false
             job.convertAfterRead = false
             job.status = .failed
-            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix."
+            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Mesh Mix-S2C."
         }
     }
 
@@ -1039,7 +1039,7 @@ final class AppModel: ObservableObject {
         fixTasks.append(t)
         do { try t.start() } catch {
             fixTasks.removeAll { $0 === t }
-            completion("The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix.")
+            completion("The converter couldn't start (\(error.localizedDescription)). Try reinstalling Mesh Mix-S2C.")
         }
     }
 
@@ -1283,12 +1283,12 @@ final class AppModel: ObservableObject {
         }
         do { try t.start() } catch {
             job.status = .failed
-            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix."
+            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Mesh Mix-S2C."
             pump()
         }
     }
 
-    static let engineMissingMessage = "Part of the app is missing (the converter). Please reinstall Manifold Mesh Mix."
+    static let engineMissingMessage = "Part of the app is missing (the converter). Please reinstall Mesh Mix-S2C."
 
     /// What to tell the user when the converter ends without a result.
     static func crashMessage(status: Int32, signaled: Bool) -> String {

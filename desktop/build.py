@@ -1,4 +1,4 @@
-"""Builds Manifold Mesh Mix for Windows or Linux (run it on that system).
+"""Builds Mesh Mix-S2C for Windows or Linux (run it on that system).
 
     python desktop/build.py               app folder + installer (Windows) / AppImage (Linux)
     python desktop/build.py --no-package  only the app folder (dist-desktop/ManifoldMeshMix)
@@ -109,7 +109,7 @@ def package_windows(ver, ico):
     iss = os.path.join(HERE, "packaging", "windows", "installer.iss")
     run([find_iscc(), f"/DAppVersion={ver}", f"/DSourceDir={APP_DIR}", f"/DOutputDir={DIST}",
          f"/DIconFile={ico}", f"/DLicenseFile={os.path.join(ROOT, 'LICENSE')}", iss])
-    out = os.path.join(DIST, f"ManifoldMeshMix-{ver}-Windows-x64-Setup.exe")
+    out = os.path.join(DIST, f"MeshMix-S2C-{ver}-Windows-x64-Setup.exe")
     print("built", out)
     return out
 
@@ -146,7 +146,7 @@ def package_linux(ver, pngs):
         d = os.path.join(appdir, "usr", "share", "icons", "hicolor", f"{size}x{size}", "apps")
         os.makedirs(d, exist_ok=True)
         shutil.copy2(p, os.path.join(d, "manifold-mesh-mix.png"))
-    out = os.path.join(DIST, f"ManifoldMeshMix-{ver}-Linux-x86_64.AppImage")
+    out = os.path.join(DIST, f"MeshMix-S2C-{ver}-Linux-x86_64.AppImage")
     env = dict(os.environ, ARCH="x86_64", APPIMAGE_EXTRACT_AND_RUN="1")
     run([appimagetool(), "--no-appstream", appdir, out], env=env)
     print("built", out)

@@ -207,7 +207,7 @@ class UpdateDialog(QDialog):
             self.text.setText(f"You have version {__version__}.")
         elif st == "current":
             self.title.setText("You're up to date")
-            self.text.setText(f"Version {__version__} is the newest version of Manifold Mesh Mix for {system.OS_NAME}.")
+            self.text.setText(f"Version {__version__} is the newest version of Mesh Mix-S2C for {system.OS_NAME}.")
         elif st == "available":
             self.title.setText(f"Version {info.version} is available")
             if can:

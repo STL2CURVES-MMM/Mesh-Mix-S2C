@@ -100,10 +100,10 @@ def build(job, settings):
     s = settings
     lines = []
     add = lines.append
-    add("Manifold Mesh Mix - problem report")
+    add("Mesh Mix-S2C - problem report")
     add("=" * 34)
     add(f"Created:   {time.strftime('%Y-%m-%d %H:%M')}")
-    add(f"App:       Manifold Mesh Mix {__version__} ({'installed app' if system.FROZEN else 'from source'})")
+    add(f"App:       Mesh Mix-S2C {__version__} ({'installed app' if system.FROZEN else 'from source'})")
     add(f"System:    {_system()}")
     add(f"Toolkit:   Python {platform.python_version()}, {_qt()}")
     add("")
@@ -200,7 +200,7 @@ def build(job, settings):
 
 def default_name(job):
     from .model import safe_file_name
-    return safe_file_name(f"Manifold Mesh Mix report - {job.name}") + ".txt"
+    return safe_file_name(f"Mesh Mix-S2C report - {job.name}") + ".txt"
 
 
 def save(job, settings, path):

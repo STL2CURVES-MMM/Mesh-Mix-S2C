@@ -29,7 +29,7 @@ INSPECT_LIMIT = 3
 RUN_SETTINGS = ("preset", "quality", "autoQuality", "repair", "unit", "plateLayout", "removeDebris",
                 "useCustomTolerance", "customTolerance", "maxFaces")
 
-ENGINE_MISSING_MESSAGE = "Part of the app is missing (the converter). Please reinstall Manifold Mesh Mix."
+ENGINE_MISSING_MESSAGE = "Part of the app is missing (the converter). Please reinstall Mesh Mix-S2C."
 
 
 class JobStatus(Enum):
@@ -859,7 +859,7 @@ class AppModel(QObject):
             t.start()
         except OSError as e:
             job.task = None
-            job.error = f"The converter couldn't start ({e.strerror or e}). Try reinstalling Manifold Mesh Mix."
+            job.error = f"The converter couldn't start ({e.strerror or e}). Try reinstalling Mesh Mix-S2C."
             self._set_status(job, JobStatus.FAILED)
 
     # ------------------------------------------------------------------ conversion queue
@@ -1020,7 +1020,7 @@ class AppModel(QObject):
             t.start()
         except OSError as e:
             self._fix_tasks.discard(t)
-            later(f"The converter couldn't start ({e.strerror or e}). Try reinstalling Manifold Mesh Mix.")
+            later(f"The converter couldn't start ({e.strerror or e}). Try reinstalling Mesh Mix-S2C.")
 
     def recheck(self):
         """Mesh repair or Remove debris changed: files that aren't converted
@@ -1191,7 +1191,7 @@ class AppModel(QObject):
             t.start()
         except OSError as e:
             job.task = None
-            job.error = f"The converter couldn't start ({e.strerror or e}). Try reinstalling Manifold Mesh Mix."
+            job.error = f"The converter couldn't start ({e.strerror or e}). Try reinstalling Mesh Mix-S2C."
             self._set_status(job, JobStatus.FAILED)
             self._pump()
 

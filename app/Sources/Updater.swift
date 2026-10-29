@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 
 /// Finds, downloads and installs a newer version from the project's GitHub
-/// releases. Every release carries ManifoldMeshMix-<version>-macOS-arm64.zip
+/// releases. Every release carries MeshMix-S2C-<version>-macOS-arm64.zip
 /// and a SHA256SUMS.txt; the zip is checked against it before installing.
 /// Installing hands over to install-update.sh, which waits for the app to
 /// quit, swaps the app bundle and opens the new version.
@@ -24,7 +24,7 @@ final class Updater: ObservableObject {
         let pageURL: URL
     }
 
-    static let repo = "TUNA-THE-FIRST/Manifold-Mesh-Mix"
+    static let repo = "STL2CURVES-MMM/Mesh-Mix-S2C"
     static let assetSuffix = "-macOS-arm64.zip"
     static let sumsName = "SHA256SUMS.txt"
     static let releasesPage = URL(string: "https://github.com/\(repo)/releases/latest")!
@@ -214,7 +214,7 @@ final class Updater: ObservableObject {
     var installProblem: String? {
         let dest = Bundle.main.bundleURL
         if dest.path.contains("/AppTranslocation/") {
-            return "macOS is running the app from a temporary place. Move Manifold Mesh Mix into your Applications folder, open it from there, then update."
+            return "macOS is running the app from a temporary place. Move Mesh Mix-S2C into your Applications folder, open it from there, then update."
         }
         let fm = FileManager.default
         if !fm.isWritableFile(atPath: dest.deletingLastPathComponent().path) || !fm.isWritableFile(atPath: dest.path) {
@@ -353,7 +353,7 @@ final class Updater: ObservableObject {
         let items = (try? FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)) ?? []
         guard let app = items.first(where: { $0.pathExtension == "app" }),
               Bundle(url: app)?.bundleIdentifier == Bundle.main.bundleIdentifier else {
-            throw UpdateError("The downloaded update doesn't contain Manifold Mesh Mix.")
+            throw UpdateError("The downloaded update doesn't contain Mesh Mix-S2C.")
         }
         try? FileManager.default.removeItem(at: zip)
         return app

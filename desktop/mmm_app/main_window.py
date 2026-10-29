@@ -165,7 +165,7 @@ class MainWindow(QMainWindow):
         if err:
             QMessageBox.warning(self, APP_NAME, err)
         else:
-            QMessageBox.information(self, APP_NAME, "Manifold Mesh Mix is now in your applications menu, and in "
+            QMessageBox.information(self, APP_NAME, "Mesh Mix-S2C is now in your applications menu, and in "
                                     "“Open With” for STL, 3MF, OBJ and PLY files. If you move the AppImage, add it again.")
 
     def _export_selected(self):

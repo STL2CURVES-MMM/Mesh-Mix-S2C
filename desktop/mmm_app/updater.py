@@ -3,9 +3,9 @@ releases.
 
 Every release carries one file per system and a SHA256SUMS.txt:
 
-    ManifoldMeshMix-<version>-Windows-x64-Setup.exe
-    ManifoldMeshMix-<version>-Linux-x86_64.AppImage
-    ManifoldMeshMix-<version>-macOS-arm64.zip
+    MeshMix-S2C-<version>-Windows-x64-Setup.exe
+    MeshMix-S2C-<version>-Linux-x86_64.AppImage
+    MeshMix-S2C-<version>-macOS-arm64.zip
 
 Windows runs the new installer silently (it installs for the current user
 only, so no administrator password is needed) and starts the app again.

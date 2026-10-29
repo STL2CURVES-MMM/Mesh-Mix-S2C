@@ -31,7 +31,7 @@ class BrandHeader(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        title = Label("Manifold Mesh Mix", 15, BOLD)
+        title = Label("Mesh Mix-S2C", 15, BOLD)
         sub = Label("STL → STEP converter", 11, color=theme.TEXT_DIM)
         self.update_button = IconButton("update", "Check for updates", size=26)
         self.update_button.clicked.connect(self.update_clicked)

@@ -4,7 +4,7 @@
                            [--unicode-temp] [--convert-only] [--update-url URL --expect-update STATE]
 
 APP_PROGRAM is the Windows/Linux app (ManifoldMeshMix.exe, the AppImage)
-or the Mac app's executable (…/Manifold Mesh Mix.app/Contents/MacOS/ManifoldMeshMix).
+or the Mac app's executable (…/Mesh Mix-S2C.app/Contents/MacOS/ManifoldMeshMix).
 --unicode-temp points the temporary folder at a path with accents, so the
 engine writes its files through a non-ASCII path (common user names in
 Brazil have them).
