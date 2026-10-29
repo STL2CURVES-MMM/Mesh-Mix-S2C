@@ -39,7 +39,7 @@ class _Header(QWidget):
         a = theme.accent()
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(theme.with_alpha(a, 0.16))
-        p.drawRoundedRect(QRectF(self.rect()), 9, 9)
+        p.drawRoundedRect(QRectF(self.rect()), theme.R_MED, theme.R_MED)
         p.drawPixmap(10, 10, icons.pixmap("upload", a, 16, max(1.0, self.devicePixelRatioF())))
 
 
@@ -92,7 +92,7 @@ class ClashPrompt(QWidget):
         self.card.fill = theme.CARD
         self.card.border = theme.STROKE_STRONG
         self.card.setFixedWidth(440)
-        self.card.radius = 14
+        self.card.radius = theme.R_BIG
         self.title = Label("", 14, BOLD, wrap=True)
         self.text = Label("", 11.5, color=theme.TEXT_DIM, wrap=True)
         self.card.lay.addLayout(hbox(IconLabel("doc-dup", theme.WARN, 20), vbox(self.title, self.text, spacing=4), spacing=10))
@@ -199,7 +199,7 @@ class ExportDialog(QDialog):
         self.failure_card = Card(padding=10, spacing=8)
         self.failure_card.fill = theme.with_alpha(theme.BAD, 0.08)
         self.failure_card.border = theme.with_alpha(theme.BAD, 0.4)
-        self.failure_card.radius = 10
+        self.failure_card.radius = theme.R_MED
         self.failure_card.hide()
 
         self.busy = ThinProgress()

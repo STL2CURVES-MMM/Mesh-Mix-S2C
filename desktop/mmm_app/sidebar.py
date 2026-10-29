@@ -84,7 +84,7 @@ class DropZone(Card):
     clicked = Signal()
 
     def __init__(self, parent=None):
-        super().__init__(parent, padding=0, radius=12)
+        super().__init__(parent, padding=0, radius=theme.R_BIG)
         self.targeted = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(100)
@@ -108,7 +108,7 @@ class DropZone(Card):
         pen = QPen(a if self.targeted else theme.STROKE_STRONG, 1.3)
         pen.setDashPattern([6 / 1.3, 5 / 1.3])
         p.setPen(pen)
-        p.drawRoundedRect(r, 12, 12)
+        p.drawRoundedRect(r, theme.R_BIG, theme.R_BIG)
         ic = icons.pixmap("arrow-down-circle" if self.targeted else "import", a if self.targeted else theme.TEXT_DIM, 24,
                           max(1.0, self.devicePixelRatioF()), 1.6)
         p.drawPixmap(int((self.width() - 24) / 2), 18, ic)
@@ -300,7 +300,7 @@ class Sidebar(QWidget):
         self.model = model
         self.rows = {}
         self.setAutoFillBackground(True)
-        self.setStyleSheet(f"Sidebar {{ background: {theme.css(theme.PANEL)}; }}")
+        self.retheme()
         self.header = BrandHeader()
         self.update_banner = UpdateBanner()
         self.drop = DropZone()
@@ -371,6 +371,9 @@ class Sidebar(QWidget):
         jobs = self.model.jobs
         self.clear.setVisible(any(j.status == JobStatus.DONE for j in jobs))
         self.stop.setVisible(any(j.status in (JobStatus.CONVERTING, JobStatus.QUEUED) for j in jobs))
+
+    def retheme(self):
+        self.setStyleSheet(f"Sidebar {{ background: {theme.css(theme.PANEL)}; }}")
 
     def refresh_theme(self):
         for row in self.rows.values():

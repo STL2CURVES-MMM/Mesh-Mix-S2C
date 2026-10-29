@@ -45,8 +45,13 @@ UNITS = [Choice("mm", "Millimeters"), Choice("cm", "Centimeters"), Choice("m", "
 
 MAX_FACES = [Choice(0, "None"), Choice(1000, "1,000"), Choice(4000, "4,000"), Choice(10000, "10,000"), Choice(25000, "25,000")]
 
+THEMES = [
+    Choice("dark", "Dark"), Choice("light", "Light"), Choice("original", "Original"),
+    Choice("system", "Match system"),
+]
+
 ACCENTS = [
-    Choice("cyan", "Cyan"), Choice("mint", "Mint"), Choice("violet", "Violet"),
+    Choice("matte", "Matte blue"), Choice("cyan", "Cyan"), Choice("mint", "Mint"), Choice("violet", "Violet"),
     Choice("orange", "Orange"), Choice("pink", "Pink"), Choice("lime", "Lime"),
 ]
 
@@ -204,7 +209,11 @@ class Settings(QObject):
     plateLayout = Field("parts", _values(PLATE_LAYOUTS))
     replaceExisting = Field(False)
     parallelJobs = Field(2, lo=1, hi=6)
-    accent = Field("cyan", _values(ACCENTS))
+    # Dark (the default), Light, Original (1.6.0's look) or Match system
+    theme = Field("dark", _values(THEMES))
+    # (Matte blue since 2.0; settings store only what someone changed, so an accent
+    # chosen in 1.x is kept, and one never chosen becomes Matte blue)
+    accent = Field("matte", _values(ACCENTS))
     convertOnDrop = Field(False)
     revealWhenDone = Field(False)
     # 3MF projects: one STEP file per part (like "Split to parts" in a slicer)

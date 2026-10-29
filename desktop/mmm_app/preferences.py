@@ -3,7 +3,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QGroupBox, QSpinBox, QVBoxLayout
 
 from . import __version__, system, theme
-from .settings import ACCENTS, PRESETS
+from .settings import ACCENTS, PRESETS, THEMES
 from .settings_panel import set_checked, set_combo
 from .widgets import GhostButton, Label, hbox, vbox
 
@@ -33,7 +33,12 @@ class PreferencesDialog(QDialog):
         for a in ACCENTS:
             self.accent.addItem(_dot(theme.ACCENT_COLORS[a.value]), a.title, a.value)
         self.accent.currentIndexChanged.connect(lambda: setattr(s, "accent", self.accent.currentData()))
-        appearance = self._group("Appearance", hbox(Label("Accent color", 12), None, self.accent))
+        self.theme = QComboBox()
+        for t in THEMES:
+            self.theme.addItem(t.title, t.value)
+        self.theme.currentIndexChanged.connect(lambda: setattr(s, "theme", self.theme.currentData()))
+        appearance = self._group("Appearance", hbox(Label("Theme", 12), None, self.theme),
+                                 hbox(Label("Accent color", 12), None, self.accent))
 
         self.preset = QComboBox()
         for p in PRESETS:
@@ -91,6 +96,7 @@ class PreferencesDialog(QDialog):
 
     def refresh(self, *_):
         s = self.settings
+        set_combo(self.theme, s.theme)
         set_combo(self.accent, s.accent)
         set_combo(self.preset, s.preset)
         if self.parallel.value() != s.parallelJobs:

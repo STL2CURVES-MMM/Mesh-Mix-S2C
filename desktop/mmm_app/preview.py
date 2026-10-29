@@ -123,7 +123,7 @@ class EmptyPreview(QWidget):
         g.setColorAt(0, theme.VIEWPORT_TOP)
         g.setColorAt(1, theme.VIEWPORT_BOTTOM)
         p.fillRect(self.rect(), g)
-        p.setPen(QPen(theme.white(0.035), 1))
+        p.setPen(QPen(theme.ink(0.035), 1))
         step = 32
         for x in range(0, self.width(), step):
             p.drawLine(x, 0, x, self.height())

@@ -34,7 +34,7 @@ def short_name_list(groups, limit=8):
 
 class EngineMissingBanner(Card):
     def __init__(self, parent=None):
-        super().__init__(parent, padding=12, radius=10, vertical=False, spacing=10)
+        super().__init__(parent, padding=12, radius=theme.R_MED, vertical=False, spacing=10)
         self.border = theme.with_alpha(theme.WARN, 0.5)
         self.lay.addWidget(IconLabel("warning", theme.WARN, 14))
         self.lay.addWidget(Label(ENGINE_MISSING_MESSAGE, 12))
@@ -83,6 +83,8 @@ class MainWindow(QMainWindow):
         self.updates.changed.connect(self._updates_changed)
         self.updates.install_requested.connect(self._install_update)
         settings.changed.connect(self._setting_changed)
+        # Match system follows the computer's dark/light setting as it changes
+        QApplication.instance().styleHints().colorSchemeChanged.connect(self._system_scheme_changed)
         self._build_menus()
         if not os.environ.get("MMM_SELFTEST"):
             schedule_launch_check(self.updates, settings)
@@ -357,18 +359,28 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ settings / theme
 
     def _setting_changed(self, key):
-        if key == "accent":
-            theme.set_accent(self.settings.accent)
-            app = QApplication.instance()
-            app.setPalette(theme.palette())
-            app.setStyleSheet(theme.stylesheet())
-            self.sidebar.refresh_theme()
-            self.settings_panel.refresh_theme()
-            self.preview.preview.refresh()
-            for w in app.allWidgets():
-                w.update()
+        if key in ("accent", "theme"):
+            self.apply_theme()
         if key in ("plateLayout",):
             self.preview.preview.refresh()
+
+    def apply_theme(self):
+        """Apply the current theme and accent everywhere, live (no restart): widgets that
+        were given a theme colour take the new theme's one (retheme)."""
+        app = QApplication.instance()
+        theme.install(app, self.settings)
+        for w in app.allWidgets():
+            if hasattr(w, "retheme"):
+                w.retheme()
+        self.sidebar.refresh_theme()
+        self.settings_panel.refresh_theme()
+        self.preview.preview.refresh()
+        for w in app.allWidgets():
+            w.update()
+
+    def _system_scheme_changed(self, *_):
+        if self.settings.theme == "system":
+            self.apply_theme()
 
     # ------------------------------------------------------------------ drag and drop
 

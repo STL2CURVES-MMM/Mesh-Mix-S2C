@@ -171,6 +171,45 @@ def test_accent_change_restyles(window):
     assert theme.accent().name() == theme.ACCENT_COLORS["pink"].name()
 
 
+def test_theme_defaults_upgrade_and_bad_values(qapp, tmp_path):
+    """New users and 1.6.0 users get Dark with Matte blue; an accent someone chose is
+    kept; an unknown theme falls back to Dark."""
+    s = Settings(QSettings(str(tmp_path / "new.ini"), QSettings.Format.IniFormat))
+    assert (s.theme, s.accent) == ("dark", "matte")
+    q = QSettings(str(tmp_path / "old.ini"), QSettings.Format.IniFormat)
+    q.setValue("accent", "orange")      # chosen in 1.6.0 (unchosen ones were never stored)
+    q.setValue("theme", "neon")
+    t = Settings(q)
+    assert (t.theme, t.accent) == ("dark", "orange")
+
+
+def test_theme_change_restyles_live(window):
+    from PySide6.QtWidgets import QApplication
+
+    from mmm_app import icons, theme
+
+    window.settings.theme = "light"
+    assert theme.current() == "light" and theme.is_light()
+    assert theme.TEXT.lightnessF() < 0.3 and theme.CARD.lightnessF() > 0.9
+    assert icons.KNOCKOUT == "#ffffff" and theme.ink(0.1).red() == 0
+    assert theme.css(theme.TEXT) in QApplication.instance().styleSheet()
+    window.settings.accent = "lime"
+    # pale accents get a deeper shade on Light, for text and thin lines
+    assert theme.accent().lightnessF() < theme.ACCENT_COLORS["lime"].lightnessF()
+    window.settings.theme = "original"
+    assert not theme.is_light() and theme.BG.name() == "#0a0b0e"
+    window.settings.theme = "dark"
+    assert theme.BG.name() == "#0e1116"
+
+
+def test_match_system_follows_the_computer():
+    from mmm_app import theme
+
+    assert theme.resolve("system", system_dark=True) == "dark"
+    assert theme.resolve("system", system_dark=False) == "light"
+    assert theme.resolve("bogus") == "dark"
+
+
 def test_preview_switches_to_step_view(window, meshes):
     m = window.model
     m.add([meshes["one.stl"]])

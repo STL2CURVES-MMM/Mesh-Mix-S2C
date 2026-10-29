@@ -7,7 +7,10 @@ from PySide6.QtSvg import QSvgRenderer
 
 _S = 'fill="none" stroke="{c}" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"'
 _F = 'fill="{c}" stroke="none"'
-_DARK = "#0b0c0e"
+# the mark cut out of a filled icon (the check in a filled circle): near-black on the
+# dark themes, white on Light, where the fills are deeper (set by theme.apply_theme)
+KNOCKOUT = "#0b0c0e"
+_DARK = "{k}"
 
 PATHS = {
     "plus": f'<path {_S} d="M12 5v14M5 12h14"/>',
@@ -84,7 +87,7 @@ PATHS = {
 
 
 def svg(name, color, weight=2.0):
-    body = PATHS[name].replace("{c}", color).replace("{w}", f"{weight:g}")
+    body = PATHS[name].replace("{c}", color).replace("{w}", f"{weight:g}").replace("{k}", KNOCKOUT)
     return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">{body}</svg>'
 
 
@@ -97,7 +100,7 @@ def pixmap(name, color, size, dpr=2.0, weight=2.0):
         c, opacity = color, 1.0
     else:
         c, opacity = color.name(), color.alphaF()  # "#rrggbb" + painter opacity
-    key = (name, c, round(size * dpr), round(opacity, 3), weight)
+    key = (name, c, round(size * dpr), round(opacity, 3), weight, KNOCKOUT)
     pm = _cache.get(key)
     if pm is None:
         px = max(1, round(size * dpr))

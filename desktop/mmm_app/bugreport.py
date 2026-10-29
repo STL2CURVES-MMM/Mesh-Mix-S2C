@@ -106,6 +106,7 @@ def build(job, settings):
     add(f"App:       Mesh Mix-S2C {__version__} ({'installed app' if system.FROZEN else 'from source'})")
     add(f"System:    {_system()}")
     add(f"Toolkit:   Python {platform.python_version()}, {_qt()}")
+    add(f"Theme:     {getattr(s, 'theme', 'dark')}, accent {getattr(s, 'accent', 'matte')}")
     add("")
     add("File")
     add(f"  Name:      {job.file_name}   (the folder isn't included)")
