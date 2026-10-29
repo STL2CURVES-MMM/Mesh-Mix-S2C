@@ -40,6 +40,12 @@
 # Off where the merged engine seeds the segmenter with stl2curves' features (Segmenter.
 # known_axes): they hold those axes' surfaces already, and there it cost Solar Panel Bracket
 # Large its CAD faces (one smooth area 22 -> 24 regions tipped compete the wrong way).
+# Modified 2026-10-29 (slivers): a triangle with no area to speak of goes to the region across
+# its longest edge before each build (Segmenter._flat_slivers_to_long_edge): held by a short
+# edge it made a zero-width spike in its face's outline, which OpenCASCADE finds crossing.
+# Modified 2026-10-29 (brace-fit): _straighten_borders' minimum cut also weighs how well each
+# surface fits the triangles it may move (FIT_WEIGHT), not border length only: of equally
+# short borders, the one keeping triangles on the surface they fit better wins.
 import numpy as np
 
 from OCP.BRep import BRep_Tool
@@ -965,6 +971,20 @@ class Segmenter:
             idx[free] = np.arange(len(free))
             src, snk = len(free), len(free) + 1
             rows, cols, caps = [], [], []
+            # how well each surface fits each free triangle: moving one to the surface it
+            # fits worse costs FIT_WEIGHT x (distance / tolerance)^2 (a typical edge of
+            # border weighs 100), so the border keeps triangles on their better surface
+            # (both P1S braces: rows went to the surface they fit worse, -1.2% and -1.8%
+            # volume, while the mirror image came out right)
+            da = self.face_error(regs[a].prim, regs[a].sense, free)[0] / max(self.tol, 1e-12)
+            db = self.face_error(regs[b].prim, regs[b].sense, free)[0] / max(self.tol, 1e-12)
+            on_a = np.round(FIT_WEIGHT * np.square(np.clip(db, 0, 1))).astype(np.int64)   # (cut if it goes to b)
+            on_b = np.round(FIT_WEIGHT * np.square(np.clip(da, 0, 1))).astype(np.int64)   # (cut if it goes to a)
+            ia = np.nonzero(on_a > 0)[0]
+            ib = np.nonzero(on_b > 0)[0]
+            rows += [np.full(len(ia), src), ib]
+            cols += [ia, np.full(len(ib), snk)]
+            caps += [on_a[ia], on_b[ib]]
             for k in range(3):
                 o = nb[free, k]
                 w = np.maximum(1, np.round(100 * L[free, k] / unit)).astype(np.int64)
@@ -1117,6 +1137,32 @@ class Segmenter:
         c = idx[n[ok]]
         G = sparse.coo_matrix((np.ones(len(r)), (r, c)), shape=(len(f), len(f)))
         return connected_components(G, directed=False)[0]
+
+    def _flat_slivers_to_long_edge(self):
+        """Give each triangle with no area to speak of (its corners in a line) to the
+        region across its longest edge: it has no surface of its own, and held by a
+        short edge it makes a spike of zero width in its face's outline, whose two
+        sides OpenCASCADE finds crossing (Solar Panel Bracket Large: two such spikes
+        broke a plane and a freeform face, and the whole body was saved faceted).
+        Returns True if anything changed."""
+        lab, nb, topo = self.label, self.nb, self.topo
+        L = np.linalg.norm(self.V[topo.he_to] - self.V[topo.he_from], axis=1).reshape(-1, 3)
+        k = L.argmax(1)
+        rows = np.arange(len(lab))
+        h = 2.0 * self.fa / np.maximum(L[rows, k], 1e-300)
+        o = nb[rows, k]
+        changed = False
+        # (a fan of them along one long edge passes the region on one by one)
+        for _ in range(3):
+            move = np.nonzero((h < SLIVER_HEIGHT * self.tol) & (o >= 0) & (lab[np.maximum(o, 0)] != lab))[0]
+            if not len(move):
+                break
+            lab[move] = lab[o[move]]
+            changed = True
+        if changed:
+            # (the surfaces stay as they are and no regions merge)
+            self._rebuild_regions(refit=False, merge=False)
+        return changed
 
     def _absorb_isolated_fragments(self):
         """Absorb triangles that are completely surrounded by other regions.
@@ -3190,6 +3236,7 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # neighbour (the ring of a printed mount came out as slivers
         # without this)
         seg.label, seg.regions = labels, regions
+        seg._flat_slivers_to_long_edge()
         seg._absorb_isolated_fragments()
         labels, regions = seg.label, seg.regions
         rg = RegionGraph(shell.V, shell.F, labels, shell.topo)
@@ -3495,6 +3542,8 @@ def _half_turns(r, p, cen):
     return parts
 
 
+FIT_WEIGHT = 30         # border-straightening cut: a triangle moved to the surface it fits a tolerance worse costs this (an edge: ~100; 100 sent test13 faceted)
+SLIVER_HEIGHT = 0.05    # tolerances: a triangle this low over its longest edge has no surface of its own (0.01 missed Solar Panel Bracket's)
 TURN_SPLIT = True       # cut surfaces winding over a turn into one face a turn
 TURN_SNAP = False       # move a cut's corners onto its meridian (off: on the owner's n-mount it made the cut cone pieces stray from the mesh, 231 faces against 193 without it)
 TURN_GAP_DEG = 15.0     # degrees: a region whose triangles leave a gap this wide round its axis is under one turn
