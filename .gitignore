@@ -17,6 +17,7 @@ desktop/tests/fixtures/
 # Test models and results (recreate with tests/make_models.py and tests/run_suite.py)
 tests/models/
 tests/out/
+tests/parts/
 tools/diagnostics/results/steps/
 tools/diagnostics/results/r6_all.jsonl
 tools/diagnostics/run_bench_*.py
