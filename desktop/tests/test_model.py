@@ -66,6 +66,19 @@ def test_conversion_result_from_event():
     assert empty.faces == 0 and empty.valid is None and not empty.has_issues
 
 
+def test_faceted_and_named_mixed_results():
+    """Auto's flat-face fallback has a plain name, and "mixed" names the
+    methods behind it when the engine lists them (issue #5)."""
+    flat = ConversionResult.from_event({"preset": "faceted"})
+    assert flat.preset_title == "Flat faces" and flat.faceted
+    named = ConversionResult.from_event({"preset": "mixed", "presets": ["faceted", "cad", 3]})
+    assert named.presets == ["faceted", "cad"]
+    assert named.preset_title == "CAD + Flat faces" and named.faceted
+    old = ConversionResult.from_event({"preset": "mixed"})
+    assert old.preset_title == "CAD + Smooth" and not old.faceted
+    assert not ConversionResult.from_event({"preset": "cad"}).faceted
+
+
 def test_export_failure_messages(monkeypatch):
     item = ExportItem(job=None, part=None, source="s", name="n")
     dest = os.path.join("some", "Folder", "n.step")

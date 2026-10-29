@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from . import icons, system, theme
 from .model import JobStatus, result_unit
+from .settings import FACETED_TIP
 from .sidebar import format_bytes, format_int
 from .theme import BOLD, MEDIUM, SEMIBOLD
 from .viewport import PreviewMesh, Viewport
@@ -538,6 +539,10 @@ class JobPreview(QWidget):
             pill.setToolTip("The shape was compared with the mesh: " + r.fidelity.summary(self._unit())
                             + ".\nNo method followed it closely everywhere; this is the closest result. "
                               "A higher quality, or another preset, may do better.")
+            pill.show()
+        elif r.faceted:
+            pill.set("Saved as flat faces", theme.accent(), "info")
+            pill.setToolTip(FACETED_TIP + self._fit_line(r))
             pill.show()
         elif r.checked and r.repaired:
             pill.set("Repaired automatically", theme.GOOD, "check")

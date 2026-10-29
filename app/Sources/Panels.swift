@@ -347,6 +347,10 @@ struct JobPreview: View {
             Pill(text: "Doesn't match the mesh everywhere", color: Theme.warn, icon: "exclamationmark")
                 .fixedSize()
                 .help("The shape was compared with the mesh: \(f.summary(unit: modelUnit)).\nNo method followed it closely everywhere; this is the closest result. A higher quality, or another preset, may do better.")
+        } else if r.faceted {
+            Pill(text: "Saved as flat faces", color: settings.accent.color, icon: "info.circle")
+                .fixedSize()
+                .help(ConversionResult.facetedTip + fitLine(r))
         } else if r.checked && !r.repaired.isEmpty {
             Pill(text: "Repaired automatically", color: Theme.good, icon: "checkmark")
                 .fixedSize()
@@ -800,16 +804,14 @@ struct SettingsPanel: View {
     var accent: Color { settings.accent.color }
 
     /// With Auto selected, marks the preset Auto actually used for the
-    /// selected file (both CAD and Smooth when its parts used different
-    /// ones): the card's tooltip, or nil when it isn't marked. Only for a
-    /// file whose last conversion was asked to use Auto.
+    /// selected file (each one when its parts used different ones): the
+    /// card's tooltip, or nil when it isn't marked. Only for a file whose
+    /// last conversion was asked to use Auto. Flat faces have no card: the
+    /// result's badge explains them.
     private func autoPickTip(for p: Preset) -> String? {
         guard settings.preset == .auto, p != .auto, let j = model.selectedJob, j.status == .done,
-              j.runSettings?.preset == .auto, let used = j.result?.preset else { return nil }
-        if used == "mixed" {
-            return (p == .cad || p == .smooth) ? "Auto used CAD + Smooth for “\(j.fileName)”." : nil
-        }
-        return used == p.rawValue ? "Auto used \(p.title) for “\(j.fileName)”." : nil
+              j.runSettings?.preset == .auto, let r = j.result, r.usedKinds.contains(p.rawValue) else { return nil }
+        return r.preset == "mixed" ? "Auto used \(r.presetTitle) for “\(j.fileName)”." : "Auto used \(p.title) for “\(j.fileName)”."
     }
 
     func qualityWord(_ q: Double) -> String {

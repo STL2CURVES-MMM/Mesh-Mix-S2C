@@ -74,11 +74,32 @@ def choice(options, value):
     return options[0]
 
 
-def preset_title(value):
-    """Display name of a preset the engine reports ("mixed" when some parts
-    of a file used CAD and others Smooth)."""
+# what the engine saved when neither CAD faces nor smooth surfaces followed a
+# mesh closely enough: its own flat triangles (not a preset anyone picks)
+FACETED_TITLE = "Flat faces"
+FACETED_TIP = ("Saved as flat faces, exactly like the mesh: neither CAD faces nor smooth surfaces followed it "
+               "closely enough, so Auto kept the mesh's own triangles as a valid solid. This isn't a preset you "
+               "pick; a higher quality may give real surfaces.")
+
+
+def used_kinds(value, kinds=()):
+    """The methods behind a reported preset: the engine's list when it sends
+    one, else CAD and Smooth for "mixed" (what older engines meant by it)."""
+    if kinds:
+        return set(kinds)
     if value == "mixed":
-        return "CAD + Smooth"
+        return {"cad", "smooth"}
+    return {value} if value else set()
+
+
+def preset_title(value, kinds=()):
+    """Display name of a preset the engine reports ("mixed" when the parts of
+    a file used different methods; `kinds` names them when known)."""
+    if value == "mixed":
+        names = [preset_title(k) for k in ("cad", "smooth", "precise", "faceted") if k in used_kinds(value, kinds)]
+        return " + ".join(names) or "Mixed"
+    if value == "faceted":
+        return FACETED_TITLE
     for c in PRESETS:
         if c.value == value:
             return c.title

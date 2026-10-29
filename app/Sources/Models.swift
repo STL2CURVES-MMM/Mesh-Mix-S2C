@@ -239,12 +239,40 @@ enum JobStatus: Equatable {
 
 struct ConversionResult {
     var preset: String
+    /// The methods behind "mixed" (cad, smooth, precise, faceted), when the
+    /// engine names them
+    var presets: [String] = []
+
+    /// What the engine saved when neither CAD faces nor smooth surfaces
+    /// followed a mesh closely enough: its own flat triangles (not a preset
+    /// anyone picks).
+    static let facetedTitle = "Flat faces"
+    static let facetedTip = "Saved as flat faces, exactly like the mesh: neither CAD faces nor smooth surfaces followed it closely enough, so Auto kept the mesh's own triangles as a valid solid. This isn't a preset you pick; a higher quality may give real surfaces."
+
+    /// The methods behind the reported preset: the engine's list when it
+    /// sends one, else CAD and Smooth for "mixed" (what older engines meant).
+    var usedKinds: Set<String> {
+        if !presets.isEmpty { return Set(presets) }
+        if preset == "mixed" { return ["cad", "smooth"] }
+        return preset.isEmpty ? [] : [preset]
+    }
+
+    /// Some or all of it was saved as the mesh's own flat triangles.
+    var faceted: Bool { usedKinds.contains("faceted") }
+
+    static func title(of kind: String) -> String {
+        if kind == "faceted" { return facetedTitle }
+        return Preset(rawValue: kind)?.title ?? kind.capitalized
+    }
 
     /// Display name of the preset the engine actually used ("mixed" when
-    /// some parts of a file used CAD and others Smooth).
+    /// the parts of a file used different methods).
     var presetTitle: String {
-        if preset == "mixed" { return "CAD + Smooth" }
-        return Preset(rawValue: preset)?.title ?? preset.capitalized
+        if preset == "mixed" {
+            let names = ["cad", "smooth", "precise", "faceted"].filter { usedKinds.contains($0) }.map(Self.title(of:))
+            return names.isEmpty ? "Mixed" : names.joined(separator: " + ")
+        }
+        return Self.title(of: preset)
     }
     var valid: Bool?
     var solids: Int
@@ -438,6 +466,7 @@ extension ConversionResult {
             meshVolume: ev["mesh_volume"] as? Double ?? 0,
             tolerance: ev["tolerance"] as? Double ?? 0
         )
+        presets = (ev["presets"] as? [Any] ?? []).compactMap { $0 as? String }
         checked = ev["checked"] as? Bool ?? false
         repaired = ev["repaired"] as? [String] ?? []
         fidelity = Fidelity(event: ev["fidelity"])
@@ -450,6 +479,7 @@ extension ConversionResult {
             alt.removeValue(forKey: "alternative")
             var a = ConversionResult(event: alt)
             a.preset = preset
+            a.presets = presets
             a.seconds = seconds
             a.meshVolume = meshVolume
             a.tolerance = tolerance

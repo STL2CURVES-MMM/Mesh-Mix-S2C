@@ -7,7 +7,8 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBo
 
 from . import detail, system, theme
 from .model import JobStatus
-from .settings import MAX_FACES, OUTPUT_MODES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice, preset_title
+from .settings import (MAX_FACES, OUTPUT_MODES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice, preset_title,
+                       used_kinds)
 from .theme import MEDIUM, SEMIBOLD
 from .widgets import (AccentButton, Card, ElidedLabel, GhostButton, IconLabel, Label, PresetCard, SectionLabel, Divider,
                       hbox, vbox)
@@ -337,15 +338,16 @@ class SettingsPanel(QWidget):
 
     def refresh_auto_pick(self):
         """With Auto selected, marks the preset Auto actually used for the
-        selected file (both CAD and Smooth when its parts used different ones)."""
+        selected file (each one when its parts used different ones). Flat
+        faces have no card: the result's badge explains them."""
         j = self.model.selected_job
         ran_auto = j is not None and (j.run_settings or {}).get("preset") == "auto"
         used = j.used_preset if (ran_auto and j.status == JobStatus.DONE and self.settings.preset == "auto") else None
-        picks = {"cad", "smooth"} if used == "mixed" else ({used} if used else set())
+        picks = used_kinds(used, j.used_presets) if used else set()
         for card in self.preset_cards:
             v = card.preset.value
             on = v in picks and v != "auto"
-            tip = (f"Auto used {preset_title(used)} for “{j.file_name}”." if on and used == "mixed" and j else
+            tip = (f"Auto used {preset_title(used, j.used_presets)} for “{j.file_name}”." if on and used == "mixed" and j else
                    f"Auto used {card.preset.title} for “{j.file_name}”." if on and j else "")
             card.set_auto_picked(on, tip)
 

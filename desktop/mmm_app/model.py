@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
 from . import system
 from .engine import EngineMissing, EngineTask, engine_command
-from .settings import preset_title
+from .settings import preset_title, used_kinds
 
 ACCEPTED_EXTENSIONS = {"stl", "obj", "ply", "off", "3mf", "glb", "gltf"}
 # Reading a file loads the whole mesh; a few at a time keeps memory in check
@@ -207,6 +207,9 @@ def result_unit(job, settings):
 @dataclass
 class ConversionResult:
     preset: str = ""
+    # the methods behind "mixed" (cad, smooth, precise, faceted), when the
+    # engine names them
+    presets: list = field(default_factory=list)
     valid: object = None  # True / False / None (not reported)
     solids: int = 0
     shells: int = 0
@@ -246,6 +249,7 @@ class ConversionResult:
             mesh_volume=_float(ev.get("mesh_volume")),
             tolerance=_float(ev.get("tolerance")),
         )
+        r.presets = [x for x in ev.get("presets") or [] if isinstance(x, str)]
         r.checked = ev.get("checked") is True
         r.repaired = [str(x) for x in ev.get("repaired") or [] if isinstance(x, str)]
         r.fidelity = Fidelity.from_event(ev.get("fidelity"))
@@ -256,7 +260,8 @@ class ConversionResult:
         alt = ev.get("alternative")
         if isinstance(alt, dict) and isinstance(alt.get("output"), str) and os.path.exists(alt["output"]):
             a = cls.from_event({k: v for k, v in alt.items() if k != "alternative"})
-            a.preset, a.seconds, a.mesh_volume, a.tolerance = r.preset, r.seconds, r.mesh_volume, r.tolerance
+            a.preset, a.presets, a.seconds, a.mesh_volume, a.tolerance = (r.preset, r.presets, r.seconds,
+                                                                          r.mesh_volume, r.tolerance)
             a.output = alt["output"]
             pv = alt.get("preview")
             a.preview = pv if isinstance(pv, str) and os.path.exists(pv) else ""
@@ -277,7 +282,12 @@ class ConversionResult:
 
     @property
     def preset_title(self):
-        return preset_title(self.preset)
+        return preset_title(self.preset, self.presets)
+
+    @property
+    def faceted(self):
+        """Some or all of it was saved as the mesh's own flat triangles."""
+        return "faceted" in used_kinds(self.preset, self.presets)
 
     @property
     def has_errors(self):
@@ -365,6 +375,7 @@ class Job(QObject):
         self.output_path = None
         self.exported_path = None
         self.used_preset = None
+        self.used_presets = []  # the methods behind "mixed", when named
         # Parts of a 3MF project (empty for plain mesh files)
         self.part_list = []
         # Save each part as its own STEP file
@@ -1149,6 +1160,7 @@ class AppModel(QObject):
                 state["result"] = True
                 job.result = ConversionResult.from_event(ev)
                 job.used_preset = job.result.preset
+                job.used_presets = list(job.result.presets)
                 mc = MeshCheck.from_event(ev.get("mesh_check"))
                 if mc is not None:
                     job.mesh_check = mc

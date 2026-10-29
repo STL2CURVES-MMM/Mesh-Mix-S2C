@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from . import system
 from .model import RUN_SETTINGS, result_unit
-from .settings import MAX_FACES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice, preset_title
+from .settings import MAX_FACES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice
 from .version import __version__
 
 STATUS_WORDS = {"fixed": "Fixed", "not_fixed": "Not fixed", "action": "Your choice", "note": "Note"}
@@ -158,7 +158,7 @@ def build(job, settings):
     add(f"  Status: {job.status.title}" + (f" ({job.stage})" if job.stage and job.stage != job.status.title else ""))
     r = job.result
     if r is not None:
-        add(f"  Preset used: {preset_title(r.preset)}; faces {r.faces:,}; solids {r.solids}; shells {r.shells}; "
+        add(f"  Preset used: {r.preset_title}; faces {r.faces:,}; solids {r.solids}; shells {r.shells}; "
             f"STEP {_size(r.file_size)}; {r.seconds:.1f} s")
         if r.fidelity is not None:
             add(f"  Compared with the mesh: {r.fidelity.summary(result_unit(job, s))}"
