@@ -41,6 +41,7 @@ MIN_SPAN = 0.5                  # mm: spine knots no closer than this
 MARGIN = 0.05                   # share of the spine's length (plus MARGIN_MM) the tube reaches past its corners
 MARGIN_MM = 0.5
 ANGLE_MARGIN = math.radians(10)     # ...and how much further round it reaches
+ENDS = 0.01                     # radii: a point further than this past a spine end isn't over the tube
 SMOOTHING = 1e-6                # penalty weight on the spine's bending: only settles it where corners are sparse
 EVEN_SPEED = 0.01               # ...and (relative to that) on its speed changing
 MIN_FACETS = 100                # a pipe joining no two pieces must take in at least this many facets
@@ -106,6 +107,20 @@ class Pipe:
 
     def signed(self, P):
         return self._offset(P)[1] - self.r
+
+    def inside(self, P):
+        """Whether each point lies across the tube from its spine within the spine's domain
+        (not past either end, where signed() measures to the end's ball) and within the
+        angles surface() covers: the surface a face is built on (merged engine: see
+        merged.OurSurface)."""
+        P = np.atleast_2d(np.asarray(P, float))
+        s = self.foot(P)
+        T = self.spine(s, 1)
+        T = T / np.maximum(np.linalg.norm(T, axis=1), 1e-12)[:, None]
+        along = np.einsum("ij,ij->i", P - self.spine(s), T)
+        a = self.angle(P, s)
+        return ((np.abs(along) <= ENDS * self.r) & (a >= self.angles[0] - ANGLE_MARGIN)
+                & (a <= self.angles[1] + ANGLE_MARGIN))
 
     def normal(self, P):
         V, d = self._offset(P)

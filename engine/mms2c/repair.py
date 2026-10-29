@@ -37,6 +37,8 @@ SPECK_SHIFT_MOST = 0.5  # mm: ... or, failing that, the gentler of two cuts if i
 NARROW_GAIN = 0.5       # ... one ring of margin instead of two only if that moves it less than this share as far
 SPECK_RIM = 500         # ... and leaves a hole with no more corners round it than this
 SPECK_TRIALS = 30       # ... each tried alone (when all together fail) if there are no more of them than this
+PATCH_SHOWS = 0.1       # mm: a patch where only separate pieces cross shows if it stands this far off the
+                        # triangles it replaced, outside every other piece (then that cut is put back)
 FLAP_COS = 0.9999       # triangles at an overused edge this near one plane (either way up) are in one plane
 KNOT = 0.005            # mm: corners joined by edges this short round an edge of 3+ triangles are one corner
 KNOT_REACH = 4          # ... gathered no further than this many KNOTs from the edge's own corner
@@ -96,6 +98,25 @@ def repair(pts, tris):
             break
         holes, over = len(_open_edges(tris)), len(_overused(tris))
         patched_pts, patched, filled = _fill_holes(pts, tris[~cut])
+        # a cut where only separate pieces cross isn't checked for how far its patch moves
+        # the surface (taken to lie inside the other piece, fused away later). Where a
+        # patch shows instead, outside every other piece and off the surface it replaced
+        # (on the companion enclosure, planes 2 mm off its walls), that cut is narrowed to
+        # one ring of margin, then none, for a patch across a smaller hole. If even that
+        # shows, the cut stays as it was: left uncut, such pieces were lost later instead
+        # (the companion cap's thin walls, obj_1_01 5% of its mesh)
+        shows = _visible_patches(patched_pts, tris, cut, patched)
+        if shows.any():
+            core = _self_crossing_specks.core
+            for rings in (1, 0):
+                narrow = core & shows
+                for _ in range(rings):
+                    narrow |= np.isin(tris, np.unique(tris[narrow])).any(axis=1) & shows
+                trial = (cut & ~shows) | narrow
+                t_pts, t_tris, t_filled = _fill_holes(pts, tris[~trial])
+                if not (_visible_patches(t_pts, tris, trial, t_tris) & narrow).any():
+                    cut, patched_pts, patched, filled = trial, t_pts, t_tris, t_filled
+                    break
         # (the hole it leaves must patch: on a fine mesh a knot a few millimetres across
         # is thousands of triangles. Better a mesh crossing itself there, which still
         # converts, than one with a hole, which makes no solid at all. Nor may it add
@@ -781,6 +802,9 @@ def _self_crossing_specks(pts, tris, max_size):
         piece = _pieces(tris)
         own = np.zeros(len(tris), bool)          # (crossing its own piece)
         own[pairs[piece[pairs[:, 0]] == piece[pairs[:, 1]]].ravel()] = True
+        _self_crossing_specks.own = own              # (for _visible_patches)
+        _self_crossing_specks.core = np.zeros(len(tris), bool)
+        _self_crossing_specks.core[np.unique(pairs)] = True   # (the crossing triangles themselves)
     if not len(pairs):
         return None
     bad = np.zeros(len(tris), bool)
@@ -848,6 +872,80 @@ def _self_crossing_specks(pts, tris, max_size):
             keep[best] = True
     _self_crossing_specks.between = not own[keep].any()
     return keep if keep.any() else None
+
+
+def _closest_on_triangles(p, A, B, C):
+    """Distance from each point p (n, 3) to the nearest of the triangles ABC (m, 3 each)."""
+    p = p[:, None, :]
+    ab, ac, ap = B - A, C - A, p - A
+    d1, d2 = np.einsum("ijk,jk->ij", ap, ab), np.einsum("ijk,jk->ij", ap, ac)
+    bp, cp = p - B, p - C
+    d3, d4 = np.einsum("ijk,jk->ij", bp, ab), np.einsum("ijk,jk->ij", bp, ac)
+    d5, d6 = np.einsum("ijk,jk->ij", cp, ab), np.einsum("ijk,jk->ij", cp, ac)
+    va, vb, vc = d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2
+    den = np.where(np.abs(va + vb + vc) > 1e-30, va + vb + vc, 1e-30)
+    v, w = vb / den, vc / den
+    # (inside the triangle: the projection; else the nearest point of its three edges)
+    q = A + v[..., None] * ab + w[..., None] * ac
+    inside = (va >= 0) & (vb >= 0) & (vc >= 0)
+
+    def seg(P0, P1):
+        d = P1 - P0
+        t = np.clip(np.einsum("ijk,jk->ij", p - P0, d) / np.maximum(np.einsum("jk,jk->j", d, d), 1e-30), 0, 1)
+        return P0 + t[..., None] * d
+
+    best = np.where(inside[..., None], q, seg(A, B))
+    dist = np.linalg.norm(p - best, axis=2)
+    for P0, P1 in ((B, C), (C, A)):
+        dist = np.minimum(dist, np.where(inside, dist, np.linalg.norm(p - seg(P0, P1), axis=2)))
+    return dist.min(axis=1)
+
+
+def _visible_patches(pts, tris, cut, patched):
+    """The triangles of each cut (where only separate pieces cross) whose patch shows:
+    points of its new triangles outside every other piece and further than PATCH_SHOWS
+    from the triangles it replaced."""
+    shows = np.zeros(len(tris), bool)
+    own = getattr(_self_crossing_specks, "own", None)
+    new = patched[len(tris) - int(cut.sum()):]
+    if not len(new) or own is None or len(own) != len(tris):
+        return shows
+    piece = _pieces(patched)
+    new_piece = piece[len(patched) - len(new):]
+    corner = {}
+    comps = _components(tris, cut)
+    for k, members in enumerate(comps):
+        for v in np.unique(tris[members]).tolist():
+            corner.setdefault(v, k)
+    ready = {}
+    W = np.array([(1 / 3, 1 / 3, 1 / 3), (0.6, 0.2, 0.2), (0.2, 0.6, 0.2), (0.2, 0.2, 0.6)])
+    nudge = 1e-4 * max(1.0, float(np.ptp(pts, axis=0).max()))
+    for k, members in enumerate(comps):
+        if own[members].any():
+            continue            # (crossing its own piece: checked by _self_crossing_specks)
+        mine = np.array([corner.get(int(t[0]), -1) == k for t in new])
+        if not mine.any():
+            continue
+        T = pts[new[mine]]
+        P = np.einsum("wj,ijk->iwk", W, T).reshape(-1, 3)
+        n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+        n = np.repeat(n / np.maximum(np.linalg.norm(n, axis=1), 1e-30)[:, None], len(W), axis=0)
+        R = pts[tris[members]]
+        off = _closest_on_triangles(P, R[:, 0], R[:, 1], R[:, 2]) > PATCH_SHOWS
+        if not off.any():
+            continue
+        pc = int(np.bincount(new_piece[mine]).argmax())
+        if pc not in ready:
+            others = piece != pc
+            ready[pc] = _ray_ready(pts, patched[others]) if others.any() else None
+        if ready[pc] is None:
+            shows[members] = True
+            continue
+        hidden = [_inside(ready[pc], q + nudge * m) or _inside(ready[pc], q - nudge * m)
+                  for q, m in zip(P[off], n[off])]
+        if not all(hidden):
+            shows[members] = True
+    return shows
 
 
 def _pieces(tris):

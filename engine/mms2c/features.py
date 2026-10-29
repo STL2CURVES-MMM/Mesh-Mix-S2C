@@ -24,7 +24,6 @@ turns it into one true curved face and stitches it to the flat faces around it.
 """
 import copy
 import math
-import struct
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -107,22 +106,37 @@ def time_left():
 # ---------------------------------------------------------------- mesh
 
 def load_stl(path):
-    """Return welded vertex array and triangle index array for a binary or ASCII STL."""
-    data = Path(path).read_bytes()
-    n = struct.unpack("<I", data[80:84])[0] if len(data) >= 84 else -1
-    if len(data) == 84 + 50 * n:
-        rec = np.frombuffer(data, offset=84, count=n, dtype=np.dtype(
-            [("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]))
-        verts = rec["v"].reshape(-1, 3).astype(float)
-    else:
-        lines = data.decode(errors="ignore").splitlines()
-        verts = np.array([l.split()[1:4] for l in lines if l.strip().startswith("vertex")], float)
+    """Return welded vertex array and triangle index array for a binary or ASCII STL (or
+    an OBJ, PLY or OFF file, by its extension).
+
+    The file is read by MMM's reader (mmm/meshio.py), which takes the same numbers from
+    a well-formed file and refuses a broken one with a message for the user (MeshError):
+    our own parse took only the exact binary layout and otherwise any line starting with
+    "vertex", and crashed on empty files, wrong counts and stray tokens. Triangles with
+    broken numbers are dropped, and a mesh with nothing left after welding is refused."""
+    from mmm import meshio as mio
+    ext = Path(path).suffix.lower()
+    tris = mio.read_any(str(path)) if ext in (".obj", ".ply", ".off") else mio.read_stl(str(path))
+    tris = tris[np.isfinite(tris).all(axis=(1, 2))]
+    verts = tris.reshape(-1, 3)
+    if len(verts):
+        diag = float(np.linalg.norm(verts.max(0) - verts.min(0)))
+        if diag > 0:
+            mio.check_size(diag, float(np.abs(verts).max()))
+            # (the weld's integer keys below overflow int64 past 9e14 mm)
+            if float(np.abs(verts).max()) > 9e13:
+                raise mio.MeshError("This model's coordinates are too large for stl2curves' reader. "
+                                    "Scale it down in the program that made it (it may have been saved "
+                                    "in the wrong unit), and export it again.")
     key = np.round(verts * 1e4).astype(np.int64)
     uniq, inv = np.unique(key, axis=0, return_inverse=True)
     pts = np.zeros((len(uniq), 3))
     pts[inv.ravel()] = verts
     tris = inv.reshape(-1, 3)
     tris = tris[(tris[:, 0] != tris[:, 1]) & (tris[:, 1] != tris[:, 2]) & (tris[:, 2] != tris[:, 0])]
+    if not len(tris):
+        raise mio.MeshError("Every triangle in this mesh is squashed flat (or has broken numbers), so there is "
+                            "no shape to convert.")
     return pts, tris
 
 
@@ -997,7 +1011,8 @@ def _seed_candidates(mesh, region, i, j):
 
 def _whole_region(mesh, region):
     """The one cylinder, cone or sphere a whole smooth region lies on, if it is all one
-    surface (a countersink, a plain hole or boss between two creases). Fitted from every
+    surface (a countersink, a plain hole or boss between two creases), or the torus a
+    closed one does (a ring on its own: _ring). Fitted from every
     facet at once: a cone cut into long thin triangles fools any guess from a few facets
     (a thin strip of cone looks like a tilted cylinder)."""
     idx = np.arange(len(region.facets))
@@ -1022,11 +1037,38 @@ def _whole_region(mesh, region):
     ball = _sphere(P)
     if _fits(ball, P):
         found.append(_candidate(mesh, region, ball, [0]))
+    elif not any(found):
+        ring = _ring(mesh, region, P)
+        if ring is not None:
+            found.append(_candidate(mesh, region, ring, [0]))
     if not any(found):
         # (only cylinders and cones: their straight lines pin them down where a mesh
         # has strayed; a sphere would fit any gently rounded patch as well)
         found = [_whole_noisy(mesh, region, _tube_fit(P, m)) for m in guesses if m is not None]
     return _best(found)
+
+
+def _ring(mesh, region, P):
+    """The torus a whole closed smooth region (no outline: a ring on its own) lies on, or
+    None. Its axis is the direction the corners spread least along, through their centre;
+    the tube's centre circle and radius from their distances to it; then fitted to all of
+    them (_tube_fit). Only for closed regions: a torus with an outline is found piece by
+    piece round its axis, as before."""
+    T = mesh.tris[np.concatenate([mesh.ftris[f] for f in region.facets])]
+    _, counts = _edge_counts(T, len(mesh.pts))
+    if len(P) < MIN_CORNERS["torus"] or (counts != 2).any():
+        return None
+    c = P.mean(axis=0)
+    d = np.linalg.svd(P - c, full_matrices=False)[2][2]
+    v = P - c
+    z = v @ d
+    rho = np.linalg.norm(v - np.outer(z, d), axis=1)
+    rc = float(rho.mean())
+    r = float(np.sqrt(np.mean((rho - rc) ** 2 + z ** 2)))
+    if not r or rc <= r:
+        return None
+    model = _tube_fit(P, Revolved(c, d, circle=(rc, float(c @ _frame(d)[0]), r)))
+    return model if model is not None and model.circle and _fits(model, P) else None
 
 
 def _whole_noisy(mesh, region, model):
@@ -2488,7 +2530,8 @@ class Feature:
     detail: str
     convex: bool
     kind: str           # "revolve" (cylinder/cone/torus/sphere cap), "wedge" (sphere corner),
-                        # "ball", "trimmed" (any of these surfaces, cut to an arbitrary outline)
+                        # "closed" (a whole closed surface with no outline: a ball, a ring),
+                        # "trimmed" (any of these surfaces, cut to an arbitrary outline)
                         # or "blend" (a smooth freeform face where no simple surface fits)
     facets: np.ndarray  # mesh facets this patch replaces
     change: float       # volume the exact surface adds compared with the facets (mm^3)
@@ -2532,7 +2575,7 @@ def _feature(mesh, model, fids, convex):
     if isinstance(model, Sphere):
         if len(rim) == 0:
             label = "ball" if convex else "spherical cavity"
-            return Feature(model, label, f"dia {2 * model.r:.3f}", kind="ball", **base)
+            return Feature(model, label, f"dia {2 * model.r:.3f}", kind="closed", **base)
         mid = rim.mean(axis=0)
         n = _right_vectors(rim - mid)[2]
         if np.abs((rim - mid) @ n).max() <= _tol(model):
@@ -2656,7 +2699,14 @@ def _revolved_feature(mesh, model, P, rim, rim_edges, base):
         if ring is None:
             return None
         if ring[1] >= TWO_PI - 1e-9 and (span >= TWO_PI or rc - r <= tol):
-            return None                 # a complete ring (O-ring), or a tube crossing itself
+            if span >= TWO_PI and rc - r > tol and not len(rim_edges):
+                # a whole ring (an O-ring, a torus on its own): a closed surface, no outline
+                # (refused, its pieces were left, and locked in the merged engine they kept
+                # MMM from making the one face it is: cad_torus 392 faces, now 1)
+                label = "ring" if base["convex"] else "ring-shaped cavity"
+                return Feature(model, label, f"torus r {r:.3f} round a {2 * rc:.3f} circle", kind="closed",
+                               u0=0.0, span=TWO_PI, lo=0.0, hi=TWO_PI, **base)
+            return None                 # a ring cut to shape, or a tube crossing itself
         # (a tube all round but only part way round the axis is a bent pipe's bore)
         lo, hi = ring[0], ring[0] + ring[1]
         v = np.arctan2(r_z - zc, r_rho - rc)

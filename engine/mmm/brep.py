@@ -4,6 +4,12 @@ Regions -> faces, chains -> edges, corners -> vertices. Edges are shared
 between neighbouring faces, so the result is a watertight shell without any
 sewing step.
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-28 for the stl2curves merged engine (group C): a region with no boundary
+# loops whose surface can't make a face without one is recorded as failed instead of being
+# left out silently, so the caller replaces it like any other face that won't build.
+# Modified 2026-10-28: a polyline skips a segment between two vertices lying within each
+# other's tolerance, which no edge can join (it failed every method on a repeater-mount body).
 import numpy as np
 
 from OCP.BRep import BRep_Builder
@@ -175,6 +181,11 @@ class BRepAssembler:
         for a, b in zip(verts[:-1], verts[1:]):
             if a == b:
                 continue
+            # (two vertices lying within each other's tolerance are one point, which no edge
+            # can join: the segment is left out; asked for, it failed every method on a body
+            # of the repeater mount, and with it the whole file)
+            if np.linalg.norm(self.V[a] - self.V[b]) <= max(self.vtol[a], self.vtol[b], MIN_TOL):
+                continue
             out.append(self._line_edge(a, b))
         return out
 
@@ -233,8 +244,13 @@ class BRepAssembler:
         faces = []
         self.region_faces = {}
         nr = rg.n_regions
+        held = np.bincount(rg.labels[rg.labels >= 0], minlength=nr) > 0
         for r in range(nr):
             if not rg.region_loops[r] and not self.closed_region_ok(r):
+                # (a region with triangles but no boundary is a whole closed surface;
+                # left out, it left a hole in the shell that nothing reported)
+                if held[r]:
+                    self.failed_regions.append((r, "a closed region this surface can't make a face of"))
                 continue
             try:
                 f = self.build_face(r)

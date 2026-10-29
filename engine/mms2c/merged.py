@@ -20,6 +20,13 @@ Our N-sided blends are left to MMM, which fits its own freeform cells there.
 
 Meanwhile stl2curves alone and MMM alone convert the same file in processes of their
 own, and the best of the three finished results is saved (rivals.py).
+
+Every file passes one entrance first (convert_file -> _entrance): the paths are checked
+(pipeline.check_paths), the mesh is read by MMM's reader and given its refusals
+(meshio.check_triangles), so a broken file ends in a message for the user, not a
+traceback from deep inside a stage. OBJ, PLY and 3MF files go to MMM's pipeline alone,
+as in the app; and if our front end fails on a file that passed, MMM's own reading and
+mending take over (front), with a warning saying so.
 """
 import math
 import os
@@ -41,33 +48,67 @@ from . import features as F
 # the app's Auto quality by triangle count (MMM desktop/mmm_app/settings.py)
 AUTO_QUALITY_STEPS = ((50_000, 0.9), (300_000, 0.8), (1_000_000, 0.7), (3_000_000, 0.6))
 SPINDLE = 1.0   # a torus whose centre circle is no bigger than this times its tube stays ours
-# stl2curves alone and MMM alone convert the file alongside, as rivals (rivals.py);
-# STL2CURVES_RIVALS=0 runs the merged pipeline on its own (diagnostics, quick tests)
-RIVALS = os.environ.get("STL2CURVES_RIVALS") != "0"
+# stl2curves alone and MMM alone convert the file alongside, as rivals (rivals.py), only
+# with MM_S2C_RIVALS=1 (comparisons): off by default since 2026-10-29, as the owners
+# decided for the test builds, so the engine is one pipeline that picks its methods from
+# the shape
+RIVALS = os.environ.get("MM_S2C_RIVALS") == "1"
 # our smooth blends, freeform patches and pipes as seeds too (add_blends: on the cam and
-# tube MMM test models most of the front end's time); STL2CURVES_FRONT_BLENDS=0 seeds with
+# tube MMM test models most of the front end's time); MM_S2C_FRONT_BLENDS=0 seeds with
 # the exact features only, and our own conversion alongside fits the blends itself.
 # Measured 2026-10-25 (28-part sample, no rivals): without them 10,483 faces instead of
 # 7,934 (+32%; test13 106 -> 407, the hook 154 -> 316) for 5% less time: keep them
-FRONT_BLENDS = os.environ.get("STL2CURVES_FRONT_BLENDS") != "0"
+FRONT_BLENDS = os.environ.get("MM_S2C_FRONT_BLENDS") != "0"
+# formats MMM's reader takes on its own (everything else is read as an STL, as before):
+# these go to MMM's pipeline without our front end, as the app sends only STL files here
+OTHER_FORMATS = (".3mf", ".obj", ".ply", ".off")
+# model units across (mm unless chosen otherwise) our front end works within: smaller,
+# its 1e-4 mm weld crushes the shape (a 2 mm sphere came out in 16 faces); larger, its
+# thread search's 0.02 mm bands run away (a 1e8 mm sphere asked for 303 GiB). A model
+# outside goes to MMM's pipeline alone, which welds relative to the size
+FRONT_SIZES = (0.1, 1e5)
+# sizes that suggest the wrong unit: MMM's mesh check's note (meshcheck step 13), given
+# here when our front end reads the file instead
+UNIT_NOTE = (1.0, 3000.0)
+FLAT = 1e-9         # a closed body enclosing less than this times the model's diagonal cubed: no volume
+INSIDE_OWN = 0.99   # share of a feature's own corners that must pass its surface's domain test to use it
+# our seeds against MMM's own segmentation where they are unsure (seeded_segmenter):
+PATCH_SEEDS = 3         # seeds of ours (threads aside) in one smooth area that call for the comparison
+PATCH_CREASE_DEG = 30.0  # deg: a smooth area ends where triangles meet at more than this (as MMM's _find_sweeps)
+SURE_SHARE = 0.99       # share of a seed's triangles MMM's own accept test must take for the seed to be sure
+EXACT_KINDS = ("plane", "cylinder", "cone", "sphere", "torus")     # the surfaces a designer draws
+FREEFORM_SAVES = 0.75   # a way using freeform surfaces beats an all-exact one only with at most this share of its regions
 
 
 class OurSurface:
     """One of our surface models as an MMM region surface ("freeform" to MMM: it builds
     the face on geom() and measures with distance()/normal()). normal() follows the OCC
     surface's own orientation, as MMM's freeform cells do, so a region's sense says which
-    way the face is turned."""
+    way the face is turned.
+
+    distance() measures the surface the face is built on: our model's own distance where
+    the point lies over geom()'s domain (inside, see _inside), and none at all (infinite)
+    beyond it. The model alone is valid anywhere (a freeform height field extends its
+    spline, a pipe measures to its end's ball), but geom() covers only the fitted patch and
+    a margin: on the GPS case back a flat triangle of 119 mm2 lay within 0.1 mm of a
+    freeform patch's model but 39 mm off its surface, MMM took it into that region, the
+    face couldn't cover it, and the whole body (518 faces) was saved as 11,690 triangles."""
 
     kind = "freeform"
     rank = 5
     locked = True
     dev = 0.0
 
-    def __init__(self, model, geom, flip):
+    def __init__(self, model, geom, flip, inside=None):
         self.model, self._geom, self.flip = model, geom, flip
+        self.inside = inside
 
     def distance(self, P):
-        return np.abs(self.model.signed(np.atleast_2d(P)))
+        P = np.atleast_2d(P)
+        d = np.abs(self.model.signed(P))
+        if self.inside is None:
+            return d
+        return np.where(self.inside(P), d, np.inf)
 
     def normal(self, P):
         return self.flip * self.model.normal(np.atleast_2d(P))
@@ -121,7 +162,33 @@ def mmm_surface(feature, mesh):
     geom = _occ_surface(feature, mesh)
     if geom is None:
         return None
-    return OurSurface(m, geom, _orientation(m, geom, mesh, feature))
+    return OurSurface(m, geom, _orientation(m, geom, mesh, feature), _inside(feature, mesh))
+
+
+def _inside(feature, mesh):
+    """The test whether points lie over the domain of the OCC surface this feature's face
+    is built on (_occ_surface), in the model's own parameters; None (no test) when the
+    feature's own corners don't pass it (INSIDE_OWN): then the test, not the surface, is
+    wrong, and the model's distance stands as before."""
+    m = feature.model
+    if m.kind == "thread":
+        (u0, u1), (lo, hi) = build.thread_reach(feature)
+
+        def test(P):
+            s, _, U = m.place(P)
+            return (s >= lo) & (s <= hi) & (U >= u0) & (U <= u1)
+    elif hasattr(m, "inside"):
+        test = m.inside
+    else:
+        return None
+    tids = np.concatenate([mesh.ftris[f] for f in feature.facets])
+    own = mesh.pts[np.unique(mesh.tris[tids])]
+    try:
+        if test(own).mean() < INSIDE_OWN:
+            return None
+    except Exception:
+        return None
+    return test
 
 
 def _occ_surface(feature, mesh):
@@ -193,10 +260,11 @@ def _orientation(model, geom, mesh, feature, n=24):
 class _Body:
     """One body for MMM: its shells (outer first, then cavities), and for each shell
     the regions our features give it: [(surface, shell triangle numbers)]; part: which
-    of our prepared parts it came from, alone: whether it is all of that part."""
+    of our prepared parts it came from, alone: whether it is all of that part; pieces:
+    which of the part's pieces (_shells_of) each shell is."""
 
     def __init__(self):
-        self.shells, self.seeds = [], []
+        self.shells, self.seeds, self.pieces = [], [], []
         self.part, self.alone = None, False
 
 
@@ -288,30 +356,15 @@ def _shells_of(pts, tris):
     return out
 
 
-def bodies_from(parts, groups, pts):
-    """MMM bodies from our prepared parts: (bodies, seeds) where seeds[k] lists, for
-    body k's shells, the locked regions our features give each."""
+def bodies_from(parts, groups, pts, pieces_of=None):
+    """MMM bodies from our prepared parts, each with, for its shells, the locked regions
+    our features give each (_Body.seeds). pieces_of: each part's pieces (_shells_of), if
+    made already (route)."""
     bodies = []
     biggest = max(_area(pts, g) for g in groups)
     for gi, ((mesh, features, _), g) in enumerate(zip(parts, groups)):
-        # (our Mesh drops zero-area triangles: theirs map back through this)
-        a, b, c = (pts[g[:, k]] for k in range(3))
-        kept = np.nonzero(np.linalg.norm(np.cross(b - a, c - a), axis=1) > 1e-12)[0]
-        if len(kept) != len(mesh.tris) or not np.array_equal(g[kept], mesh.tris):
-            raise RuntimeError("our mesh's triangles don't map onto the body's")
-        pieces = _shells_of(pts, g)
-        where = np.empty((len(g), 2), dtype=np.int64)       # body row -> (piece, triangle)
-        for i, (_, rows) in enumerate(pieces):
-            where[rows, 0] = i
-            where[rows, 1] = np.arange(len(rows))
-        seeds = [[] for _ in pieces]
-        for feature in features:
-            surf = mmm_surface(feature, mesh)
-            if surf is None:
-                continue
-            tids = kept[np.concatenate([mesh.ftris[f] for f in feature.facets])]
-            for i in np.unique(where[tids, 0]):
-                seeds[i].append((surf, where[tids[where[tids, 0] == i], 1]))
+        pieces = pieces_of[gi] if pieces_of is not None else _shells_of(pts, g)
+        seeds = part_seeds(mesh, features, pts, g, pieces)
         made = _nest([p[0] for p in pieces], seeds)
         made = [b for b in made if not _debris(b.shells[0], biggest)]
         for b in made:
@@ -320,6 +373,29 @@ def bodies_from(parts, groups, pts):
             b.part, b.alone = gi, len(made) == 1
         bodies += made
     return bodies
+
+
+def part_seeds(mesh, features, pts, g, pieces):
+    """For each of a part's pieces (_shells_of), the locked regions our features give it:
+    [(surface, piece triangle numbers)]."""
+    # (our Mesh drops zero-area triangles: theirs map back through this)
+    a, b, c = (pts[g[:, k]] for k in range(3))
+    kept = np.nonzero(np.linalg.norm(np.cross(b - a, c - a), axis=1) > 1e-12)[0]
+    if len(kept) != len(mesh.tris) or not np.array_equal(g[kept], mesh.tris):
+        raise RuntimeError("our mesh's triangles don't map onto the body's")
+    where = np.empty((len(g), 2), dtype=np.int64)       # body row -> (piece, triangle)
+    for i, (_, rows) in enumerate(pieces):
+        where[rows, 0] = i
+        where[rows, 1] = np.arange(len(rows))
+    seeds = [[] for _ in pieces]
+    for feature in features:
+        surf = mmm_surface(feature, mesh)
+        if surf is None:
+            continue
+        tids = kept[np.concatenate([mesh.ftris[f] for f in feature.facets])]
+        for i in np.unique(where[tids, 0]):
+            seeds[i].append((surf, where[tids[where[tids, 0] == i], 1]))
+    return seeds
 
 
 def _area(pts, tris):
@@ -369,21 +445,146 @@ def _nest(shells, seeds):
             i = home[i]
         bodies[i].shells.append(shells[j])
         bodies[i].seeds.append(seeds[j])
+        bodies[i].pieces.append(j)
     out = []
     for i, b in bodies.items():
         # (the outer shell first)
         k = b.shells.index(shells[i])
         b.shells.insert(0, b.shells.pop(k))
         b.seeds.insert(0, b.seeds.pop(k))
+        b.pieces.insert(0, b.pieces.pop(k))
         out.append(b)
     return out
 
 
 def seeded_segmenter(shell, seeds, tol, quality, report=NULL):
+    """MMM's Segmenter for one shell, seeded with our features (_segment), checked where
+    they are unsure against MMM's own segmentation (on demand).
+
+    Our front end fits each piece within its own limit (0.1 mm by default) and commits
+    greedily, with no step that merges pieces up; MMM fits to a tighter tolerance and
+    merges the pieces of one fillet or sweep into one face, but shatters narrow bands we
+    find whole. Locked, our pieces of a curving fillet kept MMM from its one face
+    (cad_tube_fillet 30 faces where MMM alone makes 15, the cam 22 where it makes 8);
+    offered unlocked they still steered it (36 and 77); dropped wholesale, MMM shattered
+    the countersinks we had right (Front Lid 53 -> 134). So a smooth area (bounded by
+    creases sharper than PATCH_CREASE_DEG) holding PATCH_SEEDS or more of our seeds,
+    threads aside, one of them unsure (_sure), is segmented both ways, with our seeds and
+    by MMM alone (those seeds left out), and the way _winner picks is kept there. Where
+    nothing is unsure, it is as before. (On 17 parts: tube 30 -> 15, cam 22 -> 8, hook
+    154 -> 109, liner 141 -> 93; Front Lid, the 608 bearing, test13 unchanged.)"""
+    held = _Held(report)
+    A = _segment(shell, seeds, tol, quality, held)
+    comp = _smooth_areas(A)
+    where = [int(np.bincount(comp[np.asarray(f, dtype=np.int64)]).argmax()) for _, f in seeds]
+    count, unsure = {}, set()
+    for i, (surf, faces) in enumerate(seeds):
+        if _thread(surf):
+            continue
+        a = where[i]
+        count[a] = count.get(a, 0) + 1
+        if a not in unsure and not _sure(A, surf, faces):
+            unsure.add(a)
+    areas = {a for a in unsure if count[a] >= PATCH_SEEDS}
+    if not areas:
+        held.replay()
+        return A
+    mine = {i for i, (surf, _) in enumerate(seeds) if where[i] in areas and not _thread(surf)}
+    held_b = _Held(report)
+    B = _segment(shell, [s for i, s in enumerate(seeds) if i not in mine], tol, quality, held_b)
+    won = {a for a in areas if _winner(_census(A, comp, a), _census(B, comp, a)) == "mmm"}
+    report.log(f"In {len(areas)} smooth area(s) stl2curves' pieces were unsure, so MMM's own segmentation was "
+               f"tried there as well: kept in {len(won)}, stl2curves' in {len(areas) - len(won)}")
+    if not won:
+        held.replay()
+        return A
+    if won == areas:
+        held_b.replay()
+        return B
+    drop = {i for i in mine if where[i] in won}
+    return _segment(shell, [s for i, s in enumerate(seeds) if i not in drop], tol, quality, report)
+
+
+class _Held:
+    """A report that holds a trial segmentation's messages (its progress goes through), to
+    be passed on only if that segmentation is the one kept."""
+
+    def __init__(self, report):
+        self.report, self.calls = report, []
+
+    def __getattr__(self, name):
+        if name in ("progress", "stage", "step", "section"):
+            return getattr(self.report, name)
+
+        def hold(*a, **k):
+            self.calls.append((name, a, k))
+        return hold
+
+    def replay(self):
+        for name, a, k in self.calls:
+            getattr(self.report, name)(*a, **k)
+
+
+def _thread(surf):
+    return getattr(getattr(surf, "model", None), "kind", None) == "thread"
+
+
+def _sure(seg, surf, faces):
+    """Whether one of our seeds is sure: an exact surface that MMM's own accept test, at
+    its tolerance, takes at least SURE_SHARE of the triangles of (our approximating
+    surfaces, freeform patches, pipes and extrusions, never are)."""
+    if isinstance(surf, OurSurface):
+        return False
+    faces = np.asarray(faces, dtype=np.int64)
+    return float(seg.accept(surf, seg.sense_of(surf, faces), faces).mean()) >= SURE_SHARE
+
+
+def _smooth_areas(seg):
+    """Each triangle's smooth area: connected across edges whose triangles meet at less
+    than PATCH_CREASE_DEG (as MMM's _find_sweeps cuts its patches)."""
+    from scipy import sparse
+    from scipy.sparse.csgraph import connected_components
+    nf = len(seg.F)
+    rows = np.repeat(np.arange(nf), 3)
+    cols = seg.nb.reshape(-1)
+    m = cols >= 0
+    smooth = m.copy()
+    smooth[m] = (seg.fn[rows[m]] * seg.fn[cols[m]]).sum(1) >= math.cos(math.radians(PATCH_CREASE_DEG))
+    G = sparse.coo_matrix((np.ones(int(smooth.sum()), np.int8), (rows[smooth], cols[smooth])), shape=(nf, nf))
+    return connected_components(G, directed=False)[1]
+
+
+def _census(seg, comp, area):
+    """(how many regions have triangles in the area, whether all of those are exact)."""
+    n, exact = 0, True
+    for reg in seg.regions:
+        if len(reg.faces) and (comp[reg.faces] == area).any():
+            n += 1
+            exact = exact and reg.kind in EXACT_KINDS and not isinstance(reg.prim, OurSurface)
+    return n, exact
+
+
+def _winner(ours, theirs):
+    """Which way an unsure area keeps, "ours" or "mmm", from each way's census (regions,
+    all exact): the fewer regions, except that a way made only of exact surfaces (what a
+    designer draws, and what edits well) beats one using freeform surfaces unless that one
+    has at most FREEFORM_SAVES of its regions. A tie keeps ours, as before."""
+    (na, ea), (nb, eb) = ours, theirs
+    if ea and not eb:
+        return "mmm" if nb <= FREEFORM_SAVES * na else "ours"
+    if eb and not ea:
+        return "ours" if na <= FREEFORM_SAVES * nb else "mmm"
+    return "mmm" if nb < na else "ours"
+
+
+def _segment(shell, seeds, tol, quality, report=NULL):
     """MMM's Segmenter for one shell, our regions in first (locked, grown into the
     neighbouring triangles that fit them by MMM's own test), then MMM's run over the rest."""
     seg = mcad.Segmenter(shell.V, shell.F, shell.topo, tol, report)
     seg.detail = quality
+    # (no seeds on known axes here: our features hold those surfaces already, and the extra
+    # hypotheses cost Solar Panel Bracket Large its CAD faces; see mmm/cad.py, b13 note)
+    seg.known_axes = False
     for surf, faces in seeds:
         faces = np.asarray(faces, dtype=np.int64)
         faces = faces[seg.label[faces] < 0]
@@ -415,13 +616,68 @@ def _signed_volume(pts, tris):
     return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
 
 
-def _mended(path, opts, report):
+class _Route:
+    """The method for each of our bodies, chosen before any feature is looked for (called
+    by convert.prepare with the bodies as split): which to look for features in.
+
+    --preset cad: every body (a mechanical part: our features, then MMM's segmentation of
+    the rest). --preset smooth: none (an artistic model: smooth surfaces only), nor for
+    precise, which MMM's own fitting does. Auto: MMM's own choice per body
+    (pipeline.choose_preset_body: flat faces, one motion sweeping the curved surface, one
+    surface a shell), as MMM alone makes it; a body routed to smooth surfaces is looked
+    at only if they don't follow its mesh and CAD faces are tried (later). Before, any
+    body we found anything in was forced to CAD: on organic_metaballs a patchwork of 342
+    analytic pieces in 128 s, where MMM alone made 348 smooth surfaces in 17 s.
+    pieces[k]: part k's pieces (_shells_of), made here and kept for bodies_from; want[k]:
+    whether part k is looked at."""
+
+    def __init__(self, opts, report):
+        self.opts, self.report = opts, report
+        self.pieces = self.want = None
+
+    def __call__(self, pts, groups):
+        self.pieces = [_shells_of(pts, g) for g in groups]
+        self.want = self._choose(pts, groups)
+        return self.want
+
+    def _choose(self, pts, groups):
+        preset = self.opts.preset
+        if preset == "cad":
+            self.report.log("CAD faces, as chosen (a mechanical part): stl2curves looks for features in every body")
+            return [True] * len(groups)
+        if preset != "auto":
+            self.report.log(f"{mpipe.PRESETS.get(preset, {}).get('label', preset)} surfaces, as chosen: stl2curves' feature finding isn't used")
+            return [False] * len(groups)
+        biggest = max(_area(pts, g) for g in groups)
+        out = []
+        for gi, pieces in enumerate(self.pieces):
+            made = _nest([p[0] for p in pieces], [[] for _ in pieces])
+            kinds = []
+            for b in made:
+                if _debris(b.shells[0], biggest):
+                    continue
+                P = np.vstack([s.V for s in b.shells])
+                tol = self.opts.tolerance or mpipe.auto_tolerance(float(np.linalg.norm(P.max(0) - P.min(0))), "cad",
+                                                                  self.opts.quality)
+                kinds.append(mpipe.choose_preset_body(b.shells, tol, self.opts.quality, NULL)[0])
+            cad = "cad" in kinds or not kinds
+            out.append(cad)
+            which = f"Body {gi + 1}" if len(groups) > 1 else "The part"
+            self.report.log(f"{which}: " + ("CAD faces (flat faces, a sweep, or one simple surface): stl2curves "
+                                            "looks for features in it" if cad else
+                                            "smooth surfaces (an organic shape: no flat faces to speak of): "
+                                            "stl2curves' feature finding is skipped, and used only if CAD faces "
+                                            "are tried after all"))
+        return out
+
+
+def _mended(path, opts, report, route=None):
     """Our prepared parts, on our mended mesh, or on MMM's where ours moved the enclosed
     volume by more than WRECKED and MMM's moved it less (a cap of thin walls: ours split
     4,825 of its 5,196 triangles away as slivers, -19% volume; MMM's kept it whole).
     Returns (parts, info, part, ours): ours, whether they are on our own mended mesh
     (saved as stages, which our own conversion alongside takes up again)."""
-    parts, info, part = convert.prepare(path, 0.01, blends=FRONT_BLENDS)
+    parts, info, part = convert.prepare(path, 0.01, blends=FRONT_BLENDS, analyze=route)
     pts0, tris0 = convert.load_stl(path)
     raw = abs(_signed_volume(pts0, tris0))
     mine = abs(sum(_signed_volume(p[0].pts, p[0].body_tris) for p in parts))
@@ -437,7 +693,7 @@ def _mended(path, opts, report):
     offsets = np.cumsum([0] + [len(s.V) for s in shells])
     pts = np.vstack([s.V for s in shells])
     tris = np.vstack([s.F + o for s, o in zip(shells, offsets)])
-    parts, info2, part = convert.prepare((pts, tris), 0.01, mend=False, blends=FRONT_BLENDS)
+    parts, info2, part = convert.prepare((pts, tris), 0.01, mend=False, blends=FRONT_BLENDS, analyze=route)
     info2["triangles"] = info["triangles"]
     info2["repairs"] = ["MMM's repair (stl2curves' moved the volume too far)"]
     return parts, info2, part, False
@@ -447,23 +703,51 @@ def front(path, opts, report):
     """stl2curves' first stages for MMM's pipeline.convert: (bodies, info, seeded,
     extra). seeded[k](tol) gives body k's ("cad", {id(shell): segmenter}); a body
     missing from it (an organic body with nothing of ours in it) gets MMM's own choice.
-    extra[k]: more candidates for body k (our own sewn build)."""
-    if str(path).lower().endswith(".3mf"):
+    extra[k]: more candidates for body k (our own sewn build).
+    If our stages fail on the file (which passed the entrance, so MMM's reader takes it),
+    MMM's own reading, mending and segmentation convert it instead, and the user is told.
+    A mesh our repair leaves nothing of is refused (_NothingLeft)."""
+    try:
+        return _front(path, opts, report)
+    except (MemoryError, _NothingLeft):
+        raise
+    except Exception as e:
+        workers.stop()
+        report.warn(f"stl2curves' feature finding failed on this file ({type(e).__name__}: {e}), so MMM's engine "
+                    "converts it on its own: its own mesh repair and surface fitting.")
+        bodies, info = mio.load_and_prepare(path, repair=opts.repair, remove_debris=opts.remove_debris, report=report,
+                                            layout=opts.layout, merge=opts.merge_overlaps,
+                                            touching=opts.touching_parts)
+        return bodies, info, {}, {}
+
+
+class _NothingLeft(mio.MeshError):
+    """Our repair left no body: every piece of the mesh was loose debris. 3,000 triangles
+    lying apart (a triangle soup) crashed here; MMM alone takes each one for a body of
+    its own and was still at it after 5 minutes, to save 3,000 loose flat faces."""
+
+
+def _front(path, opts, report):
+    if str(path).lower().endswith(OTHER_FORMATS):
         # (3MF projects: MMM's own reader and segmentation, for now)
         bodies, info = mio.load_and_prepare(path, repair=opts.repair, remove_debris=opts.remove_debris,
                                             report=report, layout=opts.layout, merge=opts.merge_overlaps,
                                             touching=opts.touching_parts)
         return bodies, info, {}, {}
     report.stage("Reading and mending the mesh (stl2curves)", 0.0, 0.3)
-    parts, info, part, parts_on_file = _mended(path, opts, report)
+    route = _Route(opts, report)
+    parts, info, part, parts_on_file = _mended(path, opts, report, route)
     groups = [p[0].__dict__.get("body_tris") for p in parts]
     if any(g is None for g in groups):
         raise RuntimeError("prepare() didn't keep each body's triangles")
     pts = parts[0][0].pts
     report.stage("Handing the features over (stl2curves -> MMM)", 0.3, 0.35)
     _fit_surfaces(parts)
-    ours = bodies_from(parts, groups, pts)
+    ours = bodies_from(parts, groups, pts, route.pieces)
     bodies = [b.shells for b in ours]
+    if not bodies:
+        raise _NothingLeft(f"Nothing is left of this mesh once its loose bits are removed: its {info['triangles']:,} "
+                           "triangles don't join up into a surface, so there's no shape to convert.")
     minfo = mio.MeshInfo()
     allP = np.vstack([s.V for b in bodies for s in b])
     minfo.diag = float(np.linalg.norm(allP.max(0) - allP.min(0)))
@@ -478,6 +762,29 @@ def front(path, opts, report):
     minfo.part_triangles = [info["triangles"]]
     minfo.body_part = [0] * len(bodies)
     minfo.mesh_check = {"status": "ok", "issues": [], "repairs": info.get("repairs", [])}
+    n_open = sum(1 for b in bodies if not all(s.closed for s in b))
+    if n_open:
+        # (as MMM's mesh check says it: a sheet or a single triangle came back "valid" with
+        # no word that the file holds a surface, not a solid)
+        from mmm.meshcheck import _issue, _plural
+        minfo.mesh_check["issues"].append(_issue(
+            "open_surface", n_open, "not_fixed", f"{_plural(n_open, 'piece')} can't be closed into a solid (a "
+            "surface with no thickness, or holes too big to fill)", "Converted as surfaces instead of a solid."))
+        minfo.mesh_check["status"] = "problems"
+        report.warn(f"{_plural(n_open, 'piece')} of this mesh can't be closed into a solid, so "
+                    + ("it is" if n_open == 1 else "they are") + " converted as surfaces instead of a solid.")
+    # (our repair can close a single triangle into two faces back to back: "a solid" of no
+    # volume, which came back valid with no word)
+    n_flat = sum(1 for b in bodies if all(s.closed for s in b)
+                 and abs(sum(s.volume for s in b)) <= FLAT * minfo.diag ** 3)
+    if n_flat:
+        from mmm.meshcheck import _issue, _plural
+        minfo.mesh_check["issues"].append(_issue(
+            "no_volume", n_flat, "not_fixed", f"{_plural(n_flat, 'piece')} enclose{'s' if n_flat == 1 else ''} "
+            "no volume (flat, or paper-thin)", "Converted, but not as a real solid."))
+        minfo.mesh_check["status"] = "problems"
+        report.warn(f"{_plural(n_flat, 'piece')} of this mesh enclose{'s' if n_flat == 1 else ''} no volume (flat, "
+                    "or paper-thin), so the result is not a real solid.")
     report.log("stl2curves mended the mesh: " + ("; ".join(info["repairs"]) if info.get("repairs") else "nothing to mend"))
 
     def seeded(k):
@@ -513,7 +820,45 @@ def front(path, opts, report):
             return shape if len(ours) == 1 else _nearest_solid(shape, body.shells[0])
         return [("stl2curves", "Building stl2curves' own (sewn) faces", make)]
 
-    made = {k: seeded(k) for k in range(len(bodies))}
+    analysed = {}
+
+    def later(k):
+        """Body k's segmentation seeded with our features, looked for only now: for a body
+        routed to smooth surfaces when CAD faces are tried after all (pipeline marks it by
+        .later). ("cad", None) if we find nothing in it: MMM's own segmentation."""
+        body = ours[k]
+        gi = body.part
+
+        def make(tol):
+            if gi not in analysed:
+                report.log("stl2curves looks for features in this body now, as CAD faces are tried for it")
+                g = groups[gi]
+                if len(g) >= convert.WORKERS_FROM:
+                    workers.start(len(g))
+                try:
+                    mesh, features, t = convert._analyze_body(pts, g, 0, 1)
+                    convert.snap(mesh, features, None)
+                    if FRONT_BLENDS:
+                        features = convert.add_blends(mesh, features)
+                finally:
+                    workers.stop()
+                analysed[gi] = part_seeds(mesh, features, pts, g, route.pieces[gi])
+            seeds = analysed[gi]
+            body.seeds = [seeds[j] for j in body.pieces]
+            if not any(body.seeds):
+                return "cad", None
+            return make_segs(body, tol)
+        make.later = True
+        return make
+
+    def make_segs(body, tol):
+        segs = {}
+        for shell, seeds in zip(body.shells, body.seeds):
+            segs[id(shell)] = seeded_segmenter(shell, seeds, tol, opts.quality, report)
+        return "cad", segs
+
+    made = {k: seeded(k) if route.want[b.part] else (later(k) if opts.preset == "auto" else None)
+            for k, b in enumerate(ours)}
     extra = {k: sewn(k) for k in range(len(bodies)) if run is not None and parts[ours[k].part][1]}
     return bodies, minfo, {k: m for k, m in made.items() if m is not None}, extra
 
@@ -524,7 +869,7 @@ _running = []   # our conversions started alongside (stopped when the file is do
 class _OurRun:
     """stl2curves' own conversion of the file (the MIT pipeline: faces cut and sewn,
     culprits dropped) in a process of its own, started once our stages are saved: it
-    takes them up again (STL2CURVES_CACHE) and goes straight to building, on the cores
+    takes them up again (MM_S2C_CACHE) and goes straight to building, on the cores
     MMM's single-threaded stages leave free, so its result is usually there by the time
     MMM's judge asks for it (Rak N-USB waited 110 s for it run afterwards). Also a rival
     to the merged result for the whole file (rivals.py)."""
@@ -533,10 +878,10 @@ class _OurRun:
     def __init__(self, path):
         import subprocess
         import tempfile
-        self.dir = tempfile.mkdtemp(prefix="stl2curves_ours_")
+        self.dir = tempfile.mkdtemp(prefix="mms2c_ours_")
         self.out = os.path.join(self.dir, os.path.splitext(os.path.basename(str(path)))[0] + ".step")
-        env = dict(os.environ, STL2CURVES_CACHE=stages.FOLDER)
-        self.proc = rivals.popen(["-m", "stl2curves", str(path), "--out", self.dir], env=env,
+        env = dict(os.environ, MM_S2C_CACHE=stages.FOLDER)
+        self.proc = rivals.popen(["-m", "mms2c", str(path), "--out", self.dir], env=env,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self._shape = False
         _running.append(self)
@@ -596,15 +941,53 @@ def _rivals_fit(base):
     return base is None or (base.unit == "mm" and not base.tolerance and not base.max_faces)
 
 
-def convert_file(path, out, quality_=None, report=None, base=None):
+def _entrance(path, out):
+    """The checks every file passes before any work: (whether it is read as an STL, its
+    triangle count, its diagonal; 0 and None for other formats). Raises what mmm/cli.py's failure() turns into
+    a message for the user: the paths (pipeline.check_paths: an output naming the input
+    overwrote the user's mesh), then the mesh, read by MMM's reader and given its
+    refusals (meshio.check_triangles: our own reader crashed on empty and malformed
+    files, and a sphere 1e7 mm from the origin, all corners joined in MMM's weld, got
+    past to a quad remesh that took 14 GB). Other formats are checked by MMM's reader
+    in its own pipeline."""
+    mpipe.check_paths(path, out)
+    if str(path).lower().endswith(OTHER_FORMATS):
+        return False, 0, None
+    try:
+        tris = mio.read_stl(str(path))
+    except (mio.MeshError, OSError, MemoryError):
+        raise
+    except Exception as e:
+        raise mio.MeshError(f"This file seems to be damaged, so it couldn't be read ({type(e).__name__}). "
+                            "Try exporting it again.") from e
+    mio.check_triangles(tris)
+    pts = tris.reshape(-1, 3)
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    return True, len(tris), float(np.linalg.norm(pts.max(0) - pts.min(0)))
+
+
+def convert_file(path, out, quality_=None, report=None, preset="auto", base=None):
     """Convert one mesh file with the merged engine into the STEP file out: MMM's result
-    dict (faces, validity, how closely it follows the mesh...). base: the settings the
-    engine's command line was given (mmm.pipeline.Options: unit, tolerance, repair,
-    preview...), which the merged pipeline keeps."""
+    dict (faces, validity, how closely it follows the mesh...). preset: "auto" (the
+    method chosen per body, see _Route), "cad" (a mechanical part: our features and CAD
+    faces for every body), "smooth" (an artistic model: smooth surfaces, no feature
+    finding), or MMM's "precise". base: the settings the engine's command line was given
+    (mmm.pipeline.Options: unit, tolerance, repair, preview...), which the merged
+    pipeline keeps."""
     report = report or Reporter()
     t0 = time.time()
-    stl = str(path).lower().endswith(".stl")
-    n = convert.load_stl(path)[1].shape[0] if stl else 0
+    if quality_ is not None:
+        mpipe.Options(quality=quality_)     # (refuses NaN and out of range: OptionError)
+    stl, n, diag = _entrance(path, out)
+    if stl and not FRONT_SIZES[0] <= diag <= FRONT_SIZES[1]:
+        # (MMM's mesh check then gives its own note on the unit)
+        report.warn(f"This model is {diag:.3g} units across, outside the sizes stl2curves' feature finding "
+                    "works at, so Manifold Mesh Mix's engine converts it on its own")
+        stl = False
+    elif stl and not UNIT_NOTE[0] <= diag <= UNIT_NOTE[1]:
+        report.warn(f"The model is {diag:,.3g} units across. If it was made in "
+                    + ("inches or meters" if diag < UNIT_NOTE[0] else "a smaller unit than millimeters")
+                    + ", change Units in the settings.")
     q = quality_ if quality_ is not None else quality(n)
     use = stl and RIVALS and _rivals_fit(base)
     # MMM's engine alone from the start, and our own conversion once our first stages are
@@ -614,19 +997,18 @@ def convert_file(path, out, quality_=None, report=None, base=None):
         _running.append(rivals.MMMAlone(path, q))
     judges = rivals.Judges(path, _running)
     opts = mpipe.Options(**(base.__dict__ if base is not None else {}))
-    opts.preset = base.preset if base is not None and base.preset == "cad" else "auto"
-    opts.quality = q
+    opts.preset, opts.quality = preset, q
     opts.judge_floor, opts.fewest_faces, opts.enough = rivals.JUDGE_FLOOR, True, judges.passing
     opts.smooth_elsewhere = opts.rivals = use
     own_cache = not stages.FOLDER
     if own_cache:
-        stages.FOLDER = tempfile.mkdtemp(prefix="stl2curves_stages_")
+        stages.FOLDER = tempfile.mkdtemp(prefix="mms2c_stages_")
     try:
         try:
             try:
                 with judges.run_lock:
                     judges.running = True
-                res = mpipe.convert(str(path), str(out), opts, report, front=front)
+                res = mpipe.convert(str(path), str(out), opts, report, front=front if stl else None)
             finally:
                 with judges.run_lock:
                     judges.running = False
@@ -669,6 +1051,54 @@ def _preview_again(step, preview, report):
         report.warn(f"The 3D preview couldn't be made ({e}); the STEP file itself is fine.")
 
 
+_job = None     # the job object of _end_with_me (its handle must live as long as the process)
+
+
+def _end_with_me():
+    """Put this process in a Windows job object that ends every process in it when its
+    last handle closes, which is when this process ends, however it ends: ended from
+    outside (the task manager, a test's time limit), the merged engine left its rivals,
+    our own run and their worker pools running (25 processes after a 10 GB conversion).
+    Children join the job as they start. Returns the handle, kept for the process's life
+    (None if it couldn't be made, or off Windows). From Mesh-Mix-S2C's engine/mmm_engine.py
+    (2026-10-26), where every engine process starts this way."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Basic(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class Extended(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", Basic), ("IoInfo", ctypes.c_ulonglong * 6),
+                        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = Extended()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        ok = k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))  # extended limits
+        if not ok or not k32.AssignProcessToJobObject(job, k32.GetCurrentProcess()):
+            return None
+        return job
+    except Exception:
+        return None
+
+
 def main(argv=None):
     import argparse
     import json
@@ -678,10 +1108,21 @@ def main(argv=None):
     ap.add_argument("-o", "--output")
     ap.add_argument("--quality", type=float, help="MMM's quality, 0-1 (default: by triangle count)")
     ap.add_argument("--json", action="store_true", help="progress as JSON lines on stdout")
+    ap.add_argument("--preset", choices=("auto", "cad", "smooth", "precise"), default="auto",
+                    help="cad: a mechanical part; smooth: an artistic model; auto (default): chosen for each "
+                         "body by its shape")
     a = ap.parse_args(argv)
     out = a.output or os.path.splitext(a.input)[0] + ".step"
     report = Reporter(json_mode=a.json)
-    res = convert_file(a.input, out, a.quality, report)
+    global _job
+    if argv is None:            # (the command line, not a script or a test calling main)
+        _job = _end_with_me()
+    try:
+        res = convert_file(a.input, out, a.quality, report, a.preset)
+    except Exception as e:
+        # (the same messages as MMM's command line, and a JSON error event with --json)
+        from mmm.cli import failure
+        return failure(e, a.input, report)
     if not a.json:
         print(json.dumps({k: v for k, v in res.items() if k != "input"}, indent=1, default=str))
     return 0

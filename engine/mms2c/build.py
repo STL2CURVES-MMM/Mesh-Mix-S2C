@@ -18,7 +18,7 @@ import numpy as np
 from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepBuilderAPI import (BRepBuilderAPI_Copy, BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire,
                                 BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeVertex)
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol, BRepPrimAPI_MakeSphere, BRepPrimAPI_MakeBox
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol, BRepPrimAPI_MakeSphere, BRepPrimAPI_MakeBox, BRepPrimAPI_MakeTorus
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Splitter
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepCheck import BRepCheck_Analyzer
@@ -363,9 +363,9 @@ REJOIN_SNAP = 1e-7      # mm: corners this near one mesh point are that point (c
 MAX_FACE_TOL = 1.0      # mm: a patch's face whose corners or edges needed wider tolerances than this doesn't fit
 WIDE_FUZZ = 1.25        # a patch's last try splits its surface with a fuzzy value this many times
                         # the furthest its outline corners are off it
-# Experiments, off unless named in the environment variable STL2CURVES_TRY (comma-separated),
+# Experiments, off unless named in the environment variable MM_S2C_TRY (comma-separated),
 # so each can be tried on its own in full regressions: exact (and swap, see convert)
-TRYING = {x.strip() for x in os.environ.get("STL2CURVES_TRY", "").split(",") if x.strip()}
+TRYING = {x.strip() for x in os.environ.get("MM_S2C_TRY", "").split(",") if x.strip()}
 EXACT_EDGES = "exact" in TRYING         # a run between two analytic surfaces is their exact intersection
 EXACT_DEV = 0.02        # mm: most a run's mesh points may lie off that curve (else a spline)
 
@@ -842,8 +842,14 @@ def _plane_face(mesh, fid, tris, owner, bounds, edge_tri, edges):
 
 def _patch_faces(feature, bound, mesh):
     m = feature.model
-    if feature.kind == "ball":
-        ex = TopExp_Explorer(BRepPrimAPI_MakeSphere(_pnt(m.c), m.r).Shape(), TopAbs_SHELL)
+    if feature.kind == "closed":
+        # a whole closed surface (a ball, a ring): a shell of its own, no outline to cut
+        if isinstance(m, Sphere):
+            made = BRepPrimAPI_MakeSphere(_pnt(m.c), m.r).Shape()
+        else:
+            rc, zc, r = m.circle
+            made = BRepPrimAPI_MakeTorus(gp_Ax2(_pnt(m.a + zc * m.d), gp_Dir(*m.d), gp_Dir(*m.e1)), rc, r).Shape()
+        ex = TopExp_Explorer(made, TopAbs_SHELL)
         shell = TopoDS.Shell(ex.Current())
         return [shell if feature.convex else TopoDS.Shell(shell.Reversed())]
     if feature.kind == "wedge":
@@ -944,6 +950,15 @@ THREAD_SAMPLES = 48     # points a turn on a thread's helices (a B-spline throug
                         # well under a micron off)
 
 
+def thread_reach(feature):
+    """How far a thread piece's surface (_thread_surface) reaches, in the model's own
+    parameters: ((U from, U to), (s from, s to)), a little past the patch each way."""
+    grow = 0.2 * (feature.hi - feature.lo) + 0.02
+    margin = math.radians(10)
+    return ((feature.u0 - margin, feature.u0 + feature.span + margin),
+            (feature.lo - grow, feature.hi + grow))
+
+
 def _thread_surface(feature, m):
     """A piece of a thread's profile (threads.Flank) swept along its helix, reaching a
     little past the patch each way: the ruled surface between the helices at the
@@ -951,13 +966,10 @@ def _thread_surface(feature, m):
     parameters are the model's own (U, s): helix angle, and distance along the piece."""
     from OCP.Geom import Geom_BSplineSurface
     from OCP.collections import Array1_double, Array1_int, Array2_gp_Pnt, HArray1_double
-    grow = 0.2 * (feature.hi - feature.lo) + 0.02
-    lo, hi = feature.lo - grow, feature.hi + grow
+    (u0, u1), (lo, hi) = thread_reach(feature)
     if min(m.p[1] + lo * m.t[1], m.p[1] + hi * m.t[1]) <= 0:
         return None                     # would cross the axis
-    margin = math.radians(10)
-    U = np.linspace(feature.u0 - margin, feature.u0 + feature.span + margin,
-                    max(8, int(math.ceil((feature.span + 2 * margin) / TWO_PI * THREAD_SAMPLES)) + 1))
+    U = np.linspace(u0, u1, max(8, int(math.ceil((u1 - u0) / TWO_PI * THREAD_SAMPLES)) + 1))
     params = HArray1_double(1, len(U))
     for i, u in enumerate(U):
         params.SetValue(i + 1, float(u))
@@ -1308,7 +1320,7 @@ def _cut_all(mesh, jobs, tol):
     pool = workers.get()
     if pool is None or (len(jobs) < PARALLEL_CUTS and all(len(tools) < LONG_OUTLINE for _, _, tools, _, _ in jobs)):
         return out
-    tmp = tempfile.mkdtemp(prefix="stl2curves_")
+    tmp = tempfile.mkdtemp(prefix="mms2c_")
     try:
         if "shared_as" not in mesh.__dict__:
             mesh.shared_as = workers.share(mesh)
@@ -1617,7 +1629,7 @@ def _fill_all(jobs):
         workers.start()
         pool = workers.get()
     if pool is not None and jobs:
-        tmp = tempfile.mkdtemp(prefix="stl2curves_")
+        tmp = tempfile.mkdtemp(prefix="mms2c_")
         try:
             args = []
             for i, (_, outline, inner, settings, _) in enumerate(jobs):
@@ -2181,7 +2193,7 @@ def build_faces(mesh, features, tol):
             failed.append(k)
             continue
         for x in faces:
-            if f.kind == "ball":
+            if f.kind == "closed":
                 shells.append(x)
             else:
                 builder.Add(comp, x)

@@ -4,8 +4,11 @@
     mmm-engine inspect INPUT [--preview FILE]
 """
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-26 for the stl2curves merged engine: the error messages are one
+# function, failure(), which mms2c/merged.py's command line shares, and they cover
+# the path and option checks (pipeline.PathError, pipeline.OptionError).
 # Modified 2026-10-26 for Mesh Mix-S2C: Auto and CAD on an STL go through the merged engine
-# (stl2curves/merged.py: stl2curves' features seed this engine's CAD build, raced against
+# (mms2c/merged.py: stl2curves' features seed this engine's CAD build, raced against
 # both programs alone); --engine mmm keeps this engine's own pipeline.
 import argparse
 import json
@@ -237,56 +240,67 @@ def main(argv=None):
             touching_parts=args.touching_parts,
         )
         if _merged(args):
-            from stl2curves import merged
+            from mms2c import merged
 
-            res = merged.convert_file(args.input, out, args.quality, rep, base=opts)
+            res = merged.convert_file(args.input, out, args.quality, rep, preset=args.preset, base=opts)
         else:
             res = convert(args.input, out, opts, rep)
         if not rep.json_mode:
             print(json.dumps({k: v for k, v in res.items() if k != "input"}, indent=1))
         return 0
     except Exception as e:  # report and exit non-zero
-        import errno
+        return failure(e, args.input, rep)
 
-        from .meshio import MeshError
-        from .pipeline import ConversionError
 
-        reason = None
-        if isinstance(e, (MeshError, ConversionError)):
-            msg = str(e)
-            reason = "The file itself is the problem, not the app."
-        elif isinstance(e, MemoryError):
-            msg = "Ran out of memory. Move the slider toward Faster, or convert fewer files at once (Advanced → Files at once)."
-        elif isinstance(e, FileNotFoundError) and os.path.exists(args.input):
-            msg = "The folder to save into couldn't be found. Was it moved or deleted?"
-            reason = "The app saves its files there, and it wasn't there any more."
-        elif isinstance(e, FileNotFoundError):
-            msg = "The file couldn't be found. Was it moved, renamed or deleted?"
-        elif isinstance(e, PermissionError):
-            system = "macOS" if sys.platform == "darwin" else "Windows" if sys.platform == "win32" else "Linux"
-            msg = f"{system} didn't allow reading this file or saving the STEP file in that folder. Choose another output folder in Save STEP files to."
-        elif isinstance(e, OSError) and e.errno == errno.ENOSPC:
-            msg = "The disk is full, so the STEP file couldn't be saved. Free up some space and convert again."
-        elif "STEP write failed" in str(e) or "STEP transfer failed" in str(e):
-            msg = "The STEP file couldn't be written. Check that the output folder still exists and has free space."
-        else:
-            msg = "Something went wrong while converting."
-            reason = ("This is a bug in the converter, not a problem with your file. "
-                      "Save a report and send it, so it can be fixed.")
-        if isinstance(e, MemoryError):
-            reason = "Very big or very detailed meshes need a lot of memory, and this one needed more than was free."
-        elif isinstance(e, FileNotFoundError) and not os.path.exists(args.input):
-            reason = "The app reads the file again when it converts it, and it wasn't there any more."
-        elif isinstance(e, PermissionError):
-            reason = "The system's file permissions blocked the app."
-        details = f"{type(e).__name__}: {e}\n" + traceback.format_exc()
-        if rep.json_mode:
-            rep.error(msg, reason=reason, details=details)
-            sys.stderr.write(traceback.format_exc())
-        else:
-            print(msg + (f" {reason}" if reason else ""), file=sys.stderr)
-            traceback.print_exc()
-        return 1
+def failure(e, input_path, rep):
+    """Report exception e, raised converting input_path, as a message for the user (a
+    JSON error event in JSON mode, with the details), and return the exit code (1)."""
+    import errno
+
+    from .meshio import MeshError
+    from .pipeline import ConversionError, OptionError, PathError
+
+    reason = None
+    if isinstance(e, (MeshError, ConversionError)):
+        msg = str(e)
+        reason = "The file itself is the problem, not the app."
+    elif isinstance(e, PathError):
+        msg = str(e)
+    elif isinstance(e, OptionError):
+        msg = str(e)
+        reason = "A setting is out of range."
+    elif isinstance(e, MemoryError):
+        msg = "Ran out of memory. Move the slider toward Faster, or convert fewer files at once (Advanced → Files at once)."
+    elif isinstance(e, FileNotFoundError) and os.path.exists(input_path):
+        msg = "The folder to save into couldn't be found. Was it moved or deleted?"
+        reason = "The app saves its files there, and it wasn't there any more."
+    elif isinstance(e, FileNotFoundError):
+        msg = "The file couldn't be found. Was it moved, renamed or deleted?"
+    elif isinstance(e, PermissionError):
+        system = "macOS" if sys.platform == "darwin" else "Windows" if sys.platform == "win32" else "Linux"
+        msg = f"{system} didn't allow reading this file or saving the STEP file in that folder. Choose another output folder in Save STEP files to."
+    elif isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        msg = "The disk is full, so the STEP file couldn't be saved. Free up some space and convert again."
+    elif "STEP write failed" in str(e) or "STEP transfer failed" in str(e):
+        msg = "The STEP file couldn't be written. Check that the output folder still exists and has free space."
+    else:
+        msg = "Something went wrong while converting."
+        reason = ("This is a bug in the converter, not a problem with your file. "
+                  "Save a report and send it, so it can be fixed.")
+    if isinstance(e, MemoryError):
+        reason = "Very big or very detailed meshes need a lot of memory, and this one needed more than was free."
+    elif isinstance(e, FileNotFoundError) and not os.path.exists(input_path):
+        reason = "The app reads the file again when it converts it, and it wasn't there any more."
+    elif isinstance(e, PermissionError):
+        reason = "The system's file permissions blocked the app."
+    details = f"{type(e).__name__}: {e}\n" + traceback.format_exc()
+    if rep.json_mode:
+        rep.error(msg, reason=reason, details=details)
+        sys.stderr.write(traceback.format_exc())
+    else:
+        print(msg + (f" {reason}" if reason else ""), file=sys.stderr)
+        traceback.print_exc()
+    return 1
 
 
 if __name__ == "__main__":

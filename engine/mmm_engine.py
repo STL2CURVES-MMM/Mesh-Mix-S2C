@@ -73,13 +73,22 @@ if __name__ == "__main__":
     # The merged engine works in processes of its own: a pool of workers (multiprocessing,
     # which in the built app starts this program again; freeze_support hands those runs to
     # the pool), and rival conversions and judges, which start as this program with
-    # --run-module MODULE (stl2curves/rivals.py)
+    # --run-module MODULE (mms2c/rivals.py); and the quad remesher's watched child, which
+    # starts as this program with --remesh-child (mmm/remesh_guard.py)
     multiprocessing.freeze_support()
     _job = _end_with_parent()
+    if len(sys.argv) > 1 and sys.argv[1] == "--remesh-child":
+        from mmm.remesh_guard import child_main
+
+        child_main(sys.argv[2:])
+        sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[1] == "--run-module":
         import runpy
 
         module = sys.argv[2]
+        # only the engine's own modules: the built program isn't a general Python launcher
+        if module.split(".")[0] not in ("mmm", "mms2c"):
+            sys.exit(f"--run-module runs only the engine's own modules (mmm, mms2c), not {module}")
         sys.argv = [module] + sys.argv[3:]
         runpy.run_module(module, run_name="__main__", alter_sys=True)
         sys.exit(0)

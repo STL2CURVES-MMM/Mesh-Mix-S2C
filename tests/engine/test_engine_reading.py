@@ -1,3 +1,5 @@
+# From Manifold Mesh Mix 1.6.0 (desktop/tests/test_engine_reading.py, AGPL-3.0), changed for this fork:
+# the engine is imported as mmm, from engine/ (Mesh-Mix-S2C).
 """The engine reading odd and damaged files, units, mirrored 3MF copies,
 touching 3MF parts and part names (fixes from the code review)."""
 import os

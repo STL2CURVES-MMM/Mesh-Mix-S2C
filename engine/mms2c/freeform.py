@@ -103,6 +103,13 @@ class Freeform:
         _, g = self._gradient(P)
         return g / np.linalg.norm(g, axis=1)[:, None]
 
+    def inside(self, P):
+        """Whether each point lies over the surface's own domain (the knots' span, which
+        surface() covers): beyond it signed() only extends the spline, and no face built
+        on the surface reaches there (merged engine: see merged.OurSurface)."""
+        u, v, _ = self.uvh(P)
+        return (u >= self.tu[0]) & (u <= self.tu[-1]) & (v >= self.tv[0]) & (v <= self.tv[-1])
+
     def point(self, u, v):
         u, v = np.asarray(u, float), np.asarray(v, float)
         H = self.height(u, v)

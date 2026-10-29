@@ -82,14 +82,18 @@ FACETED_TIP = ("Saved as flat faces, exactly like the mesh: neither CAD faces no
                "pick; a higher quality may give real surfaces.")
 
 
+# result kinds that are another preset's faces: stl2curves' own sewn faces are CAD
+KIND_ALIASES = {"stl2curves": "cad"}
+
+
 def used_kinds(value, kinds=()):
     """The methods behind a reported preset: the engine's list when it sends
     one, else CAD and Smooth for "mixed" (what older engines meant by it)."""
     if kinds:
-        return set(kinds)
+        return {KIND_ALIASES.get(k, k) for k in kinds}
     if value == "mixed":
         return {"cad", "smooth"}
-    return {value} if value else set()
+    return {KIND_ALIASES.get(value, value)} if value else set()
 
 
 def preset_title(value, kinds=()):
@@ -100,6 +104,7 @@ def preset_title(value, kinds=()):
         return " + ".join(names) or "Mixed"
     if value == "faceted":
         return FACETED_TITLE
+    value = KIND_ALIASES.get(value, value)
     for c in PRESETS:
         if c.value == value:
             return c.title

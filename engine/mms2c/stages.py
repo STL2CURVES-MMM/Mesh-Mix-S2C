@@ -1,6 +1,6 @@
 """Saved stages of a conversion, for trying out changes quickly (a development aid).
 
-With the environment variable STL2CURVES_CACHE set to a folder, a conversion saves what
+With the environment variable MM_S2C_CACHE set to a folder, a conversion saves what
 each of its first stages hands on, and a later conversion of the same file with the same
 options takes it up from there instead of working it out again:
 
@@ -21,7 +21,7 @@ import pickle
 import sys
 from pathlib import Path
 
-FOLDER = os.environ.get("STL2CURVES_CACHE")
+FOLDER = os.environ.get("MM_S2C_CACHE")
 
 # what each stage's result depends on, besides what the stages before it depend on:
 # modules of this package (their whole source) or (module, function) for single functions

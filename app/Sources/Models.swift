@@ -252,17 +252,21 @@ struct ConversionResult {
     /// The methods behind the reported preset: the engine's list when it
     /// sends one, else CAD and Smooth for "mixed" (what older engines meant).
     var usedKinds: Set<String> {
-        if !presets.isEmpty { return Set(presets) }
+        if !presets.isEmpty { return Set(presets.map(Self.alias)) }
         if preset == "mixed" { return ["cad", "smooth"] }
-        return preset.isEmpty ? [] : [preset]
+        return preset.isEmpty ? [] : [Self.alias(preset)]
     }
+
+    /// Result kinds that are another preset's faces: stl2curves' own sewn
+    /// faces are CAD.
+    static func alias(_ kind: String) -> String { kind == "stl2curves" ? "cad" : kind }
 
     /// Some or all of it was saved as the mesh's own flat triangles.
     var faceted: Bool { usedKinds.contains("faceted") }
 
     static func title(of kind: String) -> String {
         if kind == "faceted" { return facetedTitle }
-        return Preset(rawValue: kind)?.title ?? kind.capitalized
+        return Preset(rawValue: alias(kind))?.title ?? kind.capitalized
     }
 
     /// Display name of the preset the engine actually used ("mixed" when

@@ -269,7 +269,7 @@ def _watch_parent():
 
 def share(obj):
     """Write obj where every worker can read it (once each): its key for load()."""
-    fd, path = tempfile.mkstemp(prefix="stl2curves_", suffix=".pkl")
+    fd, path = tempfile.mkstemp(prefix="mms2c_", suffix=".pkl")
     with os.fdopen(fd, "wb") as f:
         pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
     _files.append(path)

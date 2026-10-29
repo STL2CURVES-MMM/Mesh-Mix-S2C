@@ -1,3 +1,5 @@
+# From Manifold Mesh Mix 1.6.0 (desktop/tests/broken_meshes.py, AGPL-3.0), changed for this fork:
+# the engine is imported as mmm, from engine/ (Mesh-Mix-S2C).
 """Broken test meshes for the mesh check, one per problem."""
 import numpy as np
 import trimesh

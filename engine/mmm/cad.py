@@ -1,6 +1,6 @@
 """CAD preset: recognise analytic surfaces and build an editable B-rep."""
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
-# Modified 2026-10-25 for the stl2curves merged engine (stl2curves/merged.py): surfaces
+# Modified 2026-10-25 for the stl2curves merged engine (mms2c/merged.py): surfaces
 # stl2curves found come in "locked" (_locked): borders move, the surface is never refitted,
 # simplified, swallowed by a sweep or a fillet chain, and survives merges; faces still
 # broken after build_cad_shell's rounds become flat faces of their own triangles.
@@ -9,6 +9,37 @@
 # own triangles (the rounds' check writes a loose compound, which read back clean while the
 # saved file broke two faces: Rak Uni-USB); a triangle whose direction isn't trusted
 # (Segmenter.unsure) must still face within the tilt noise can give it (Segmenter.cos_ok).
+# Modified 2026-10-28: convert_body_cad keeps the healed shape only when it is better
+# (pipeline.fix_acceptable: valid, volume of the mesh's sign and size), and turns a body
+# that comes out inside out the right way round (pipeline.orient_like_mesh).
+# Modified 2026-10-28 (b2): a freeform cell _make_freeform fits over weak flat faces that
+# can't follow its own triangles (further off than the tolerance, or the mesh's own
+# coarseness where that is larger) goes back to those flat faces, which are exact; each
+# cell keeps the flat faces it was made from (Region.parts). Toolbox bottom: a wall and its
+# 30-degree chamfer became one B-spline bulging 0.42 mm.
+# Modified 2026-10-28 (group C): a cone face round its apex is built as a cap with a
+# degenerate edge at the apex, as a sphere's cap round its pole was (plan_seams,
+# _pole_cap_wire, _generator).
+# Modified 2026-10-28 (group C): a cylinder, cone or torus region winding more than one
+# turn round its axis is cut into one face a turn at a meridian (split_turns), with its
+# seam and the corners of the cut on that meridian (Region.cut, snap_turn_cuts).
+# Modified 2026-10-28 (group C): a torus face round its tube but only part way round its
+# axis (a bent rod or bore) gets a seam along one of the torus's parallels
+# (_plan_tube_seam, _tube_seam_wire), as a face round the axis gets one along a meridian.
+# Modified 2026-10-28 (group E): _straighten_borders settles a tie between equally short
+# borders by the triangles' shape (_tied_side: normal agreement, curved over flat, larger
+# region, position), not by which region came first, which made the choice depend on
+# region order. (The mirrored side brace's -1.15% volume has another cause, still open: the
+# cut weighs border length only, not how well each surface fits the rows it moves.)
+# Modified 2026-10-28 (b13): _process_seed also fits each seed on the known axes near it
+# (_axis_hypotheses): the axes of stl2curves' locked surfaces and threads, and of the
+# segmenter's own cylinders, cones and tori once they reach AXIS_AROUND_DEG round; only
+# the profile is fitted, to the seed's own corners, so a narrow band (a chamfer, a
+# countersink) no longer loses to a plane because its neighbourhood took in the faces
+# beside it (Rak Front Lid through MMM alone: 204 -> 102 faces; worm_608bearing 358 -> 32).
+# Off where the merged engine seeds the segmenter with stl2curves' features (Segmenter.
+# known_axes): they hold those axes' surfaces already, and there it cost Solar Panel Bracket
+# Large its CAD faces (one smooth area 22 -> 24 regions tipped compete the wrong way).
 import numpy as np
 
 from OCP.BRep import BRep_Tool
@@ -31,11 +62,18 @@ from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt2d
 from OCP.collections import Array1_gp_Pnt
 
 from .brep import MIN_TOL, BRepAssembler, _pnt, make_compound
-from .fitting import CURVED, Cone, Cylinder, Plane, Sphere, Torus, perp_basis, unit
+from .fitting import CURVED, Cone, Cylinder, Plane, Sphere, Torus, _OnAxis, on_axis, perp_basis, unit
 from .meshio import face_normals_areas
 from .planar import planar_regions
 from .report import NULL
 from .topology import RegionGraph
+
+# Surfaces on known axes (Segmenter._axis_hypotheses)
+AXIS_AROUND_DEG = 90.0  # degrees: a fitted cylinder, cone or torus lends its axis once it reaches this far round
+AXIS_REACH = 0.05       # share of the model's diagonal, past twice the surface's radius, an axis reaches
+AXIS_NEAREST = 4        # the nearest so many axes in reach are tried for each seed
+AXIS_TIE = 0.9          # a surface on a known axis wins over a free fit covering up to 1 / this as much
+AXIS_SAME_DEG = 0.5     # degrees (and 4 tolerances apart at most): two axes are one
 
 
 # ----------------------------------------------------------------------------
@@ -49,7 +87,7 @@ def _locked(prim):
 
 
 class Region:
-    __slots__ = ("prim", "faces", "sense", "weak", "facet")
+    __slots__ = ("prim", "faces", "sense", "weak", "facet", "parts", "cut")
 
     def __init__(self, prim, faces, sense, weak=False):
         self.prim = prim
@@ -57,6 +95,11 @@ class Region:
         self.sense = sense
         self.weak = weak
         self.facet = False
+        # a freeform cell made from weak flat faces: those regions (see _make_freeform)
+        self.parts = None
+        # one turn of a surface winding several (split_turns): the direction from
+        # its axis of the meridian it was cut at, where its seam goes
+        self.cut = None
 
     @property
     def kind(self):
@@ -123,6 +166,7 @@ class Segmenter:
         self._stamp = np.zeros(nf, dtype=np.int64)
         self._stamp_id = 0
         self.regions = []
+        self._axes, self._axes_n = [], -1
 
     # --- helpers --------------------------------------------------------
     def _estimate_deflection(self):
@@ -439,6 +483,7 @@ class Segmenter:
         ext_h = self._extrusion_hypothesis(faces)
         if ext_h is not None:
             hyps.append(ext_h)
+        hyps += self._axis_hypotheses(faces)
         if hyps:
             # Hypotheses that match the mesh much worse between vertices than
             # a competitor of similar size are dropped; then the largest area
@@ -453,6 +498,13 @@ class Segmenter:
             for h in hyps[1:]:
                 if h[1] < cur[1] and h[0] >= 0.9 * cur[0]:
                     cur = h
+            # a surface on a known axis wins a near tie: its axis is another
+            # surface's, found on more of the mesh than a seed's neighbourhood
+            known = [h for h in hyps if isinstance(h[2], _OnAxis)]
+            if known and not isinstance(cur[2], _OnAxis):
+                h = max(known, key=lambda h: h[0])
+                if h[0] >= AXIS_TIE * cur[0]:
+                    cur = h
             if cur[0] > 1.10 * best[0]:
                 best = cur
         _, _, prim, sense, reg = best
@@ -463,6 +515,84 @@ class Segmenter:
         self.regions.append(Region(prim, reg, sense, weak))
         self.label[reg] = rid
         return True
+
+    def _known_axes(self):
+        """[(point, direction, radius)]: the axes surfaces on them have shown so
+        far: stl2curves' locked cylinders, cones, tori and threads, and the
+        segmenter's own once they reach AXIS_AROUND_DEG round (over a narrow
+        arc a fitted axis can be far off). Gathered again only when the
+        regions change."""
+        if self._axes_n == len(self.regions):
+            return self._axes
+        out = []
+        for r in self.regions:
+            p = r.prim
+            if p.kind == "cylinder":
+                a, d, size = p.a, p.d, p.r
+            elif p.kind == "cone":
+                a, d, size = p.apex, p.d, None
+            elif p.kind == "torus":
+                a, d, size = p.c, p.d, p.R + p.r
+            elif _locked(p) and getattr(getattr(p, "model", None), "kind", None) == "thread":
+                a, d, size = p.model.a, p.model.d, None
+            else:
+                continue
+            a, d = np.asarray(a, float), unit(np.asarray(d, float))
+            rel = self.V[np.unique(self.F[r.faces])] - a
+            rad = rel - np.outer(rel @ d, d)
+            if size is None:
+                size = float(np.linalg.norm(rad, axis=1).max())
+            if not _locked(p):
+                u, v = perp_basis(d)
+                ang = np.sort(np.arctan2(rad @ v, rad @ u))
+                gap = np.diff(np.r_[ang, ang[0] + 2 * np.pi]).max() if len(ang) > 1 else 2 * np.pi
+                if 360.0 - np.degrees(gap) < AXIS_AROUND_DEG:
+                    continue
+            a = a - (a @ d) * d
+            for k, (b, e, s) in enumerate(out):
+                if abs(d @ e) > np.cos(np.radians(AXIS_SAME_DEG)) and np.linalg.norm(np.cross(a - b, e)) < 4 * self.tol:
+                    out[k] = (b, e, max(s, size))
+                    break
+            else:
+                out.append((a, d, size))
+        self._axes, self._axes_n = out, len(self.regions)
+        return out
+
+    def _axis_hypotheses(self, faces):
+        """Hypotheses like _process_seed's for surfaces about the known axes
+        near the seed: a cylinder, cone, torus or sphere with only its profile
+        fitted, to the seed's own corners (a chamfer's band: the free fit to
+        its neighbourhood took in the faces beside it, and a plane won; and a
+        band fitted with its neighbours on the axis took in a flat ring round
+        it), accepted on the whole seed, and grown by the usual test with
+        refits that keep the axis."""
+        if not getattr(self, "known_axes", True):
+            return []
+        axes = self._known_axes()
+        if not axes:
+            return []
+        c = self.V[self.F[faces]].mean((0, 1))
+        near = []
+        for a, d, size in axes:
+            dist = float(np.linalg.norm(np.cross(c - a, d)))
+            if dist <= 2 * size + AXIS_REACH * self.ext:
+                near.append((dist, a, d))
+        near.sort(key=lambda x: x[0])
+        P, _, _, W = self.region_points(faces, True)
+        out = []
+        for _, a, d in near[:AXIS_NEAREST]:
+            for kind in ("cylinder", "cone", "torus", "sphere"):
+                p = on_axis(kind, a, d, P, W)
+                if p is None or p.degenerate(self.ext):
+                    continue
+                s = self.sense_of(p, faces)
+                if not self.accept(p, s, faces).all():
+                    continue
+                reg, p = self.grow(p, s, faces)
+                if reg.size <= faces.size:
+                    continue
+                out.append((self.fa[reg].sum(), p.rank, p, s, reg))
+        return out
 
     def _extrusion_hypothesis(self, faces, min_aspect=3.0, min_facets=3):
         """A cylinder for coarse prism-like facets (OpenSCAD cylinders and
@@ -557,6 +687,19 @@ class Segmenter:
         if not kinds or _locked(prim):
             return prim, sense
         P, N, ok, W = self.region_points(faces, True)
+        if isinstance(prim, _OnAxis):
+            # (simpler on the same axis, or flat: a free fit would let the axis go)
+            for k in kinds:
+                if k == "plane":
+                    p2, s2 = Plane.fit(P, (self.fn[faces] * self.fa[faces, None]), W=W), 1.0
+                else:
+                    p2 = on_axis(k, prim.ka, prim.kd, P, W)
+                    if p2 is None or p2.degenerate(self.ext):
+                        continue
+                    s2 = self.sense_of(p2, faces)
+                if self.accept(p2, s2, faces).all():
+                    return p2, s2
+            return prim, sense
         classes = {"plane": Plane, "cylinder": Cylinder, "sphere": Sphere, "cone": Cone}
         for k in kinds:
             cls = classes[k]
@@ -865,6 +1008,24 @@ class Segmenter:
                 nxt = nxt[~reach[nxt]]
                 reach[nxt] = True
                 front_ = nxt
+            # Several borders can be equally short (two parallel rows along a
+            # fillet): what the source reaches is the shortest border nearest
+            # side a, which side is a only by region number, so the same part
+            # mirrored got another border. Every node that can't reach the sink
+            # is the one nearest side b; the triangles between the two (tied)
+            # go together to the side _tied_side picks from their shape.
+            RT = R.T.tocsr()
+            to_snk = np.zeros(n, dtype=bool)
+            to_snk[snk] = True
+            front_ = np.array([snk])
+            while len(front_):
+                nxt = np.unique(RT[front_].indices)
+                nxt = nxt[~to_snk[nxt]]
+                to_snk[nxt] = True
+                front_ = nxt
+            tied = np.nonzero(~reach[:len(free)] & ~to_snk[:len(free)])[0]
+            if len(tied) and self._tied_side(free[tied], a, b) == a:
+                reach[tied] = True
             new = np.where(reach[:len(free)], a, b)
             if not (new != lab[free]).any():
                 continue
@@ -889,6 +1050,42 @@ class Segmenter:
             # (no refits or merges: the surfaces haven't changed)
             self._rebuild_regions(refit=False, merge=False)
         return changed
+
+    # cosine: tied triangles' mean agreement with two surfaces' normals closer than this
+    # is a tie (a fillet row 11 degrees off a wall differs by 0.02)
+    TIE_COS = 1e-4
+    # share of the larger region's area: regions closer in area than this are a tie
+    TIE_AREA = 1e-6
+
+    def _tied_side(self, faces, a, b):
+        """Which of regions a and b takes triangles that fit both, when giving
+        them to either leaves an equally short border; from the shape alone, so
+        the answer doesn't depend on the order of triangles or regions: the
+        surface their directions agree with better (area weighted); then a curved
+        surface over a flat one (the border then runs along the tangent line,
+        which lies on both); then the larger region; then the region whose
+        area-weighted centre comes first by x, then y, then z."""
+        regs = self.regions
+        w = self.fa[faces]
+        cen = self.V[self.F[faces]].mean(1)
+        agree = []
+        for r in (a, b):
+            nrm = regs[r].prim.normal(cen) * regs[r].sense
+            agree.append(float(((self.fn[faces] * nrm).sum(1) * w).sum() / max(w.sum(), 1e-300)))
+        if abs(agree[0] - agree[1]) > self.TIE_COS:
+            return a if agree[0] > agree[1] else b
+        flat = [regs[r].kind == "plane" for r in (a, b)]
+        if flat[0] != flat[1]:
+            return b if flat[0] else a
+        area = [float(self.fa[regs[r].faces].sum()) for r in (a, b)]
+        if abs(area[0] - area[1]) > self.TIE_AREA * max(area):
+            return a if area[0] > area[1] else b
+        c = []
+        for r in (a, b):
+            fr = regs[r].faces
+            wr = self.fa[fr]
+            c.append(tuple(np.round((self.V[self.F[fr]].mean(1) * wr[:, None]).sum(0) / max(wr.sum(), 1e-300), 9)))
+        return a if c[0] <= c[1] else b
 
     def _width(self, mask):
         """Mean width of a set of triangles: twice their area over the
@@ -1456,16 +1653,47 @@ class Segmenter:
         ff = weak & (sizes[comp] >= 2)
         if not ff.any():
             return
-        self.freeform_faces = np.nonzero(ff[lab])[0]
+        ffaces = np.nonzero(ff[lab])[0]
         keep = [i for i in range(nr) if not ff[i]]
         new_regs = [regs[i] for i in keep]
         new_lab = -np.ones(nf, dtype=np.int64)
         for k, i in enumerate(keep):
             new_lab[regs[i].faces] = k
-        for cfaces in _cluster_components(self.freeform_faces, self.nb):
-            for cell in fit_freeform_cells(self, cfaces):
-                new_lab[cell.faces] = len(new_regs)
-                new_regs.append(cell)
+        cells = []
+        for cfaces in _cluster_components(ffaces, self.nb):
+            cells.extend(fit_freeform_cells(self, cfaces))
+        # A cell that can't follow its own triangles (fit_freeform_cells keeps
+        # its best try once a cell is too small to split) gives them back to the
+        # flat faces it was made from, which follow them exactly: a crease
+        # between two big flat faces (a wall and its chamfer) fits no smooth
+        # surface, and the B-spline bulged 0.4 mm off it; the facets of a coarse
+        # curved surface it can't follow either are better flat than off the
+        # mesh. Within the mesh's own coarseness a cell is right (a true curve
+        # stands off coarse facets by that much). A flat face goes back whole, so
+        # a cell sharing one with a cell that missed goes back too.
+        miss = max(self.tol, self.deflection)
+        back = np.zeros(nr, dtype=bool)
+        bad = [c.prim.dev > miss for c in cells]
+        while True:
+            for c, b in zip(cells, bad):
+                if b:
+                    back[np.unique(lab[c.faces])] = True
+            more = [not b and back[lab[c.faces]].any() for c, b in zip(cells, bad)]
+            if not any(more):
+                break
+            bad = [b or m for b, m in zip(bad, more)]
+        for i in np.nonzero(back)[0]:
+            new_lab[regs[i].faces] = len(new_regs)
+            new_regs.append(regs[i])
+        kept = [c for c, b in zip(cells, bad) if not b]
+        for cell in kept:
+            cell.parts = [regs[i] for i in np.unique(lab[cell.faces])]
+            new_lab[cell.faces] = len(new_regs)
+            new_regs.append(cell)
+        if back.any():
+            self.report.log(f"{int(back.sum())} flat face(s) kept flat: no smooth surface follows them "
+                            "(a crease, or a coarse curve too far off its facets)")
+        self.freeform_faces = np.concatenate([c.faces for c in kept]) if kept else np.zeros(0, dtype=np.int64)
         self.regions = new_regs
         self.label = new_lab
 
@@ -1621,6 +1849,7 @@ class CADAssembler(BRepAssembler):
         self.unseamed = set()
         self.sphere_mode = {}
         self.pole_caps = {}
+        self.tube_seams = {}
         self.ext = float(np.linalg.norm(V.max(0) - V.min(0)))
 
     # --- edges ----------------------------------------------------------
@@ -1824,7 +2053,24 @@ class CADAssembler(BRepAssembler):
     def build(self, progress=None):
         self.split_thin_loops()
         self.plan_seams()
+        if TURN_SNAP:
+            self.snap_turn_cuts()
         return super().build(progress)
+
+    def snap_turn_cuts(self):
+        """The corners of a cut between two turns of one surface (split_turns)
+        are put exactly on the meridian it was cut at, so the edge between them
+        is that meridian's line (_on_surface_edge) and lies on the seam of both
+        faces: a face a whole turn wide has no room for its seam anywhere else."""
+        for c in self.rg.chains:
+            if c.closed or c.left < 0 or c.right < 0:
+                continue
+            L, R = self.regions[c.left], self.regions[c.right]
+            if L.cut is None or L.cut is not R.cut or L.prim is not R.prim:
+                continue
+            fr = self.region_frame(c.left)
+            for vi in (c.verts[0], c.verts[-1]):
+                self.V[vi] = fr.at_angle(self.snap_to_surface(c.left, self.V[vi]), 0.0)
 
     def add_point(self, p):
         self.V = np.vstack([self.V, np.asarray(p, dtype=np.float64)[None]])
@@ -1848,7 +2094,8 @@ class CADAssembler(BRepAssembler):
             return self._sphere_frame(r, P)
         else:
             return None
-        fr = _Frame(o, d, self._seam_dir(P, o, d))
+        # (one turn of several: its seam on the meridian it was cut at)
+        fr = _Frame(o, d, reg.cut if reg.cut is not None else self._seam_dir(P, o, d))
         self.frames[r] = fr
         return fr
 
@@ -1911,8 +2158,12 @@ class CADAssembler(BRepAssembler):
                 info.append((li, w, ang))
             wrap = [x for x in info if x[1] != 0]
             if not wrap:
+                if reg.kind == "torus":
+                    self._plan_tube_seam(r, loops, fr)
                 continue
-            if reg.kind == "sphere" and len(wrap) == 1:
+            # one loop round the axis: a cap round the sphere's pole or the
+            # cone's apex (a face with no seam there is invalid)
+            if reg.kind in ("sphere", "cone") and len(wrap) == 1:
                 self._plan_pole_cap(r, loops, info, wrap[0][0], fr)
                 continue
             if len(wrap) != 2:
@@ -1995,6 +2246,148 @@ class CADAssembler(BRepAssembler):
             return
         self.frames[r] = fr.rotated(u0)
         self.pole_caps[r] = (A, sv)
+
+    # --- a seam round a torus's tube ----------------------------------
+    #
+    # A torus face that goes all the way round its tube but only part way
+    # round its axis (a bent rod, a bent pipe's bore: stl2curves hands these
+    # over) is bounded by two loops round the tube. Like a face round the axis,
+    # it needs a seam: here along one of the torus's parallels (a circle round
+    # the axis at one tube angle v0), giving one wire [seam, loop, seam
+    # reversed, loop]. Without it the face was invalid and became a few dozen
+    # freeform cells (a quarter ring: 24 faces instead of 3).
+
+    def _tube_angle(self, r, P):
+        """The angle round the tube (the torus's v) of points P."""
+        prim = self.regions[r].prim
+        rel = np.atleast_2d(P) - prim.c
+        h = rel @ prim.d
+        rho = np.linalg.norm(rel - np.outer(h, prim.d), axis=1)
+        return np.arctan2(h, rho - prim.R)
+
+    def _tube_turns(self, r, loop):
+        vs = self.rg.loop_vertices(loop)
+        a = np.unwrap(self._tube_angle(r, self.V[vs + vs[:1]]))
+        return int(np.round((a[-1] - a[0]) / (2 * np.pi)))
+
+    def _on_parallel(self, r, p, v0):
+        """Point p moved round the tube onto the parallel at tube angle v0."""
+        prim = self.regions[r].prim
+        fr = self.frames[r]
+        u = fr.angle(np.asarray(p, dtype=np.float64)[None])[0]
+        radial = np.cos(u) * fr.x + np.sin(u) * fr.y
+        return prim.c + (prim.R + prim.r * np.cos(v0)) * radial + prim.r * np.sin(v0) * prim.d
+
+    def _plan_tube_seam(self, r, loops, fr):
+        turns = [self._tube_turns(r, loop) for loop in loops]
+        wrap = [i for i, w in enumerate(turns) if w != 0]
+        if not wrap:
+            return
+        if len(wrap) != 2:
+            self.unseamed.add(r)
+            return
+        A, Bl = wrap
+        # the parallel: through a corner of loop A clear of every other loop
+        forb = []
+        for i, loop in enumerate(loops):
+            if i not in wrap:
+                a = np.unwrap(self._tube_angle(r, self.V[self.rg.loop_vertices(loop)]))
+                forb.append((a.min() - 0.03, a.max() + 0.03))
+
+        def allowed(a):
+            return all(not (lo <= lo + np.mod(a - lo, 2 * np.pi) <= hi) for lo, hi in forb)
+
+        cand = [float(self._tube_angle(r, self.V[v])[0]) for v in self.loop_anchors(loops[A])]
+        cand = [a for a in cand if allowed(a)]
+        if cand:
+            v0 = cand[0]
+        elif forb:
+            v0 = float(_best_gap(forb))
+        else:
+            v0 = float(self._tube_angle(r, self.V[self.rg.loop_vertices(loops[A])[:1]])[0])
+        sA = self._ensure_tube_seam_vertex(r, loops[A], v0)
+        sB = self._ensure_tube_seam_vertex(r, loops[Bl], v0) if sA is not None else None
+        if sA is None or sB is None or sA == sB:
+            self.unseamed.add(r)
+            return
+        self.tube_seams[r] = (A, Bl, sA, sB, v0)
+
+    def _ensure_tube_seam_vertex(self, r, loop, v0):
+        """A corner on the loop at tube angle v0: an existing one, or a new one
+        where the loop crosses that angle (as ensure_seam_vertex round the axis)."""
+        rg = self.rg
+        for cid, fwd in loop:
+            c = rg.chains[cid]
+            if c.closed and cid not in self.fixed_closed:
+                continue
+            for v in (c.verts[0], c.verts[-1]):
+                if abs(_wrap(self._tube_angle(r, self.V[v])[0] - v0)) < 1e-9:
+                    return v
+        for cid, fwd in loop:
+            c = rg.chains[cid]
+            P = self.V[c.verts]
+            rel = _wrap(self._tube_angle(r, P) - v0)
+            for i in range(len(P) - 1):
+                a0, a1 = rel[i], rel[i + 1]
+                if abs(a1 - a0) > np.pi or not ((a0 <= 0.0 < a1) or (a1 <= 0.0 < a0)):
+                    continue
+                t = a0 / (a0 - a1) if a0 != a1 else 0.0
+                q = self.add_point(self._on_parallel(r, P[i] + t * (P[i + 1] - P[i]), v0))
+                rg.insert_vertex(cid, i + 1, q)
+                if c.closed:
+                    rg.rotate_closed_chain(cid, i + 1)
+                    self.fixed_closed.add(cid)
+                else:
+                    rg.split_chain(cid, i + 1)
+                return q
+        return None
+
+    def _tube_seam_wire(self, r, face, nat, A, Bl, sA, sB, v0):
+        """[seam, loop round the tube at the larger u, seam reversed, the other
+        loop]: the face spans u from one loop to the other and v from v0 to
+        v0 + 2 pi; the seam is used at v0 one way and at v0 + 2 pi the other."""
+        from OCP.Geom import Geom_Circle
+
+        prim = self.regions[r].prim
+        fr = self.frames[r]
+        tol = max(self.tol, MIN_TOL)
+        two_pi = 2 * np.pi
+        wA, wB = self._tube_turns(r, nat[A]), self._tube_turns(r, nat[Bl])
+        if wA < 0 < wB:
+            left, right, sl, sr = A, Bl, sA, sB
+        elif wB < 0 < wA:
+            left, right, sl, sr = Bl, A, sB, sA
+        else:
+            raise RuntimeError("inconsistent loops round the tube")
+        ul = float(fr.angle(self.V[sl][None])[0])
+        ur = ul + float(np.mod(fr.angle(self.V[sr][None])[0] - ul, two_pi))
+        for vi in (sl, sr):
+            d = float(np.linalg.norm(self.V[vi] - self._on_parallel(r, self.V[vi], v0)))
+            self.vtol[vi] = max(self.vtol[vi], d)
+            self.B.UpdateVertex(self.vertex(vi), max(MIN_TOL, 1.5 * self.vtol[vi] + 1e-9))
+        centre = prim.c + prim.r * np.sin(v0) * prim.d
+        geom = Geom_Circle(gp_Ax2(_pnt(centre), _dir(prim.d), _dir(fr.x)), float(prim.R + prim.r * np.cos(v0)))
+        e = TopoDS_Edge()
+        self.B.MakeEdge(e, geom, tol)
+        self.B.Add(e, self.vertex(sl))
+        self.B.Add(e, self.vertex(sr).Reversed())
+        self.B.Range(e, ul, ur)
+        pc1 = Geom2d_Line(gp_Pnt2d(0.0, v0), gp_Dir2d(1.0, 0.0))
+        pc2 = Geom2d_Line(gp_Pnt2d(0.0, v0 + two_pi), gp_Dir2d(1.0, 0.0))
+        self.B.UpdateEdge(e, pc1, pc2, face, tol)
+        self.B.Range(e, face, ul, ur)
+        self.B.SameParameter(e, True)
+        self.B.SameRange(e, True)
+        w = TopoDS_Wire()
+        self.B.MakeWire(w)
+        self.B.Add(w, e)
+        for x in self._loop_edges_from(nat[right], sr):
+            self.B.Add(w, x)
+        self.B.Add(w, e.Reversed())
+        for x in self._loop_edges_from(nat[left], sl):
+            self.B.Add(w, x)
+        w.Closed(True)
+        return w
 
     def ensure_seam_vertex(self, r, loop, u0, fr):
         rg = self.rg
@@ -2091,7 +2484,8 @@ class CADAssembler(BRepAssembler):
         tol = max(self.tol, MIN_TOL)
         nat = loops if reg.sense > 0 else [_reverse_loop(l) for l in loops]
         face = self._bounded_face(r, surf, nat, reg.sense < 0, tol)
-        if reg.kind in PERIODIC + ("sphere",) and r not in self.seams and r not in self.pole_caps:
+        if (reg.kind in PERIODIC + ("sphere",) and r not in self.seams and r not in self.pole_caps
+                and r not in self.tube_seams):
             # On a closed surface a boundary running the wrong way round
             # trims the complementary part of it: valid, but wrong. The
             # mesh area of the region tells which way is right.
@@ -2124,6 +2518,10 @@ class CADAssembler(BRepAssembler):
             A, sA = self.pole_caps[r]
             wires.append(self._pole_cap_wire(r, face, nat, A, sA))
             used = {A}
+        elif r in self.tube_seams:
+            A, Bl, sA, sB, v0 = self.tube_seams[r]
+            wires.append(self._tube_seam_wire(r, face, nat, A, Bl, sA, sB, v0))
+            used = {A, Bl}
         for i, loop in enumerate(nat):
             if i not in used:
                 wires.append(self.wire_for_loop(loop))
@@ -2210,9 +2608,25 @@ class CADAssembler(BRepAssembler):
         p = lambda v: prim.c + prim.r * (np.cos(v) * fr.x + np.sin(v) * fr.d)
         return geom, p(v0), p(v1)
 
+    def _generator(self, r, v0, v1):
+        """A cone's straight line at u=0, parametrised by the surface's own v
+        (as _meridian is for a sphere), and its points at v0 and v1."""
+        from OCP.Geom import Geom_Line
+
+        prim = self.regions[r].prim
+        fr = self.frames[r]
+        sp = self.surf_params[r]
+        sa, ca = np.sin(prim.alpha), np.cos(prim.alpha)
+        g = sa * fr.x + ca * prim.d
+        base = sp["loc"] + sp["R0"] * fr.x          # v = 0 on the seam
+        return Geom_Line(_pnt(base), _dir(g)), base + v0 * g, base + v1 * g
+
     def _pole_cap_wire(self, r, face, nat, A, s):
-        """Wire of a spherical cap containing a pole: [loop, seam, degenerate
-        pole edge, seam reversed]."""
+        """Wire of a cap containing a pole: [loop, seam, degenerate pole edge,
+        seam reversed]. The pole is a sphere's pole or a cone's apex (a pin's
+        point, a drill point, a countersink run to its tip: without the
+        degenerate edge such a cone face is invalid, and the InfinityCubeFidget's
+        32 cone tips each became a few dozen flat triangles)."""
         prim = self.regions[r].prim
         fr = self.frames[r]
         tol = max(self.tol, MIN_TOL)
@@ -2222,14 +2636,25 @@ class CADAssembler(BRepAssembler):
         north = w_a > 0
         if w_a == 0:
             raise RuntimeError("cap loop does not wrap")
-        vp = np.pi / 2 if north else -np.pi / 2
-        pole_pt = prim.c + prim.r * np.sign(vp) * fr.d
+        if prim.kind == "cone":
+            # the apex is where the cone's v is lowest (it opens along d), so
+            # the face lies below its loop, which runs clockwise in (u, v)
+            vp = self._vparam(r, prim.apex)
+            if north or not vp < v0:
+                raise RuntimeError("cone cap does not hold its apex")
+            pole_pt = np.asarray(prim.apex, dtype=np.float64)
+        else:
+            vp = np.pi / 2 if north else -np.pi / 2
+            pole_pt = prim.c + prim.r * np.sign(vp) * fr.d
         pole = TopoDS_Vertex()
         self.B.MakeVertex(pole, _pnt(pole_pt), tol)
         # seam: meridian at u=0 between the loop and the pole, oriented by
         # increasing v
         lo, hi = (v0, vp) if north else (vp, v0)
-        geom, p_lo, p_hi = self._meridian(r, lo, hi)
+        if prim.kind == "cone":
+            geom, p_lo, p_hi = self._generator(r, lo, hi)
+        else:
+            geom, p_lo, p_hi = self._meridian(r, lo, hi)
         d = float(np.linalg.norm(self.V[s] - (p_lo if north else p_hi)))
         self.vtol[s] = max(self.vtol[s], d)
         self.B.UpdateVertex(self.vertex(s), max(MIN_TOL, 1.5 * self.vtol[s] + 1e-9))
@@ -2758,6 +3183,8 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
 
     def build(labels, regions):
         labels, regions = split_pinched_regions(seg, labels, regions)
+        if TURN_SPLIT:
+            labels, regions = split_turns(seg, labels, regions)
         # single triangles cut off from their region (every neighbour in
         # another) make a face OpenCASCADE can't build: they join a
         # neighbour (the ring of a printed mount came out as slivers
@@ -3068,6 +3495,153 @@ def _half_turns(r, p, cen):
     return parts
 
 
+TURN_SPLIT = True       # cut surfaces winding over a turn into one face a turn
+TURN_SNAP = False       # move a cut's corners onto its meridian (off: on the owner's n-mount it made the cut cone pieces stray from the mesh, 231 faces against 193 without it)
+TURN_GAP_DEG = 15.0     # degrees: a region whose triangles leave a gap this wide round its axis is under one turn
+TURN_SLACK = 0.3        # radians: a boundary loop running further than a turn plus this winds more than once
+TURN_CUTS = 72          # meridians tried for the cut, evenly round the axis
+MIN_TURN_DEG = 20.0     # degrees: a piece spanning less is a sliver, joined to the piece beside it
+
+
+def _axis_of(prim):
+    o = {"cylinder": "a", "cone": "apex", "torus": "c"}[prim.kind]
+    return np.asarray(getattr(prim, o), dtype=np.float64), np.asarray(prim.d, dtype=np.float64)
+
+
+def split_turns(seg, labels, regions):
+    """A cylinder, cone or torus region that winds more than one turn round its
+    axis (the strip of cone between a screw's thread at its tapered tip: 2.5
+    turns on the owner's n-mount) has a boundary that overlaps itself in the
+    surface's parameters, so its face is invalid. CAD makes one face per turn
+    (the n-mount's designer: 360 + 360 + 90 degrees), and so is it cut here:
+    at the meridian that crosses the fewest of its triangles, by the turn each
+    triangle is on, counted along the region's own triangles (the angle
+    unwrapped from one to the next: the n-mount's strip also touches itself
+    one turn on, which a cut along the meridian alone leaves joined). Each
+    piece keeps the surface; the edge between two pieces is laid on it
+    (CADAssembler._on_surface_edge). A sliver of a last turn joins the piece
+    beside it. Only regions whose boundary runs more than a turn are cut: a
+    band round the axis gets its seam (plan_seams)."""
+    cen = None
+    cands = []
+    for ri, r in enumerate(regions):
+        if r.kind not in PERIODIC or len(r.faces) < 3:
+            continue
+        if cen is None:
+            cen = seg.V[seg.F].mean(1)
+        o, d = _axis_of(r.prim)
+        u, v = perp_basis(d)
+        rel = cen[r.faces] - o
+        ang = np.arctan2(rel @ v, rel @ u)
+        a = np.sort(ang)
+        if np.diff(np.r_[a, a[0] + 2 * np.pi]).max() > np.radians(TURN_GAP_DEG):
+            continue
+        cands.append((ri, o, u, v, ang))
+    if not cands:
+        return labels, regions
+    rg = RegionGraph(seg.V, seg.F, labels, seg.topo)
+    labels = labels.copy()
+    regions = list(regions)
+    for ri, o, u, v, ang in cands:
+        multi = False
+        for loop in rg.region_loops[ri]:
+            vs = rg.loop_vertices(loop)
+            P = seg.V[vs + vs[:1]] - o
+            w = np.unwrap(np.arctan2(P @ v, P @ u))
+            # (how far the loop travels round beyond its net winding: a full ring winds once
+            # and travels about once, more only by the width of a notch in its border,
+            # which counted as a second turn cut two of test17's plain cylinders in four;
+            # a helical strip travels 2.5 turns and comes back to a net 0)
+            if np.ptp(w) - abs(w[-1] - w[0]) > 2 * np.pi + TURN_SLACK:
+                multi = True
+                break
+        if not multi:
+            continue
+        r = regions[ri]
+        cut = _turn_pieces(seg, r.faces, o, u, v, ang)
+        if cut is None:
+            continue
+        parts, uc = cut
+        x = np.cos(uc) * u + np.sin(uc) * v
+        a = Region(r.prim, parts[0], r.sense, r.weak)
+        a.facet, a.cut = r.facet, x
+        regions[ri] = a
+        for p in parts[1:]:
+            b = Region(r.prim, p, r.sense, r.weak)
+            b.facet, b.cut = r.facet, x
+            labels[p] = len(regions)
+            regions.append(b)
+    return labels, regions
+
+
+def _turn_pieces(seg, faces, o, u, v, ang):
+    """(pieces, cut angle) of a region winding more than a turn, one piece a
+    turn (see split_turns), or None when it doesn't come apart."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    n = len(faces)
+    idx = -np.ones(len(seg.F), dtype=np.int64)
+    idx[faces] = np.arange(n)
+    nb = seg.nb[faces]
+    I = np.repeat(np.arange(n), 3)
+    J = np.where(nb.reshape(-1) >= 0, idx[np.maximum(nb.reshape(-1), 0)], -1)
+    keep = J > I
+    I, J = I[keep], J[keep]
+    # the angle unwrapped along a spanning tree of the region's triangles
+    adj = [[] for _ in range(n)]
+    for i, j in zip(I.tolist(), J.tolist()):
+        adj[i].append(j)
+        adj[j].append(i)
+    th = np.full(n, np.nan)
+    for s in range(n):
+        if not np.isnan(th[s]):
+            continue
+        th[s] = ang[s]
+        stack = [s]
+        while stack:
+            i = stack.pop()
+            for j in adj[i]:
+                if np.isnan(th[j]):
+                    th[j] = th[i] + _wrap(ang[j] - ang[i])
+                    stack.append(j)
+    # the cut: the meridian crossing the fewest triangles, preferring one that
+    # leaves no sliver of a turn
+    T = seg.V[seg.F[faces]] - o
+    ta = np.arctan2(T @ v, T @ u)
+    span = np.radians(MIN_TURN_DEG)
+    best = None
+    for uc in np.arange(TURN_CUTS) * (2 * np.pi / TURN_CUTS):
+        rel = _wrap(ta - uc)
+        cross = int(((rel.min(1) < 0) & (rel.max(1) > 0) & (np.ptp(rel, 1) < np.pi)).sum())
+        turn = np.floor((th - uc) / (2 * np.pi)).astype(np.int64)
+        sliver = any(np.ptp(th[turn == k]) < span for k in np.unique(turn))
+        key = (sliver, cross)
+        if best is None or key < best[0]:
+            best = (key, turn, uc)
+    _, turn, uc = best
+    same = turn[I] == turn[J]
+    k, comp = connected_components(coo_matrix((np.ones(int(same.sum())), (I[same], J[same])), shape=(n, n)),
+                                   directed=False)
+    if k < 2:
+        return None
+    # a sliver joins the piece it shares most edges with
+    alone = set()
+    for _ in range(k):
+        spans = [np.ptp(th[comp == c]) if (comp == c).any() and c not in alone else np.inf for c in range(k)]
+        c = int(np.argmin(spans))
+        if spans[c] >= span:
+            break
+        across = (comp[I] != comp[J]) & ((comp[I] == c) | (comp[J] == c))
+        other = np.where(comp[I[across]] == c, comp[J[across]], comp[I[across]])
+        if not len(other):
+            alone.add(c)        # (a piece of the region touching no other)
+            continue
+        comp[comp == c] = int(np.bincount(other).argmax())
+    pieces = [faces[comp == c] for c in np.unique(comp)]
+    return (pieces, float(uc)) if len(pieces) > 1 else None
+
+
 def _settle_tolerances(shape, tol):
     """Let OpenCASCADE measure how far each edge really is from its faces
     and raise tolerances to match (standard healing step). On some short
@@ -3129,6 +3703,7 @@ def _demote(seg, labels, regions, bad, split_more=False, facet=()):
         old = new_regions[rr]
         reg = Region(old.prim, np.concatenate([old.faces, np.asarray(fs, dtype=np.int64)]), old.sense, old.weak)
         reg.facet = old.facet
+        reg.cut = old.cut
         new_regions[rr] = reg
     rest = [r for r in bad if r not in tiny]
     if pending:
@@ -3317,7 +3892,7 @@ def summarize(regions):
 
 
 def convert_body_cad(B, body, tol, opts, report=NULL, segs=None):
-    from .pipeline import fix_shape, sew_faces, shells_to_solid
+    from .pipeline import _closed_volume, fix_shape, orient_like_mesh, sew_faces, shells_to_solid
     from . import stepio
 
     built, flags, all_faces = [], [], []
@@ -3345,10 +3920,14 @@ def convert_body_cad(B, body, tol, opts, report=NULL, segs=None):
         shape = make_solid_checked(B, built, report)
     else:
         shape = make_compound(built)
+    mesh_vol = _closed_volume(body)
+    shape = orient_like_mesh(shape, mesh_vol)
     if not stepio.is_valid(shape):
-        shape2 = fix_shape(shape, tol)
+        # (the healed shape only when it is valid and keeps the mesh's volume: healing
+        # turned the repeater mount's invalid body inside out)
+        shape2 = fix_shape(shape, tol, mesh_vol)
         if stepio.is_valid(shape2):
             return shape2
         report.warn("The CAD model still has small errors after automatic repair.")
-        return shape2
+        return shape
     return shape

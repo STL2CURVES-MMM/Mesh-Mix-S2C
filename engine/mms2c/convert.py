@@ -20,7 +20,7 @@ Usage:
   stl2curves file1.stl [file2.stl ...] [--out FOLDER] [--merge NAME]
   stl2curves some_folder            (converts every .stl and .3mf in it)
 
-  (or "python -m stl2curves ..." when it isn't installed as a command)
+  (or "python -m mms2c ..." when it isn't installed as a command)
 
   --merge NAME     also write all inputs together into one NAME.step
   --tol X          sewing tolerance in mm (default 0.01)
@@ -95,7 +95,7 @@ SEW_PER_WORST = 1.5     # a part is sewn at this many times its loosest patch's 
 SEW_MOST = 0.2          # mm: ... but never wider than this ...
 SEW_EDGE = 2.0          # ... nor than this many times the mesh's median edge (see sewing_cap)
 LOOSE_ROUNDS = 3        # out of time with nothing blamed: tries without the loosest patches before none
-SWAP_ROUNDS = 6        # STL2CURVES_TRY=swap: rounds of taking blamed patches out again
+SWAP_ROUNDS = 6        # MM_S2C_TRY=swap: rounds of taking blamed patches out again
 FIX_PRECISIONS = (1e-5, 1e-4)   # mm: precisions ShapeFix tries on an invalid solid after its default
 EMPTY_SHELL = 1e-6      # closed shells with less volume than this share of the biggest are dropped
 SPECK_AREA = 1e-6       # mm^2: faces joined to nothing else in their shell, this small in all, are dropped
@@ -491,7 +491,7 @@ def fuse_checked(args, tools, low, high):
     import shutil
     import tempfile
     from concurrent.futures import TimeoutError as Timeout
-    tmp = tempfile.mkdtemp(prefix="stl2curves_")
+    tmp = tempfile.mkdtemp(prefix="mms2c_")
     try:
         a, t, out = (os.path.join(tmp, n) for n in ("args.brep", "tools.brep", "fused.brep"))
         BRepTools.Write_s(compound(args), a)
@@ -717,7 +717,7 @@ def file_trouble(shape, allowed):
     changes its area by more than FILE_AREA (small faces read back a percent or so off,
     their tolerant edges laid out afresh, and that is harmless); and on a big face only
     the outline (wire) that changed, not every hole in it."""
-    tmp = tempfile.mkdtemp(prefix="stl2curves_")
+    tmp = tempfile.mkdtemp(prefix="mms2c_")
     try:
         path = os.path.join(tmp, "check.step")
         write_step(shape, path)
@@ -1015,7 +1015,7 @@ def misjoined_edge_points(shape):
 
 
 def _swap_build(mesh, features, mesh_tol, tol, info, faceted_volume):
-    """STL2CURVES_TRY=swap (an experiment): the body assembled patch by patch on the bare
+    """MM_S2C_TRY=swap (an experiment): the body assembled patch by patch on the bare
     facets' shared edges (assemble.py) rather than built, sewn and checked whole in rounds.
     The solid gets attempt's checks (volume, validity, its STEP file); the patches blamed
     for trouble are taken out again on the spot, for up to SWAP_ROUNDS rounds.
@@ -1363,16 +1363,19 @@ def _stl_to_solid(path, tol, fuse=True, curves=True, true_size=False, blends=Tru
 
 
 def prepare(path, tol, fuse=True, curves=True, true_size=False, blends=True, mend=True,
-                  simplify_to=None):
+                  simplify_to=None, analyze=None):
     """The first stages of a conversion: (parts, info, part), parts being (mesh,
     features, mesh tolerance) for each body, ready for finish(). simplify_to: how far
     (mm) thinning out an over-dense mesh may move its surface; None: only above
-    AUTO_SIMPLIFY triangles, at SIMPLIFY_ERROR; 0: never."""
+    AUTO_SIMPLIFY triangles, at SIMPLIFY_ERROR; 0: never. analyze (the merged engine's
+    choice of method per body, see merged.route): given (points, each body's triangles),
+    which bodies to look for features in; the others come back with none (and their
+    stages aren't saved or taken up)."""
     # (a mesh file, or (points, triangles) or (points, triangles, part of each triangle):
     # a 3MF object's parts can overlap, and are each mended and built on their own, then
     # joined by a boolean union)
     part = None
-    # (with STL2CURVES_CACHE set, the first stages are saved, and taken up again on the
+    # (with MM_S2C_CACHE set, the first stages are saved, and taken up again on the
     # next run of the same file if their code hasn't changed: see stages.py)
     # (blends isn't part of the key: the mesh and analysis stages don't depend on it, and the
     # blends stage is saved only when they ran, so a run without them leaves stages for one with)
@@ -1421,7 +1424,19 @@ def prepare(path, tol, fuse=True, curves=True, true_size=False, blends=True, men
                   else [g for p in np.unique(part) for g in split_bodies(pts, tris[part == p])])
         cache.save("mesh", (pts, tris, part, groups,
                             {k: info[k] for k in ("triangles", "repairs", "simplified", "mesh_left")}))
-    if curves:
+    want = list(analyze(pts, groups)) if curves and analyze is not None else [True] * len(groups)
+    if curves and not all(want):
+        parts = [_analyze_body(pts, g, i, len(groups)) if w else (Mesh(pts, g), [], TOL)
+                 for i, (g, w) in enumerate(zip(groups, want))]
+        info["size"] = guess_size([p[:2] for p, w in zip(parts, want) if w]) if any(want) else None
+        for (mesh, features, _), w in zip(parts, want):
+            if w:
+                info["snapped"] += snap(mesh, features, None)
+        if blends and any(want):
+            progress.step("fitting smooth blends and freeform surfaces")
+            parts = [(mesh, add_blends(mesh, features), t) if w else (mesh, features, t)
+                     for (mesh, features, t), w in zip(parts, want)]
+    elif curves:
         saved = cache.load("blends" if blends else "analysis")
         if saved is None and blends:
             saved = cache.load("analysis")
@@ -1478,7 +1493,7 @@ def finish(parts, info, part, tol, fuse=True):
     if features_mod._budget:
         features_mod._deadline = time.time() + features_mod._budget
     shapes, nb, nv = [], 0, 0
-    info["used"] = []           # (each body's features as built, for stl2curves.studio)
+    info["used"] = []           # (each body's features as built, for mms2c.studio)
     for i, (mesh, features, mesh_tol) in enumerate(parts):
         progress.within(f"body {i + 1} of {len(parts)}" if len(parts) > 1 else "")
         before = len(info["restored"])
@@ -1559,7 +1574,7 @@ def tidied(shape, target):
     if pool is None:
         return _tidy(shape, target)
     from concurrent.futures import TimeoutError as Timeout
-    tmp = tempfile.mkdtemp(prefix="stl2curves_")
+    tmp = tempfile.mkdtemp(prefix="mms2c_")
     try:
         paths = [os.path.join(tmp, n) for n in ("shape.brep", "tidy.brep", "untidy.brep")]
         BRepTools.Write_s(shape, paths[0])

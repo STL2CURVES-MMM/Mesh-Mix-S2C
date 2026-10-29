@@ -38,6 +38,7 @@ MIN_POINTS = 5          # ...whose corners fall on at least this many points of 
 MIN_LENGTH = 1.0        # mm: ...and runs at least this far along the direction
 MERGE = 1e-3            # mm: corners' projections closer than this are one point of the profile
 MARGIN = 0.15           # the profile runs on past its last points by this share of its length
+ENDS = 0.001            # mm: a point further than this past the profile's ends isn't over the surface
 MAX_BULGE = 0.15        # the profile bows off the chord between its points by at most this share of it
 MAX_SPANS = 200         # knot intervals in the profile at most
 NORMAL_DEG = 20.0       # every facet faces within this of the profile's normal where it lies
@@ -101,6 +102,25 @@ class Extrusion:
     def signed(self, P):
         return self._offset(P)[0]
 
+    def z_margin(self):
+        """How far along d past its ends surface() reaches (mm)."""
+        return 0.2 * (self.z1 - self.z0) + 0.5
+
+    def inside(self, P):
+        """Whether each point lies over the swept profile as surface() covers it: not past
+        the profile's ends (seen along d, where signed() measures off its end tangent) nor
+        beyond the margin along d (merged engine: see merged.OurSurface)."""
+        P = np.atleast_2d(np.asarray(P, float))
+        q = self.flat(P)
+        s = self._foot(q)
+        cache = self._spline()
+        T = cache["c1"](s)
+        T = T / np.maximum(np.linalg.norm(T, axis=1), 1e-12)[:, None]
+        along = np.einsum("ij,ij->i", q - cache["c"](s), T)
+        z = (P - self.o) @ self.d
+        grow = self.z_margin()
+        return (np.abs(along) <= ENDS) & (z >= self.z0 - grow) & (z <= self.z1 + grow)
+
     def normal(self, P):
         n = self._offset(P)[1]
         return n[:, :1] * self.e1 + n[:, 1:] * self.e2
@@ -118,7 +138,7 @@ class Extrusion:
             run = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(self._spline()["c"](fine), axis=0), axis=1))]
             n = int(min(400, max(9, math.ceil(run[-1] / 0.05) + 1)))
             S = np.interp(np.linspace(0, run[-1], n), run, fine)
-            grow = 0.2 * (self.z1 - self.z0) + 0.5
+            grow = self.z_margin()
             Z = np.linspace(self.z0 - grow, self.z1 + grow, 5)
             self._surface = freeform.approximate(self.point, S, Z)
         return self._surface
@@ -248,7 +268,7 @@ def add_extrusions(mesh, features, soft, owner, unit):
     pool = set(soft)
     for k, f in enumerate(features):
         m = f.model
-        if isinstance(m, Revolved) and m.line and m.line[1] == 0 and f.kind != "ball":
+        if isinstance(m, Revolved) and m.line and m.line[1] == 0 and f.kind != "closed":
             pool.update(int(a) for a in f.facets)        # (a cylinder may be the middle of a profile)
     for d in design_directions(mesh, features):
         ok = {a for a in pool - taken if _square(mesh, a, d)}

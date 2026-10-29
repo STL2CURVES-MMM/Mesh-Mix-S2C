@@ -1,3 +1,5 @@
+# From Manifold Mesh Mix 1.6.0 (desktop/tests/test_engine_meshcheck.py, AGPL-3.0), changed for this fork:
+# the engine is imported as mmm, from engine/ (Mesh-Mix-S2C).
 """The engine's mesh check and fixer (engine/mmm/meshcheck.py): one broken
 mesh per problem, what the check reports, and the second check of the
 fixed mesh."""

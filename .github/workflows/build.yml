@@ -62,6 +62,10 @@ jobs:
         run: .venv/bin/python -m pyflakes desktop
       - name: Unit tests
         run: xvfb-run -a -s "-screen 0 1600x1000x24" .venv/bin/python -m pytest -q desktop/tests
+      - name: Engine unit tests
+        run: .venv/bin/python -E -s -m pytest -q tests/engine
+      - name: Merged engine smoke test
+        run: .venv/bin/python -E -s tests/smoke_merged.py smoke
       - name: Test models
         run: |
           .venv/bin/python tests/make_models.py
@@ -122,6 +126,8 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: .venv/Scripts/python.exe -m pytest -q desktop/tests
+      - name: Engine unit tests
+        run: .venv/Scripts/python.exe -E -s -m pytest -q tests/engine
       - name: Test models
         run: |
           .venv/Scripts/python.exe tests/make_models.py

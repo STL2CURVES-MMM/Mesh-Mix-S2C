@@ -77,6 +77,7 @@ def test_faceted_and_named_mixed_results():
     old = ConversionResult.from_event({"preset": "mixed"})
     assert old.preset_title == "CAD + Smooth" and not old.faceted
     assert not ConversionResult.from_event({"preset": "cad"}).faceted
+    assert ConversionResult.from_event({"preset": "stl2curves"}).preset_title == "CAD"
 
 
 def test_export_failure_messages(monkeypatch):

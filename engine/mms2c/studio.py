@@ -2,7 +2,7 @@
 studio - look at what stl2curves finds on a mesh, paint areas that should be one face,
 and convert, in the browser.
 
-  python -m stl2curves.studio [part.stl] [--port 8765] [--no-browser]
+  python -m mms2c.studio [part.stl] [--port 8765] [--no-browser]
 
 A small web server on this computer only (127.0.0.1) serves the page (studio.html) and
 runs the conversion. Analyze shows the mesh coloured by what was found on it; paint
@@ -361,7 +361,7 @@ class _Server(ThreadingHTTPServer):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="stl2curves.studio", description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(prog="mms2c.studio", description=__doc__.split("\n\n")[0])
     ap.add_argument("mesh", nargs="?", help="an STL file to open straight away")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true", help="don't open the page in a browser")

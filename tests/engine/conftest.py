@@ -1,4 +1,4 @@
-"""Puts engine/ on the path so `import mmm` and `import stl2curves` work under pytest from
+"""Puts engine/ on the path so `import mmm` and `import mms2c` work under pytest from
 the repository root, the way they do for the app's engine process (both packages sit in
 engine/, which is also where the engine starts the child processes of its rival conversions)."""
 import os

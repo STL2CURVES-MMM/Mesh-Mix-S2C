@@ -21,7 +21,7 @@ within CLOSE_MM of the other surface: what a CAD program can use as is. The merg
 judges its rivals with it (rivals.py), and the benchmark grades every program by it.
 (A copy of compare/bench/judge.py, the benchmark's own, plus verdict(): keep them the same.)
 
-usage: python -m stl2curves.judge MESH STEP OUT.json      (trimesh + cadquery-ocp)"""
+usage: python -m mms2c.judge MESH STEP OUT.json      (trimesh + cadquery-ocp)"""
 import json
 import os
 import sys

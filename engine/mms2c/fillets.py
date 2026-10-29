@@ -74,6 +74,7 @@ ON_SHARE = 75           # percent of a band's corners that must lie within the t
 CORNER_AGREE = 0.2      # a band facet's corners give radii agreeing within e^this ...
 WEDGE_SLACK = 0.01      # mm: how far outside the faces' wedge a band corner may lie
 DEPTH_AGREE = 0.3       # ... and agreeing with the rest of the band's within e^this
+DOUBLE_ROOT = 1e-9      # a discriminant within this share of its b^2 is rounding round a double root
 
 
 def _adjacency(mesh):
@@ -354,6 +355,11 @@ class _Lines:
         if abs(qa) < 1e-12:
             return np.zeros(0)
         disc = qb * qb - 4 * qa * qc
+        # A corner where the fillet meets a side is a double root, its discriminant 0: a hair
+        # either side of it from rounding still counts (as in _LineCircle). Left as computed,
+        # the sign of such corners' -5e-14 or +5e-14 was the processor's choice, and with it
+        # whether the plate racks' r 0.5 fillets were found.
+        disc = np.where(np.abs(disc) <= DOUBLE_ROOT * qb * qb, 0.0, disc)
         ok = disc >= 0
         if ok.sum() < 3:
             return np.zeros(0)

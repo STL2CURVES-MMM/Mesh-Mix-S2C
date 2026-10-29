@@ -16,8 +16,11 @@ It is made of:
 - **stl2curves**, Copyright (c) 2026 Duvdivan, published under the MIT licence
   (https://github.com/Duvdivan/stl2curves; its text is below, and still applies to the
   parts of this repository that come from there as published). Everything in
-  `engine/stl2curves/` comes from there, except `merged.py`, `rivals.py` and `judge.py`,
-  which were written for the merged engine.
+  `engine/mms2c/` comes from there, except `merged.py`, `rivals.py` and `judge.py`,
+  which were written for the merged engine. The package was called `stl2curves` there and
+  was renamed `mms2c` here (its settings `STL2CURVES_*` became `MM_S2C_*`); the merged
+  engine as a whole was brought in from the organization's merge repository at its commit
+  91d35dc (2026-10-29).
 
 ## The MIT licence of stl2curves
 

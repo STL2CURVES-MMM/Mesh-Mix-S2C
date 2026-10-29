@@ -87,7 +87,7 @@ def _scrap(mesh, f, any_count=False):
     (or any number, any_count: on a finely meshed part a narrow strip has dozens),
     turning through a small angle, small for its radius."""
     r = _radius(f.model, mesh.fcent[f.facets])
-    if r is None or f.kind in ("ball", "wedge") or (len(f.facets) >= 40 and not any_count) or f.__dict__.get("vouched"):
+    if r is None or f.kind in ("closed", "wedge") or (len(f.facets) >= 40 and not any_count) or f.__dict__.get("vouched"):
         return False
     N = mesh.fn[f.facets]
     turn = math.degrees(math.acos(float(np.clip(_least_pair_dot(N, math.cos(math.radians(45))), -1, 1))))
@@ -99,7 +99,7 @@ def _ball_chains(mesh, features):
     a rolling-ball fillet whose path isn't a circle (each short stretch fits a ball of the
     fillet radius, the balls' centres wander along the path). A real ball corner is one
     sphere, so three or more such pieces are all stand-ins."""
-    balls = [k for k, f in enumerate(features) if isinstance(f.model, Sphere) and f.kind != "ball"]
+    balls = [k for k, f in enumerate(features) if isinstance(f.model, Sphere) and f.kind != "closed"]
     verts = {k: set(np.concatenate([mesh.fverts[x] for x in features[k].facets]).tolist()) for k in balls}
     link = {k: [] for k in balls}
     for i, a in enumerate(balls):
@@ -556,7 +556,7 @@ def _between_walls(mesh, features):
     order = {A: i for i, A in enumerate(walls)}
     by_pair = {}
     for k, f in enumerate(features):
-        if k in wall_set or f.kind in ("ball", "wedge") or f.model.kind == "thread" or len(f.facets) > BETWEEN_PIECE_FACETS:
+        if k in wall_set or f.kind in ("closed", "wedge") or f.model.kind == "thread" or len(f.facets) > BETWEEN_PIECE_FACETS:
             continue
         near = sorted({A for v in np.unique(np.concatenate([mesh.fverts[a] for a in f.facets])).tolist()
                        for A in wall_of.get(v, ())}, key=order.get)
@@ -670,7 +670,7 @@ def _rolled(mesh, features, pair, pieces):
 
 
 def merge(mesh, features, facets):
-    """(features, merged): an area someone painted (stl2curves.studio: one the conversion
+    """(features, merged): an area someone painted (mms2c.studio: one the conversion
     left as triangles, a fillet it missed) made one face. A feature they cover half or
     more of goes into it whole, one they barely touch stays as it was, and flat facets
     the brush caught (none of whose neighbours meet it at a gentle bend) stay flat. The

@@ -41,12 +41,12 @@ BLAS_THREADS = "2"         # MMM alone: numpy's threads (its own work is one thr
 DEADLINE = (120.0, 3.0)    # s, factor: once a rival passes at time t (from the start), the merged
                            # pipeline may run until max(t + 120 s, 3 t), then it is stopped (so
                            # a slow front end or a stuck stage can't hold the file for an hour
-                           # once a good result is in hand); STL2CURVES_DEADLINE=a,k to test
-if os.environ.get("STL2CURVES_DEADLINE"):
-    DEADLINE = tuple(float(x) for x in os.environ["STL2CURVES_DEADLINE"].split(","))
+                           # once a good result is in hand); MM_S2C_DEADLINE=a,k to test
+if os.environ.get("MM_S2C_DEADLINE"):
+    DEADLINE = tuple(float(x) for x in os.environ["MM_S2C_DEADLINE"].split(","))
 # the folder holding both packages this engine imports from, stl2curves and mmm (engine/ in
 # the repository): the child processes below start there, so `python -m mmm.cli` and
-# `python -m stl2curves.judge` find them without PYTHONPATH (which -E drops)
+# `python -m mms2c.judge` find them without PYTHONPATH (which -E drops)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -102,7 +102,7 @@ class MMMAlone:
     name = "mmm"
 
     def __init__(self, path, quality, layout="parts"):
-        self.dir = tempfile.mkdtemp(prefix="stl2curves_mmm_")
+        self.dir = tempfile.mkdtemp(prefix="mms2c_mmm_")
         self.out = os.path.join(self.dir, "mmm.step")
         env = dict(os.environ, OMP_NUM_THREADS=BLAS_THREADS, OPENBLAS_NUM_THREADS=BLAS_THREADS,
                    MKL_NUM_THREADS=BLAS_THREADS)
@@ -174,7 +174,7 @@ class Judges:
         self.t0, self.caller = time.time(), threading.get_ident()
         self.running, self.passed_at, self.overtime = False, None, False
         self.run_lock = threading.Lock()
-        self.work = tempfile.mkdtemp(prefix="stl2curves_judge_")
+        self.work = tempfile.mkdtemp(prefix="mms2c_judge_")
         self.procs = {}   # name -> (process, card file, STEP judged)
         self.cards = {}   # name -> its scorecard, once read
         self.lock = threading.Lock()
@@ -207,7 +207,7 @@ class Judges:
         with self.lock:
             if name not in self.procs:
                 card = os.path.join(self.work, name + ".json")
-                self.procs[name] = (_python(["-m", "stl2curves.judge", str(self.path), step, card],
+                self.procs[name] = (_python(["-m", "mms2c.judge", str(self.path), step, card],
                                             os.path.join(self.work, name + ".log")), card, step)
 
     def card(self, name):
