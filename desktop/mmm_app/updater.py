@@ -51,8 +51,21 @@ def parse_version(s):
     return tuple(parts)
 
 
+def version_key(s):
+    """parse_version plus test builds: '2.0.0-test.2' comes after
+    '2.0.0-test.1' and before '2.0.0', so a tester is offered the release."""
+    base = parse_version(s)
+    if base is None:
+        return None
+    rest = re.sub(r"^\s*[vV]?\d+(?:\.\d+)*", "", s).strip()
+    if not rest.startswith("-"):
+        return base + (1, 0)
+    n = re.findall(r"\d+", rest)
+    return base + (0, int(n[-1]) if n else 0)
+
+
 def is_newer(latest, current=__version__):
-    a, b = parse_version(latest), parse_version(current)
+    a, b = version_key(latest), version_key(current)
     return a is not None and b is not None and a > b
 
 

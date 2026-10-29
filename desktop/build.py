@@ -107,7 +107,7 @@ def find_iscc():
 
 def package_windows(ver, ico):
     iss = os.path.join(HERE, "packaging", "windows", "installer.iss")
-    run([find_iscc(), f"/DAppVersion={ver}", f"/DSourceDir={APP_DIR}", f"/DOutputDir={DIST}",
+    run([find_iscc(), f"/DAppVersion={ver}", f"/DAppNumVersion={ver.split('-')[0]}", f"/DSourceDir={APP_DIR}", f"/DOutputDir={DIST}",
          f"/DIconFile={ico}", f"/DLicenseFile={os.path.join(ROOT, 'LICENSE')}", iss])
     out = os.path.join(DIST, f"MeshMix-S2C-{ver}-Windows-x64-Setup.exe")
     print("built", out)

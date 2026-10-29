@@ -41,7 +41,10 @@ echo "==> Assembling bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp app/Info.plist "$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+# macOS wants plain numbers here, so a test build ("2.0.0-test.1") keeps its
+# full version in MMSFullVersion, which the updater reads
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION%%-*}" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :MMSFullVersion string $VERSION" "$APP/Contents/Info.plist"
 cp app/build/ManifoldMeshMix "$APP/Contents/MacOS/ManifoldMeshMix"
 cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp app/Resources/install-update.sh "$APP/Contents/Resources/install-update.sh"

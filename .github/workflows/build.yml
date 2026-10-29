@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish the version in VERSION as a GitHub release (main only)"
+        description: "Publish the version in VERSION as a GitHub release (main only; a test build such as 2.0.0-test.1 from any branch, as a pre-release)"
         type: boolean
         default: false
 
@@ -196,7 +196,9 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
+    # a normal release only from main; a test build (VERSION like 2.0.0-test.1)
+    # from any branch, as a pre-release (checked in the first step)
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: [linux, windows, macos]
     runs-on: ubuntu-22.04
     permissions:
@@ -213,6 +215,9 @@ jobs:
             fi
           else
             tag="v$v"
+            if [ "${GITHUB_REF}" != "refs/heads/main" ] && [ "${v#*-}" = "$v" ]; then
+              echo "Normal releases are published from main only; a test build needs a VERSION like $v-test.1"; exit 1
+            fi
             if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
               echo "$tag is already published; raise VERSION first"; exit 1
             fi
@@ -240,5 +245,8 @@ jobs:
           # show in the apps' update window), else a list of the changes
           notes=".github/release-notes/${TAG}.md"
           if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
+          # test builds (2.0.0-test.1) are pre-releases: the apps' updaters
+          # only offer normal releases
+          case "$TAG" in *-*) how+=(--prerelease) ;; esac
           gh release create "$TAG" release/* --target "$GITHUB_SHA" \
             --title "Mesh Mix-S2C ${TAG#v}" "${how[@]}"

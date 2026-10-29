@@ -24,6 +24,14 @@ def test_is_newer():
     assert not updater.is_newer("nightly", "1.0.0")
 
 
+def test_test_builds_come_before_their_release():
+    assert updater.is_newer("v2.0.0", "2.0.0-test.3")
+    assert updater.is_newer("2.0.0-test.2", "2.0.0-test.1")
+    assert updater.is_newer("2.0.0-test.1", "1.6.0")
+    assert not updater.is_newer("2.0.0-test.1", "2.0.0")
+    assert not updater.is_newer("v2.0.0-test.1", "2.0.0-test.1")
+
+
 class Server:
     """Serves a fake GitHub "latest release" plus its files."""
 

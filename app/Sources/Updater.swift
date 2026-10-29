@@ -39,8 +39,11 @@ final class Updater: ObservableObject {
     private(set) var downloadedApp: URL?
     private var downloader: Downloader?
 
+    /// The full version, test-build suffix included (build.sh keeps it in
+    /// MMSFullVersion because CFBundleShortVersionString must be numbers).
     static var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        Bundle.main.object(forInfoDictionaryKey: "MMSFullVersion") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
     var availableVersion: String? {
@@ -64,10 +67,27 @@ final class Updater: ObservableObject {
         return parts + Array(repeating: 0, count: max(0, 3 - parts.count))
     }
 
+    /// parse plus test builds: "2.0.0-test.2" comes after "2.0.0-test.1"
+    /// and before "2.0.0", so a tester is offered the release.
+    static func key(_ s: String) -> [Int]? {
+        guard let base = parse(s) else { return nil }
+        var t = s.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("v") || t.hasPrefix("V") { t.removeFirst() }
+        let rest = t.drop { $0.isNumber || $0 == "." }
+        guard rest.hasPrefix("-") else { return base + [1, 0] }
+        let numbers = rest.split { !$0.isNumber }.compactMap { Int($0) }
+        return base + [0, numbers.last ?? 0]
+    }
+
     static func isNewer(_ latest: String, than current: String) -> Bool {
-        guard let a = parse(latest), let b = parse(current) else { return false }
+        guard var a = key(latest), var b = key(current) else { return false }
+        // the release-or-test part sits after the version numbers, which may
+        // differ in count ("1.2" and "1.2.3")
+        let n = max(a.count, b.count)
+        a.insert(contentsOf: Array(repeating: 0, count: n - a.count), at: a.count - 2)
+        b.insert(contentsOf: Array(repeating: 0, count: n - b.count), at: b.count - 2)
         for (x, y) in zip(a, b) where x != y { return x > y }
-        return a.count > b.count && a[b.count...].contains { $0 > 0 }
+        return false
     }
 
     // MARK: checking

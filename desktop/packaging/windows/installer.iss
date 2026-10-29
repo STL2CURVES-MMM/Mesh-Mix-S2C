@@ -11,6 +11,10 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#ifndef AppNumVersion
+  ; Windows' version field takes numbers only ("2.0.0" for "2.0.0-test.1")
+  #define AppNumVersion "0.0.0"
+#endif
 #ifndef SourceDir
   #define SourceDir "..\..\dist-desktop\ManifoldMeshMix"
 #endif
@@ -33,7 +37,7 @@ AppPublisher=Tuna-The-First
 AppPublisherURL=https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C
 AppSupportURL=https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C
 AppUpdatesURL=https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C/releases
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#AppNumVersion}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
