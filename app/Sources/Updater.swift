@@ -299,6 +299,33 @@ final class Updater: ObservableObject {
         a.runModal()
     }
 
+    /// Once, after an update from Manifold Mesh Mix: the app's folder in Applications keeps
+    /// the old name (an update replaces the app where it is, under the name it has), so say
+    /// how to rename it. Either name keeps getting updates.
+    static func offerRename() {
+        let app = Bundle.main.bundleURL
+        let name = app.deletingPathExtension().lastPathComponent
+        let key = "renameHintShown"
+        guard name.hasPrefix("Manifold Mesh Mix"), !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        let a = NSAlert()
+        a.messageText = "Rename the app to Mesh Mix-S2C?"
+        a.informativeText = """
+            Manifold Mesh Mix is now called Mesh Mix-S2C, but your Applications folder still shows \
+            the old name, "\(name)".
+
+            To rename it: quit the app, open the Applications folder in Finder, click the app once, \
+            press Return, type Mesh Mix-S2C and press Return again. Your settings stay as they are.
+
+            Updates keep coming either way: the app updates itself wherever it is, whatever its name.
+            """
+        a.addButton(withTitle: "Show in Finder")
+        a.addButton(withTitle: "Not Now")
+        if a.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([app])
+        }
+    }
+
     /// State name for the self-test report (same words as the Windows/Linux app).
     var stateName: String {
         switch state {

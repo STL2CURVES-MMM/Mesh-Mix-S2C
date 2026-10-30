@@ -5,8 +5,10 @@
 # exports, with screenshots) and the self-update tests.
 # A tag like v1.2.3 also publishes a GitHub Release with the three
 # downloads and SHA256SUMS.txt; the apps' updaters look for those. So does
-# "Run workflow" on main with "publish" ticked (GitHub then creates the tag
-# for the version in VERSION itself).
+# "Run workflow" with "publish" ticked (GitHub then creates the tag for the
+# version in VERSION itself): on main for a normal release, on the branch
+# "prerelease" for a test build (a VERSION like 2.0.0-test.1), published as a
+# GitHub pre-release, which the apps never offer as an update.
 name: Build and test
 
 on:
@@ -17,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish the version in VERSION as a GitHub release (main only; a test build such as 2.0.0-test.1 from any branch, as a pre-release)"
+        description: "Publish the version in VERSION as a GitHub release (a normal release from main; a test build such as 2.0.0-test.1 from the branch prerelease, as a pre-release)"
         type: boolean
         default: false
 
@@ -203,7 +205,7 @@ jobs:
   release:
     name: Publish release
     # a normal release only from main; a test build (VERSION like 2.0.0-test.1)
-    # from any branch, as a pre-release (checked in the first step)
+    # only from the branch "prerelease", as a pre-release (checked in the first step)
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: [linux, windows, macos]
     runs-on: ubuntu-22.04
@@ -221,9 +223,16 @@ jobs:
             fi
           else
             tag="v$v"
-            if [ "${GITHUB_REF}" != "refs/heads/main" ] && [ "${v#*-}" = "$v" ]; then
-              echo "Normal releases are published from main only; a test build needs a VERSION like $v-test.1"; exit 1
-            fi
+            case "${GITHUB_REF}:$v" in
+              refs/heads/main:*-*)
+                echo "Test builds ($v) are published from the branch prerelease, not main"; exit 1 ;;
+              refs/heads/main:*) ;;
+              refs/heads/prerelease:*-*) ;;
+              refs/heads/prerelease:*)
+                echo "The branch prerelease publishes test builds only: VERSION needs a suffix like $v-test.1"; exit 1 ;;
+              *)
+                echo "Releases are published from main (normal) or prerelease (test builds), not ${GITHUB_REF#refs/heads/}"; exit 1 ;;
+            esac
             if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
               echo "$tag is already published; raise VERSION first"; exit 1
             fi

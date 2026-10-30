@@ -71,6 +71,7 @@ struct ManifoldMeshMixApp: App {
                         SelfTest.run(model: model, settings: settings, updater: updater)
                     } else {
                         Updater.reportPreviousFailure()
+                        Updater.offerRename()
                         if settings.checkUpdates {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
                                 if settings.checkUpdates { updater.check() }
