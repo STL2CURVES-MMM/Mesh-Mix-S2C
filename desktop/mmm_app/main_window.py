@@ -303,7 +303,7 @@ class MainWindow(QMainWindow):
     def show_about(self):
         QMessageBox.about(self, f"About {APP_NAME}",
                           f"<b>{APP_NAME}</b> {__version__}<br>STL / 3MF / OBJ / PLY → editable STEP<br><br>"
-                          "Copyright © 2026 Tuna-The-First and Claude.<br>"
+                          "Copyright © 2026 Tuna-The-First, Duvdivan and Claude.<br>"
                           "Free software under the GNU Affero General Public License v3, with no warranty.<br><br>"
                           f'Source code: <a href="{REPO_URL}">{REPO_URL}</a><br><br>'
                           f'Free to use. If it saves you time, you can <a href="{SUPPORT_URL}">buy me a coffee ☕</a>: '

@@ -192,7 +192,7 @@ Manifold Mesh Mix is free. If it saves you time, you can [buy me a coffee](https
 
 ## License
 
-Copyright © 2026 Tuna-The-First and Claude (Anthropic's AI assistant).
+Copyright © 2026 Tuna-The-First, Duvdivan and Claude (Anthropic's AI assistant).
 
 Manifold Mesh Mix is free and open-source software, licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0). See [LICENSE](LICENSE) for the full text.
 
