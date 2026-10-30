@@ -105,6 +105,14 @@ def test_check_up_to_date(server):
     assert updater.check() is None
 
 
+def test_check_skips_test_builds(server):
+    server.publish("v9.9.9-test.1", {asset("9.9.9-test.1"): b"test build"})
+    assert updater.check() is None
+    server.publish("v9.9.9", {asset(): b"new app"})
+    server.release["prerelease"] = True
+    assert updater.check() is None
+
+
 def test_check_errors(server):
     server.publish("v9.9.9", {"MeshMix-S2C-9.9.9-Other-OS.bin": b"x"})
     with pytest.raises(updater.UpdateError, match="no download for"):

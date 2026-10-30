@@ -143,6 +143,10 @@ def check():
     tag = data.get("tag_name") or ""
     if parse_version(tag) is None:
         raise UpdateError("The newest release has no version number the app understands.")
+    # test builds are GitHub pre-releases, which /releases/latest already skips;
+    # this guard keeps them from ever being offered even if one is mislabelled
+    if data.get("prerelease") or "-" in tag:
+        return None
     if not is_newer(tag):
         return None
     suffix = asset_suffix().lower()

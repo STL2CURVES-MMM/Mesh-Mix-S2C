@@ -143,6 +143,9 @@ final class Updater: ObservableObject {
               let tag = obj["tag_name"] as? String, parse(tag) != nil else {
             throw UpdateError("The newest release has no version number the app understands.")
         }
+        // test builds are GitHub pre-releases, which /releases/latest already skips;
+        // this guard keeps them from ever being offered even if one is mislabelled
+        if obj["prerelease"] as? Bool == true || tag.contains("-") { return nil }
         guard isNewer(tag, than: currentVersion) else { return nil }
         let version = tag.hasPrefix("v") || tag.hasPrefix("V") ? String(tag.dropFirst()) : tag
         let assets = obj["assets"] as? [[String: Any]] ?? []
