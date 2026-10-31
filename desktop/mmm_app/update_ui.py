@@ -5,6 +5,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QDialog, QProgressBar, QTextBrowser, QVBoxLayout
 
 from . import __version__, system, theme, updater
+from .credits import CreditsDialog
 from .theme import BOLD
 from .widgets import AccentButton, GhostButton, IconLabel, Label, hbox, vbox
 
@@ -148,6 +149,9 @@ class UpdateDialog(QDialog):
         self.close_btn.clicked.connect(self.reject)
         self.page_btn = GhostButton("Open Download Page")
         self.page_btn.clicked.connect(self._open_page)
+        self.credits_btn = GhostButton("Credits")
+        self.credits_btn.setToolTip("Who makes Mesh Mix-S2C, and its supporters")
+        self.credits_btn.clicked.connect(lambda: CreditsDialog(self).exec())
         self.check_btn = GhostButton("Check Again")
         self.check_btn.clicked.connect(lambda: self.c.check())
         self.cancel_btn = GhostButton("Stop Download")
@@ -162,7 +166,7 @@ class UpdateDialog(QDialog):
         lay.addLayout(head)
         lay.addWidget(self.notes)
         lay.addWidget(self.bar)
-        lay.addLayout(hbox(self.page_btn, None, self.close_btn, self.check_btn, self.cancel_btn, self.install_btn))
+        lay.addLayout(hbox(self.credits_btn, self.page_btn, None, self.close_btn, self.check_btn, self.cancel_btn, self.install_btn))
         self.c.changed.connect(self.refresh)
         self.refresh()
 

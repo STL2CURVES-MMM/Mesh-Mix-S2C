@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar.add_clicked.connect(self.open_files)
         self.sidebar.header.update_clicked.connect(self.check_for_updates)
+        self.sidebar.header.settings_clicked.connect(self.show_preferences)
         self.sidebar.update_banner.clicked.connect(self.check_for_updates)
         self.model.export_requested.connect(self.show_export)
         self.model.all_finished.connect(lambda: QApplication.alert(self))

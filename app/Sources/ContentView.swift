@@ -60,7 +60,6 @@ struct ContentView: View {
                 .environmentObject(model)
                 .environmentObject(settings)
         }
-        .preferredColorScheme(.dark)
     }
 
     private func loadDropped(_ providers: [NSItemProvider]) {
@@ -186,6 +185,19 @@ struct BrandHeader: View {
                     .foregroundStyle(Theme.textDim)
             }
             Spacer()
+            // (Settings, with the theme and accent colour, was only in the app menu, where
+            // testers of 2.0.0-test.2 didn't find it)
+            SettingsLink {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Theme.ink(0.07)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.textDim)
+            .help("Settings: theme, accent colour, updates")
+            .accessibilityLabel("Settings")
             Button { updater.checkFromMenu() } label: {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 13, weight: .semibold))

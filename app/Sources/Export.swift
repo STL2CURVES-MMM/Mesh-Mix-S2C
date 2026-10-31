@@ -41,7 +41,7 @@ struct ExportSheet: View {
         .background(Theme.panel)
         .foregroundStyle(Theme.text)
         .tint(accent)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(settings.theme.scheme)
         .onAppear { items = model.exportItems(for: request.jobs) }
         .onReceive(NotificationCenter.default.publisher(for: SelfTest.exportNow)) { _ in startExport() }
         .onReceive(NotificationCenter.default.publisher(for: SelfTest.renameNow)) { _ in renameClash() }

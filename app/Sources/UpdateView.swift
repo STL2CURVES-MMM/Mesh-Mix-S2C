@@ -7,6 +7,8 @@ struct UpdateView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: Settings
 
+    @State private var showCredits = false
+
     private var state: Updater.State { updater.state }
 
     var body: some View {
@@ -41,6 +43,9 @@ struct UpdateView: View {
                     .tint(settings.accent.color)
             }
             HStack(spacing: 8) {
+                Button("Credits") { showCredits = true }
+                    .buttonStyle(GhostButtonStyle())
+                    .help("Who makes Mesh Mix-S2C, and its supporters")
                 if updater.release != nil || state == .failed {
                     Button("Open Download Page") {
                         NSWorkspace.shared.open(updater.release?.pageURL ?? Updater.releasesPage)
@@ -76,7 +81,10 @@ struct UpdateView: View {
         .background(Theme.panel)
         .foregroundStyle(Theme.text)
         .tint(settings.accent.color)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(settings.theme.scheme)
+        .sheet(isPresented: $showCredits) {
+            CreditsView().environmentObject(settings)
+        }
         .onChange(of: updater.state) { _, new in
             if new == .ready { installNow() }
         }

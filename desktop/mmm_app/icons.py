@@ -82,6 +82,10 @@ PATHS = {
     "chevron-right": f'<path {_S} d="M9 6l6 6-6 6"/>',
     "chevron-up": f'<path {_S} d="M6 15l6-6 6 6"/>',
     "dot": f'<circle {_F} cx="12" cy="12" r="5"/>',
+    "gear": f'<circle {_S} cx="12" cy="12" r="3"/><path {_S} d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4'
+            f'M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>'
+            f'<circle {_S} cx="12" cy="12" r="6.6"/>',
+    "heart": f'<path {_S} d="M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z"/>',
     "info": f'<circle {_S} cx="12" cy="12" r="9"/><path {_S} d="M12 11v5.5"/><circle {_F} cx="12" cy="7.6" r="1.3"/>',
 }
 

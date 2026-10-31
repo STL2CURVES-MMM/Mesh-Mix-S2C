@@ -28,6 +28,7 @@ def format_bytes(n):
 
 class BrandHeader(QWidget):
     update_clicked = Signal()
+    settings_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,8 +36,12 @@ class BrandHeader(QWidget):
         sub = Label("STL → STEP converter", 11, color=theme.TEXT_DIM)
         self.update_button = IconButton("update", "Check for updates", size=26)
         self.update_button.clicked.connect(self.update_clicked)
+        # (Settings, with the theme and accent, is otherwise only in the File menu, where
+        # testers of 2.0.0-test.2 didn't find it)
+        self.settings_button = IconButton("gear", "Settings: theme, accent colour, updates", size=26)
+        self.settings_button.clicked.connect(self.settings_clicked)
         self.badge = False
-        lay = hbox(brand_mark(), vbox(title, sub, spacing=1), None, self.update_button, spacing=10)
+        lay = hbox(brand_mark(), vbox(title, sub, spacing=1), None, self.settings_button, self.update_button, spacing=6)
         lay.setContentsMargins(0, 0, 0, 2)
         self.setLayout(lay)
 

@@ -190,6 +190,10 @@ Pushing a tag such as `v1.0.1` (matching `VERSION`) makes GitHub Actions build a
 
 Manifold Mesh Mix is free. If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/tunathefirst): it helps pay for the AI credits that go into building and improving it. **Help → Support the Project** in the app opens the same page.
 
+Supporters are thanked on the app's **Credits** page (the Credits button in the Software Update window). If you'd like your name there, write the name you want shown in your donation message; otherwise you're listed as an anonymous supporter.
+
+**Themes:** the gear button at the top of the file list opens Settings, where you can pick Dark (the default), Light, Original (1.6.0's look) or Match system, and an accent colour.
+
 ## License
 
 Copyright © 2026 Tuna-The-First, Duvdivan and Claude (Anthropic's AI assistant).
