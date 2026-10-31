@@ -505,7 +505,7 @@ def judge(mesh_path, step_path):
         BRepGProp.VolumeProperties_s(s, props)
     card["volume_occ"] = props.Mass() if solids else 0.0
 
-    original = trimesh.load(mesh_path, force="mesh")
+    original = load_mesh(mesh_path)
     card["mesh_triangles"] = len(original.faces)
     card["mesh_volume"] = card["mesh_volume_raw"] = abs(float(original.volume))
     t = time.time()
@@ -613,6 +613,28 @@ CLOSE_MM = 0.1       # mm, and the share of points both ways that must lie withi
 CLOSE = 0.99
 SCORE_MM = 0.02      # mm of p99 distance per unit of score (closeness decides ties by a
                      # clear margin, pipeline.CLEARLY_CLOSER units: 0.02 mm)
+
+
+def load_mesh(path):
+    """The mesh as a trimesh. A 3MF project is read with the engine's own reader (every
+    object its build prints, placed and scaled as printed): trimesh's 3MF reader needs
+    networkx, which the pinned environment doesn't have, so every 3MF part got an error
+    scorecard, graded bad (found by Duvdivan's Claude on Bravo, 2026-10-30)."""
+    if str(path).lower().endswith(".3mf"):
+        try:
+            from .read3mf import read_3mf
+        except ImportError:                 # (run as a script: compare/bench/judge.py)
+            from mms2c.read3mf import read_3mf
+        objects = read_3mf(path)
+        if not objects:
+            raise ValueError(f"{path}: no printed object in the 3MF file")
+        pts, tris, start = [], [], 0
+        for _, P, T, _ in objects:
+            pts.append(P)
+            tris.append(T + start)
+            start += len(P)
+        return trimesh.Trimesh(np.vstack(pts), np.vstack(tris))
+    return trimesh.load(path, force="mesh")
 
 
 def verdict(card):

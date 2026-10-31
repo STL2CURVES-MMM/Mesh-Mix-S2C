@@ -59,6 +59,12 @@ MIN_AROUND = 270       # deg: the facets must reach at least this far round the 
 EPS_STEP = np.finfo(float).eps ** 0.5   # relative step of the axis fit's differences (scipy's)
 HOLD = 0.01            # weight (mm per mm moved) keeping profile corners where they started:
                        # one with no corners near it was otherwise free to drift (100+ mm)
+LOOSE_AROUND = 240     # deg: while the facets agreeing are gathered, they may reach only this far
+                       # round (the seed's side of a long thread; a hole breaking out of a wall)
+LOOSE_GATHER = 0.6     # share of a crest's or root's corners on a few helix lines that still
+                       # gives a pitch (rounded crests and roots: a BSP or Whitworth thread)
+LOOSE_TURNS = 3.0      # turns: a thread found with either loose limit must wind at least this
+                       # far (the loose limits alone took 1-turn run-outs and a bend for threads)
 MAX_FACET_TURN = 90    # deg: a facet of a piece spans less than this along its helix (a plain
                        # bore a whole number of leads long has every corner on the thread)
 
@@ -594,14 +600,17 @@ def _thread(mesh, pool, seed, c, a, pitch):
     reach = 1.5 * _radius(mesh.fcent[seed], c, a).max()
     agree = seed
     found = None
+    loose = False                       # a loose limit was needed (see LOOSE_TURNS)
     for _ in range(6):                  # facets agreeing, the motion refitted to them, ...
         near = (misfit_deg(X, N, c, a, pitch) < AGREE_DEG) & (_radius(X, c, a) <= reach)
         if near.sum() < MIN_FACETS:
             return None, agree
-        if _around(X[near], c, a) < MIN_AROUND:
+        around = _around(X[near], c, a)
+        if around < LOOSE_AROUND:
             # (a thread winds round its axis: a smooth bend's facets can agree with
             # some screw motion, but only over a narrow arc of it)
             return None, pool[near]
+        loose |= around < MIN_AROUND
         if np.array_equal(pool[near], agree):
             break
         agree = pool[near]
@@ -609,15 +618,16 @@ def _thread(mesh, pool, seed, c, a, pitch):
         # (fitted to only the facets agreeing so far, the axis can settle a degree or
         # so out and the pitch far out, keeping the rest out; the corners pull them back)
         c, a = _coaxial(_corners(mesh, agree), c, a)
-        found = (agree, c, a, _corner_pitch(_corners(mesh, agree), c, a))
+        found = (agree, c, a, *_corner_pitch(_corners(mesh, agree), c, a))
         pitch = found[3] or pitch
     P = _corners(mesh, agree)
     # (the loop settled on the facets and axis it last scanned for the pitch: that scan
     # is the answer, not done again)
     settled = found is not None and found[0] is agree and found[1] is c and found[2] is a
-    pitch = found[3] if settled else _corner_pitch(P, c, a)
+    pitch, gather = found[3:] if settled else _corner_pitch(P, c, a)
     if pitch is None:
         return None, agree
+    loose |= gather < MIN_GATHER
     model = Helical(a, c, pitch, [[0, 1], [1, 1]], True)
     prof = _profile(model, P)
     if prof is None:
@@ -659,7 +669,8 @@ def _thread(mesh, pool, seed, c, a, pitch):
     if len(facets) < MIN_FACETS:
         return None, agree
     Q = mesh.pts[np.unique(np.concatenate([mesh.fverts[f] for f in facets]))]
-    if np.ptp((Q - model.a) @ model.d) < MIN_TURNS * model.lead or _around(Q, model.d, model.a) < MIN_AROUND:
+    turns = LOOSE_TURNS if loose else MIN_TURNS
+    if np.ptp((Q - model.a) @ model.d) < turns * model.lead or _around(Q, model.d, model.a) < MIN_AROUND:
         return None, agree              # the facets must wind round the axis
     # which side is material: facets' normals point away from it
     X, N = mesh.fcent[facets], mesh.fn[facets]
@@ -705,7 +716,7 @@ def _reach(mesh, start, allowed):
 
 
 def _corner_pitch(P, c, a):
-    """_pitch of corners P about the axis through a along c."""
+    """_pitch of corners P about the axis through a along c: (pitch or None, share)."""
     d, e1, e2 = _frame(c)
     v = P - a
     z = v @ d
@@ -714,15 +725,15 @@ def _corner_pitch(P, c, a):
 
 
 def _pitch(z, u, rho):
-    """Pitch per radian (signed: right- or left-handed) of the helix lines the corners
-    run along, or None. The crest and root edges of a thread run round every turn, so
+    """(Pitch per radian, signed: right- or left-handed, of the helix lines the corners
+    run along, or None; the share of corners on them). The crest and root edges of a thread run round every turn, so
     the corners bunch up at a few radii; in each bunch, turned back along the right
     helix, they fall on a few lines (one per edge)."""
     best = (0.0, None)
     for r in _bands(rho, 3):
         band = np.abs(rho - r) <= 2 * BAND
         best = max(best, _lines(z[band], u[band], rho.max()), key=lambda b: b[0])
-    return best[1] if best[0] >= MIN_GATHER else None
+    return (best[1] if best[0] >= LOOSE_GATHER else None), best[0]
 
 
 def _lines(z, u, radius):

@@ -34,6 +34,8 @@ SPECK = 0.1             # a self-crossing cluster smaller than this share of the
 MARGIN_RINGS = 2        # ... together with this many rings of triangles around it
 SPECK_SHIFT = 0.05      # mm: ... if patching the hole moves the surface no more than this on average
 SPECK_SHIFT_MOST = 0.5  # mm: ... or, failing that, the gentler of two cuts if it moves it no more than this
+SPECK_WORST = 0.5       # mm: ... and its patch strays nowhere farther than this from what it replaces
+                        # (else fewer rings of margin are tried, down to none)
 NARROW_GAIN = 0.5       # ... one ring of margin instead of two only if that moves it less than this share as far
 SPECK_RIM = 500         # ... and leaves a hole with no more corners round it than this
 SPECK_TRIALS = 30       # ... each tried alone (when all together fail) if there are no more of them than this
@@ -839,8 +841,17 @@ def _self_crossing_specks(pts, tris, max_size):
         at = around(members)
         return _patch_shift(pts, tris[at], np.isin(at, members))
 
+    def close(members):
+        """Whether the patch across these moves the surface little on average (SPECK_SHIFT)
+        and nowhere far (SPECK_WORST). The average is a net volume: a patch standing off
+        one way here and the other way there scores near nothing (bevel_small: 0.02 mm,
+        a flat triangle 15 mm tall across a gear tooth 1.7 mm off it)."""
+        at = around(members)
+        moved, worst = _patch_shift(pts, tris[at], np.isin(at, members), worst=True)
+        return moved <= SPECK_SHIFT and worst <= SPECK_WORST
+
     _self_crossing_specks.between = not own[cut].any()
-    if _self_crossing_specks.between or shift(np.nonzero(cut)[0]) <= SPECK_SHIFT:
+    if _self_crossing_specks.between or close(np.nonzero(cut)[0]):
         return cut
     pieces = _components(tris, cut)
     if len(pieces) > SPECK_TRIALS:
@@ -849,7 +860,17 @@ def _self_crossing_specks(pts, tris, max_size):
     for members in pieces:
         moved = shift(members)
         if moved <= SPECK_SHIFT:
-            keep[members] = True
+            # (on average close, but far somewhere: fewer rings of margin make a smaller
+            # hole, patched closer to the surface; bevel_small's two-ring cut strayed 1.7 mm,
+            # its one-ring cut 0.004. If none is close everywhere, the cut stays as it was:
+            # a crossing left in the mesh costs the build far more, see below)
+            inner = members[core[members]]
+            for trial in (members, around(inner), inner):
+                if len(trial) and close(trial):
+                    keep[trial] = True
+                    break
+            else:
+                keep[members] = True
             continue
         # else the cut with one ring of margin, if it moves the surface clearly less: a wall
         # poking 0.004 mm through a big flat triangle had 97 triangles cut round it with
@@ -958,9 +979,11 @@ def _pieces(tris):
     return label[tris[:, 0]]
 
 
-def _patch_shift(pts, tris, cut):
+def _patch_shift(pts, tris, cut, worst=False):
     """How far, on average, patching the hole left by cutting these triangles out moves
-    the surface (mm: the volume between them over the area cut); inf if it won't patch."""
+    the surface (mm: the volume between them over the area cut); inf if it won't patch.
+    With ``worst``, (that, the farthest the patch and the triangles cut stray from each
+    other: _strays)."""
     rim = np.zeros(int(tris.max()) + 1, bool)
     rim[np.intersect1d(tris[cut], tris[~cut])] = True
     e = _edges(tris)
@@ -970,23 +993,39 @@ def _patch_shift(pts, tris, cut):
     fwd, back = e[:, 0] * n + e[:, 1], e[:, 1] * n + e[:, 0]
     open_ = e[~np.isin(fwd, back)]
     if len(open_) > SPECK_RIM:
-        return np.inf       # (no speck: and patching a loop of thousands took minutes)
+        return (np.inf, np.inf) if worst else np.inf   # (no speck: and patching a loop of thousands took minutes)
     loops = _loops(open_)
     if not loops or sum(len(l) for l in loops) != len(open_):
-        return np.inf
+        return (np.inf, np.inf) if worst else np.inf
     taken = set(zip(np.minimum(e[:, 0], e[:, 1]).tolist(), np.maximum(e[:, 0], e[:, 1]).tolist()))
     patch = []
     for loop in loops:
         p = _triangulate(pts, loop[::-1], taken)
         if p is None:
-            return np.inf
+            return (np.inf, np.inf) if worst else np.inf
         patch.append(p)
         taken |= {(min(a, b), max(a, b)) for a, b in _edges(p).tolist()}
     T = pts[tris[cut]]
     P = pts[np.vstack(patch)]
     six = lambda X: np.einsum("ij,ij->i", X[:, 0], np.cross(X[:, 1], X[:, 2])).sum()
     area = 0.5 * np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1).sum()
-    return abs(six(P) - six(T)) / 6 / max(area, 1e-12)
+    moved = abs(six(P) - six(T)) / 6 / max(area, 1e-12)
+    return (moved, _strays(P, T)) if worst else moved
+
+
+def _strays(P, T, block=512):
+    """The farthest any of the triangles P (k, 3, 3) and T stand from the other set (mm),
+    sampled at their corners, edge midpoints and centres."""
+    def samples(X):
+        mid = (X + np.roll(X, -1, axis=1)) / 2
+        return np.concatenate([X.reshape(-1, 3), mid.reshape(-1, 3), X.mean(axis=1)])
+
+    far = 0.0
+    for a, b in ((P, T), (T, P)):
+        q = samples(a)
+        for i in range(0, len(q), block):
+            far = max(far, float(_closest_on_triangles(q[i:i + block], b[:, 0], b[:, 1], b[:, 2]).max()))
+    return far
 
 
 def _components(tris, mask):

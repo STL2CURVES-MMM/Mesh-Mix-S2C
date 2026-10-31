@@ -24,6 +24,11 @@
 # too, not only auto (cad meant MMM's own segmentation alone); a seeded entry marked .later
 # (a body the front end routed to smooth surfaces) makes the body smooth first, and seeds
 # its CAD faces only if those are tried after all.
+# Modified 2026-10-30 (Tuna's side): swept_share also tries the plain extrusion that the
+# curved normals are most square to, and keeps whichever motion explains more of the
+# surface. fit_motion's least squares favours a turn about the part's middle (points near
+# its axis barely move, so they cost little), which on bass "body 5 holes" (four parallel
+# tubes, 89% of the area square to one direction) gave 19% and routed it to Smooth.
 # Modified 2026-10-29 for Mesh Mix-S2C: results (and each part of a split 3MF) carry
 # "presets", the methods actually used, so the apps can name what "mixed" is made of.
 import errno
@@ -1355,14 +1360,25 @@ def swept_share(curved, max_tris=60_000, max_deg=3.0):
     for _ in range(4):
         mot = fit_motion(C[sel], N[sel], A[sel], min_gap=1.0, max_rms=90.0)
         if mot is None:
-            return 0.0
+            ok = None
+            break
         V = mot.velocity(C)
         sp = np.maximum(np.linalg.norm(V, axis=1), 1e-30)
         ok = np.abs((N * V).sum(1)) / sp <= np.sin(np.radians(max_deg))
         sel = np.intersect1d(idx, np.nonzero(ok)[0])
         if len(sel) < 50:
-            return 0.0
-    return float(A[ok].sum() / A.sum())
+            break
+    turned = float(A[ok].sum() / A.sum()) if ok is not None and len(sel) >= 50 else 0.0
+    return max(turned, _extruded_share(C, N, A, max_deg))
+
+
+def _extruded_share(C, N, A, max_deg=3.0):
+    """Share of curved area whose normals are square to the one direction they are
+    most square to on the whole (an extrusion: parallel tubes, a profile pulled
+    straight). Checked apart from fit_motion, whose fit is drawn to turns."""
+    _, U = np.linalg.eigh((N * A[:, None]).T @ N)
+    d = U[:, 0]
+    return float(A[np.abs(N @ d) <= np.sin(np.radians(max_deg))].sum() / A.sum())
 
 
 def choose_preset_body(body, tol, quality, report, big=400_000):
