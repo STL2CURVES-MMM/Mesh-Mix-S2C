@@ -2,14 +2,12 @@
 
 # Mesh Mix-S2C (formerly Manifold Mesh Mix)
 
-> **Manifold Mesh Mix is merging with [stl2curves](https://github.com/Duvdivan/stl2curves) and is now called Mesh Mix-S2C.**
-> The two projects were built separately and turned out to be good at different things. Manifold Mesh Mix has the desktop apps, the mesh check and repair, smooth surfaces for organic shapes and scans, and the check of every result against the mesh. stl2curves, by Duvdivan, has very precise detection of holes, fillets and screw threads, and spots parts that were scaled or drawn in inches so it can snap them back to round sizes. Together they make one converter that is better than either one alone.
+> **Mesh Mix-S2C 2.0 is out: Manifold Mesh Mix and [stl2curves](https://github.com/Duvdivan/stl2curves) are now one converter.**
+> The two projects were built separately and turned out to be good at different things. Manifold Mesh Mix had the desktop apps, the mesh check and repair, smooth surfaces for organic shapes and scans, and the check of every result against the mesh. stl2curves, by Duvdivan, had very precise detection of holes, fillets and screw threads, and spots parts that were scaled or drawn in inches so it can snap them back to round sizes. In 2.0 they are one engine: stl2curves finds the features and Manifold Mesh Mix builds and checks the solid.
 >
-> The project now lives in a shared GitHub organization run by both authors, Tuna-The-First and Duvdivan, and stays free and open source (AGPL-3.0).
+> The project lives in the shared GitHub organization [STL2CURVES-MMM](https://github.com/STL2CURVES-MMM), run by both authors, Tuna-The-First and Duvdivan, and stays free and open source (AGPL-3.0).
 >
-> - **Right now:** the latest release is still **1.6.0**, the Manifold Mesh Mix engine described below.
-> - **Coming next: 2.0.0**, the first release with the merged engine. Early tests on more than 170 files are very promising, and it's still being tested and tuned.
-> - **Already have the app?** You don't need to do anything. The ⬇ update button finds 2.0.0 automatically when it's released, because GitHub forwards the old address to this one.
+> **Already have Manifold Mesh Mix 1.6?** Click the update button in the app: it finds 2.0 by itself, because GitHub forwards the old address to this one. Your settings carry over.
 
 An app for **macOS, Windows and Linux** that turns 3D-printing meshes (**STL, 3MF, OBJ, PLY**) into **editable STEP files** you can open in Fusion, SolidWorks, FreeCAD or Onshape. The STEP files are made of real CAD surfaces: flat faces, holes and cylinders, cones, spheres, fillets, gear teeth and smooth freeform surfaces. You can select, measure and edit them like a part you modelled yourself.
 
@@ -17,7 +15,18 @@ It's made for real-world files, including messy ones: CAD exports, coarse OpenSC
 
 <a href="https://buymeacoffee.com/tunathefirst"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=%E2%98%95&slug=TunaTheFirst&button_colour=5F7FFF&font_colour=ffffff&font_family=Poppins&outline_colour=000000&coffee_colour=FFDD00" alt="Buy Me a Coffee" height="40"></a>
 
-## What's new in 1.6
+## What's new in 2.0
+
+Measured on our test set of 150 real parts (CAD exports, community prints, coarse OpenSCAD models, scans and slicer projects), with each STEP file read back and judged strictly: **144 of 150 come out good** (a valid closed solid, its volume within 1% of the mesh's, and 99% of the surface within 0.1 mm both ways). On the parts both engines were run on, 2.0 fixes 18 of the 22 that 1.6.0 got wrong and uses **31% fewer faces** on the ones both get right. A USB plug's M12 thread went from 1,341 faces to 45; a worm gear from 358 to 23.
+
+- **Screw threads, holes, radii and fillets** are rebuilt as true threads, cylinders and rounded faces at their designed sizes, including parts drawn in inches or scaled in a slicer.
+- **Every file type** (STL, OBJ, PLY, 3MF plates and 3MF projects split into parts) goes through the new engine with Auto and CAD. Smooth and Precise work as in 1.6.
+- **Themes:** Dark (the default), Light, Original (1.6's look) or Match system, with an accent colour, under the **gear button** at the top of the file list.
+- **Add Files remembers the folder** you last picked from, and the update window has a **Credits** page.
+
+The [2.0.0 release notes](.github/release-notes/v2.0.0.md) have the details, the known problems and how the project was made.
+
+## What came in 1.6
 
 1.6 rebuilds the CAD side of the converter. In 1.5.1, mechanical parts often came out as hundreds or thousands of small freeform patches, sometimes crumpled or with flaps. In 1.6 they come out as the few clean faces a CAD program would make. In each picture below, every face has its own color: fewer, larger colors mean a cleaner, more editable part.
 
@@ -55,22 +64,22 @@ Get the newest version from the [Releases page](https://github.com/STL2CURVES-MM
 
 | System | File | Notes |
 |---|---|---|
-| **macOS** 14+ (Apple silicon) | `ManifoldMeshMix-<version>-macOS-arm64.zip` | Unzip and drag **Manifold Mesh Mix** into Applications. The app isn't notarized, so the first time, right-click it and choose **Open**. |
-| **Windows** 10/11 (64-bit) | `ManifoldMeshMix-<version>-Windows-x64-Setup.exe` | Installs just for your user account (no administrator password). Windows SmartScreen may warn about an unknown publisher the first time: click **More info → Run anyway**. |
-| **Linux** (x86-64; Ubuntu 22.04, Fedora 36, Debian 12 or newer) | `ManifoldMeshMix-<version>-Linux-x86_64.AppImage` | Make it executable (`chmod +x`, or Properties → Permissions) and double-click it. If it doesn't start, install `libfuse2` (Ubuntu: `sudo apt install libfuse2`). **File → Add to Applications Menu** puts it in your app menu and in "Open With" for meshes. |
+| **macOS** 14+ (Apple silicon) | `MeshMix-S2C-<version>-macOS-arm64.zip` | Unzip and drag **Mesh Mix-S2C** into Applications. The app isn't notarized, so the first time, right-click it and choose **Open**. |
+| **Windows** 10/11 (64-bit) | `MeshMix-S2C-<version>-Windows-x64-Setup.exe` | Installs just for your user account (no administrator password). Windows SmartScreen may warn about an unknown publisher the first time: click **More info → Run anyway**. |
+| **Linux** (x86-64; Ubuntu 22.04, Fedora 36, Debian 12 or newer) | `MeshMix-S2C-<version>-Linux-x86_64.AppImage` | Make it executable (`chmod +x`, or Properties → Permissions) and double-click it. If it doesn't start, install `libfuse2` (Ubuntu: `sudo apt install libfuse2`). **File → Add to Applications Menu** puts it in your app menu and in "Open With" for meshes. |
 
 ### Updates
 
-Every version can update itself. Click the **⬇ button** next to the app name (or **Check for Updates…** in the menu or in Preferences/Settings). The app looks up the newest release on GitHub, downloads the file for your system, checks it against the release's checksums, installs it and opens again. A few seconds after opening, the app also checks once by itself and shows **Version X is available** under the app name; it never installs anything without a click (turn the check off in Preferences/Settings).
+Every version can update itself. Click the **⬇ button** next to the app name (or **Check for Updates…** in the menu or in Settings, the gear button). The app looks up the newest release on GitHub, downloads the file for your system, checks it against the release's checksums, installs it and opens again. A few seconds after opening, the app also checks once by itself and shows **Version X is available** under the app name; it never installs anything without a click (turn the check off in Preferences/Settings).
 
 - **Windows:** the installer runs silently and the app restarts.
 - **Linux:** the AppImage replaces itself (the folder it is in must be writable) and restarts.
-- **macOS:** the app replaces itself in its folder (normally Applications) and restarts. If macOS asks, allow Manifold Mesh Mix under **System Settings → Privacy & Security → App Management**.
+- **macOS:** the app replaces itself in its folder (normally Applications) and restarts. If macOS asks, allow Mesh Mix-S2C under **System Settings → Privacy & Security → App Management**.
 
 ## Using it
 
-1. Open **Manifold Mesh Mix** (Applications on the Mac, the Start menu on Windows, the AppImage on Linux).
-2. Drop files or whole folders onto the window, or click the drop area to browse. You can also right-click a file and choose **Open With → Manifold Mesh Mix** (Finder on the Mac, Explorer on Windows).
+1. Open **Mesh Mix-S2C** (Applications on the Mac, the Start menu on Windows, the AppImage on Linux).
+2. Drop files or whole folders onto the window, or click the drop area to browse. You can also right-click a file and choose **Open With → Mesh Mix-S2C** (Finder on the Mac, Explorer on Windows).
 3. Pick a **preset** (Auto is fine for almost everything) and set the **Speed ↔ Quality** slider.
 4. Press **Convert** (⌘↩ on the Mac, Ctrl+Enter on Windows/Linux). The STEP files stay inside the app until you export them; nothing is saved into your folders yet.
 5. Click a file in the queue to compare the **Mesh** and **STEP** views. The STEP view shows the body the way a CAD program does; the palette button gives every face its own color, so you can see how the surfaces were split up.
@@ -146,7 +155,7 @@ Needs macOS 14 or newer on Apple silicon, the Xcode command line tools and Pytho
 ```
 python3.14 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-./build.sh            # builds dist/Manifold Mesh Mix.app (Swift app + bundled engine)
+./build.sh            # builds dist/Mesh Mix-S2C.app (Swift app + bundled engine)
 ./build.sh --install  # also copies it to /Applications
 ./build.sh --zip      # also makes the release download
 ```
@@ -165,7 +174,7 @@ This builds `dist-desktop/ManifoldMeshMix/` (the app with its engine) and the in
 
 ### Releases
 
-Pushing a tag such as `v1.0.1` (matching `VERSION`) makes GitHub Actions build and test all three versions and publish a release with their downloads and `SHA256SUMS.txt`, which the apps' updaters use. Every push runs the same builds and tests (`.github/workflows/build.yml`).
+Pushing a tag such as `v2.0.1` (matching `VERSION`), or running the workflow with **publish** ticked on `main`, makes GitHub Actions build and test all three versions and publish a release with their downloads and `SHA256SUMS.txt`, which the apps' updaters use. Every push runs the same builds and tests (`.github/workflows/build.yml`).
 
 ### Where things are
 
@@ -188,7 +197,7 @@ Pushing a tag such as `v1.0.1` (matching `VERSION`) makes GitHub Actions build a
 
 ## Support the project
 
-Manifold Mesh Mix is free. If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/tunathefirst): it helps pay for the AI credits that go into building and improving it. **Help → Support the Project** in the app opens the same page.
+Mesh Mix-S2C is free. If it saves you time, you can [buy us a coffee](https://buymeacoffee.com/tunathefirst): it helps pay for the AI credits that go into building and improving it. **Help → Support the Project** in the app opens the same page.
 
 Supporters are thanked on the app's **Credits** page (the Credits button in the Software Update window). If you'd like your name there, write the name you want shown in your donation message; otherwise you're listed as an anonymous supporter.
 
@@ -198,7 +207,7 @@ Supporters are thanked on the app's **Credits** page (the Credits button in the 
 
 Copyright © 2026 Tuna-The-First, Duvdivan and Claude (Anthropic's AI assistant).
 
-Manifold Mesh Mix is free and open-source software, licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0). See [LICENSE](LICENSE) for the full text.
+Mesh Mix-S2C is free and open-source software, licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0). See [LICENSE](LICENSE) for the full text.
 
 In short: you may use, study, change and share it. If you give the app (or a changed version of it) to others, or run a changed version for others over a network, you must make its source code available to them under the same license. It comes with no warranty.
 
