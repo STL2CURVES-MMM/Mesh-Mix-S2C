@@ -25,6 +25,10 @@ final class Updater: ObservableObject {
     }
 
     static let repo = "STL2CURVES-MMM/Mesh-Mix-S2C"
+    /// The repository's permanent number on GitHub. Update checks ask by it, because GitHub's
+    /// API answers 404 for an organization's old name after a rename (web links and git
+    /// redirect, the API doesn't), which would leave every installed app without updates.
+    static let repoID = 1415704694
     static let assetSuffix = "-macOS-arm64.zip"
     static let sumsName = "SHA256SUMS.txt"
     static let releasesPage = URL(string: "https://github.com/\(repo)/releases/latest")!
@@ -92,10 +96,12 @@ final class Updater: ObservableObject {
 
     // MARK: checking
 
-    private var apiURL: URL {
+    /// Where to ask: by the repository's number first (no rename breaks it), then by its name.
+    private var apiURLs: [URL] {
         // MMM_UPDATE_URL is for tests against a server on this computer only
-        if let s = ProcessInfo.processInfo.environment["MMM_UPDATE_URL"], let u = URL(string: s), Self.isLocal(u) { return u }
-        return URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!
+        if let s = ProcessInfo.processInfo.environment["MMM_UPDATE_URL"], let u = URL(string: s), Self.isLocal(u) { return [u] }
+        return [URL(string: "https://api.github.com/repositories/\(Self.repoID)/releases/latest")!,
+                URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!]
     }
 
     static func isLocal(_ u: URL) -> Bool { ["127.0.0.1", "localhost", "::1"].contains(u.host ?? "") }
@@ -111,7 +117,13 @@ final class Updater: ObservableObject {
         }
         state = .checking
         error = ""
-        var req = URLRequest(url: apiURL, timeoutInterval: 30)
+        ask(apiURLs[...], firstError: nil, completion: completion)
+    }
+
+    /// Asks the first address; if that fails, the next (the first error is the one shown).
+    private func ask(_ urls: ArraySlice<URL>, firstError: Error?, completion: (() -> Void)?) {
+        guard let url = urls.first else { return }
+        var req = URLRequest(url: url, timeoutInterval: 30)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("ManifoldMeshMix/\(Self.currentVersion) (macOS)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { data, response, err in
@@ -129,7 +141,11 @@ final class Updater: ObservableObject {
                     self.release = rel
                     self.state = rel == nil ? .current : .available
                 case .failure(let e):
-                    self.error = Self.message(for: e)
+                    if urls.count > 1 {
+                        self.ask(urls.dropFirst(), firstError: firstError ?? e, completion: completion)
+                        return
+                    }
+                    self.error = Self.message(for: firstError ?? e)
                     self.state = .failed
                 }
                 completion?()
