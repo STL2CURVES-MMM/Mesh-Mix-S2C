@@ -9,6 +9,13 @@ Pipeline
   3. Least-squares fit the cage so the patches hug the original mesh.
   4. Build the B-rep directly (shared vertices / edges / exact pcurves).
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-26 for the stl2curves merged engine: quad_remesh moves a mesh far from
+# the origin to it before Instant Meshes' float32 copy (CENTRE_AT), and back after.
+# Modified 2026-10-28: the remesher runs in a watched child process (remesh_guard.py): one
+# that gets stuck (Instant Meshes' Step 5 can loop for ever) is stopped and run again at a
+# nudged target; when every try sticks, smooth_shell's simpler layouts are used (a shared
+# Budget of FREEZE_CAP stuck runs per smooth_shell call).
 import os
 import sys
 
@@ -52,24 +59,31 @@ class _Silence:
         os.close(self.saved)
 
 
-def quad_remesh(V, F, target_verts, crease_deg=0.0, seed_tries=3):
-    import pynanoinstantmeshes as nim
+# A mesh farther from the origin than this many times its size is moved to the origin
+# for the remesher, which works in float32: a 35 mm sphere 1e7 mm out (float32 spacing 1 mm
+# there) sent its edge subdivision into a loop that took 14 GB in 90 s; centred, 0.1 s.
+# Nearer meshes are passed as they are, so their results stay as they were.
+CENTRE_AT = 100.0
 
+
+def quad_remesh(V, F, target_verts, crease_deg=0.0, seed_tries=3, report=NULL, budget=None):
+    """Quad mesh of (V, F) near target_verts vertices, checked (check_quad_mesh). The
+    remesher runs watched (remesh_guard): ``budget`` is the stuck runs still allowed,
+    shared by the calls of one smooth_shell."""
+    from . import remesh_guard
+
+    lo, hi = V.min(0), V.max(0)
+    shift = (lo + hi) / 2 if np.abs(V).max() > CENTRE_AT * np.linalg.norm(hi - lo) else np.zeros(3)
+    budget = budget if budget is not None else remesh_guard.Budget()
     last_err = None
     for k in range(seed_tries):
         # finer resolutions resolve thin features the remesher tripped over
         tv = int(target_verts * (1.0, 1.6, 2.6)[min(k, 2)])
-        with _Silence():
-            qv, qf = nim.remesh(
-                np.ascontiguousarray(V, dtype=np.float32),
-                np.ascontiguousarray(F, dtype=np.uint32),
-                tv,
-                rosy=4,
-                posy=4,
-                creaseAngle=float(crease_deg),
-                deterministic=True,
-            )
-        Vq = np.asarray(qv, dtype=np.float64)
+        try:
+            qv, qf, _ = remesh_guard.remesh(V - shift, F, tv, crease_deg, report, budget)
+        except remesh_guard.Stuck as e:
+            raise SmoothError(str(e))
+        Vq = np.asarray(qv, dtype=np.float64) + shift
         Q = np.asarray(qf, dtype=np.int64)
         ok, why = check_quad_mesh(Vq, Q)
         if not ok and why == "inconsistent orientation":
@@ -723,9 +737,12 @@ def smooth_shell(shell, tol, budget, report=NULL):
     tv = int(max(24, min(budget, len(V) // 2 if len(V) > 200 else budget)))
     Vq = Q = None
     if tv >= 60 and len(F) >= 200:
+        from .remesh_guard import Budget
+
+        stuck = Budget()        # (stuck remesher runs allowed for this piece, all tries together)
         try:
             report.log(f"Quad remeshing (target {tv} cage vertices)")
-            Vq, Q = quad_remesh(V, F, tv)
+            Vq, Q = quad_remesh(V, F, tv, report=report, budget=stuck)
         except SmoothError as e:
             Vq = Q = None
             if len(F) > 30 * tv:
@@ -733,7 +750,7 @@ def smooth_shell(shell, tol, budget, report=NULL):
                 # (the surfaces are still fitted to the original mesh)
                 try:
                     Vd, Fd = robust_decimate(V, F, max(20 * tv, 4000), report)
-                    Vq, Q = quad_remesh(Vd, Fd, tv)
+                    Vq, Q = quad_remesh(Vd, Fd, tv, report=report, budget=stuck)
                     report.log("Quad remeshed a simplified copy of the mesh")
                 except SmoothError:
                     Vq = Q = None

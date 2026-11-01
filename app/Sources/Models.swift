@@ -133,6 +133,8 @@ final class Settings: ObservableObject {
     @Published var plateLayout: PlateLayout { didSet { d.set(plateLayout.rawValue, forKey: "plateLayout") } }
     @Published var replaceExisting: Bool { didSet { d.set(replaceExisting, forKey: "replaceExisting") } }
     @Published var parallelJobs: Int { didSet { d.set(parallelJobs, forKey: "parallelJobs") } }
+    /// Dark (the default), Light, Original (1.6.0's look) or Match system.
+    @Published var theme: ThemeChoice { didSet { d.set(theme.rawValue, forKey: "theme") } }
     @Published var accent: AccentChoice { didSet { d.set(accent.rawValue, forKey: "accent") } }
     @Published var convertOnDrop: Bool { didSet { d.set(convertOnDrop, forKey: "convertOnDrop") } }
     @Published var revealWhenDone: Bool { didSet { d.set(revealWhenDone, forKey: "revealWhenDone") } }
@@ -142,6 +144,12 @@ final class Settings: ObservableObject {
     @Published var colorFaces: Bool { didSet { d.set(colorFaces, forKey: "colorFaces") } }
     /// Look for a newer version once when the app opens (installing always needs a click)
     @Published var checkUpdates: Bool { didSet { d.set(checkUpdates, forKey: "checkUpdates") } }
+    /// The folder the last Add Files window picked from, where the next one opens
+    /// (asked for by a user, 2026-11-01). Not shown anywhere, so not published.
+    var lastOpenFolder: String {
+        get { d.string(forKey: "lastOpenFolder") ?? "" }
+        set { d.set(newValue, forKey: "lastOpenFolder") }
+    }
 
     init() {
         preset = Preset(rawValue: d.string(forKey: "preset") ?? "") ?? .auto
@@ -159,7 +167,10 @@ final class Settings: ObservableObject {
         plateLayout = PlateLayout(rawValue: d.string(forKey: "plateLayout") ?? "") ?? .parts
         replaceExisting = d.object(forKey: "replaceExisting") as? Bool ?? false
         parallelJobs = d.object(forKey: "parallelJobs") as? Int ?? 2
-        accent = AccentChoice(rawValue: d.string(forKey: "accent") ?? "") ?? .cyan
+        theme = ThemeChoice(rawValue: d.string(forKey: "theme") ?? "") ?? .dark
+        // (Matte blue since 2.0: only an accent someone chose was ever stored, so
+        // that one is kept, and one never chosen becomes Matte blue)
+        accent = AccentChoice(rawValue: d.string(forKey: "accent") ?? "") ?? .matte
         convertOnDrop = d.object(forKey: "convertOnDrop") as? Bool ?? false
         revealWhenDone = d.object(forKey: "revealWhenDone") as? Bool ?? false
         splitParts = d.object(forKey: "splitParts") as? Bool ?? true
@@ -239,12 +250,44 @@ enum JobStatus: Equatable {
 
 struct ConversionResult {
     var preset: String
+    /// The methods behind "mixed" (cad, smooth, precise, faceted), when the
+    /// engine names them
+    var presets: [String] = []
+
+    /// What the engine saved when neither CAD faces nor smooth surfaces
+    /// followed a mesh closely enough: its own flat triangles (not a preset
+    /// anyone picks).
+    static let facetedTitle = "Flat faces"
+    static let facetedTip = "Saved as flat faces, exactly like the mesh: neither CAD faces nor smooth surfaces followed it closely enough, so Auto kept the mesh's own triangles as a valid solid. This isn't a preset you pick; a higher quality may give real surfaces."
+
+    /// The methods behind the reported preset: the engine's list when it
+    /// sends one, else CAD and Smooth for "mixed" (what older engines meant).
+    var usedKinds: Set<String> {
+        if !presets.isEmpty { return Set(presets.map(Self.alias)) }
+        if preset == "mixed" { return ["cad", "smooth"] }
+        return preset.isEmpty ? [] : [Self.alias(preset)]
+    }
+
+    /// Result kinds that are another preset's faces: stl2curves' own sewn
+    /// faces are CAD.
+    static func alias(_ kind: String) -> String { kind == "stl2curves" ? "cad" : kind }
+
+    /// Some or all of it was saved as the mesh's own flat triangles.
+    var faceted: Bool { usedKinds.contains("faceted") }
+
+    static func title(of kind: String) -> String {
+        if kind == "faceted" { return facetedTitle }
+        return Preset(rawValue: alias(kind))?.title ?? kind.capitalized
+    }
 
     /// Display name of the preset the engine actually used ("mixed" when
-    /// some parts of a file used CAD and others Smooth).
+    /// the parts of a file used different methods).
     var presetTitle: String {
-        if preset == "mixed" { return "CAD + Smooth" }
-        return Preset(rawValue: preset)?.title ?? preset.capitalized
+        if preset == "mixed" {
+            let names = ["cad", "smooth", "precise", "faceted"].filter { usedKinds.contains($0) }.map(Self.title(of:))
+            return names.isEmpty ? "Mixed" : names.joined(separator: " + ")
+        }
+        return Self.title(of: preset)
     }
     var valid: Bool?
     var solids: Int
@@ -438,6 +481,7 @@ extension ConversionResult {
             meshVolume: ev["mesh_volume"] as? Double ?? 0,
             tolerance: ev["tolerance"] as? Double ?? 0
         )
+        presets = (ev["presets"] as? [Any] ?? []).compactMap { $0 as? String }
         checked = ev["checked"] as? Bool ?? false
         repaired = ev["repaired"] as? [String] ?? []
         fidelity = Fidelity(event: ev["fidelity"])
@@ -450,6 +494,7 @@ extension ConversionResult {
             alt.removeValue(forKey: "alternative")
             var a = ConversionResult(event: alt)
             a.preset = preset
+            a.presets = presets
             a.seconds = seconds
             a.meshVolume = meshVolume
             a.tolerance = tolerance
@@ -753,7 +798,17 @@ final class AppModel: ObservableObject {
         p.canChooseFiles = true
         p.allowedContentTypes = Self.acceptedExtensions.compactMap { UTType(filenameExtension: $0) }
         p.message = "Choose mesh files (STL, 3MF, OBJ, PLY) or folders to convert"
-        if p.runModal() == .OK { add(urls: p.urls) }
+        // start where the last pick was made, while that folder still exists
+        var isDir: ObjCBool = false
+        let last = settings.lastOpenFolder
+        if !last.isEmpty, FileManager.default.fileExists(atPath: last, isDirectory: &isDir), isDir.boolValue {
+            p.directoryURL = URL(fileURLWithPath: last, isDirectory: true)
+        }
+        if p.runModal() == .OK {
+            // (the folder the pick sits in: for a chosen folder, the one around it)
+            if let first = p.urls.first { settings.lastOpenFolder = first.deletingLastPathComponent().path }
+            add(urls: p.urls)
+        }
     }
 
     @discardableResult
@@ -883,7 +938,7 @@ final class AppModel: ObservableObject {
             job.reinspecting = false
             job.convertAfterRead = false
             job.status = .failed
-            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix."
+            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Mesh Mix-S2C."
         }
     }
 
@@ -1039,7 +1094,7 @@ final class AppModel: ObservableObject {
         fixTasks.append(t)
         do { try t.start() } catch {
             fixTasks.removeAll { $0 === t }
-            completion("The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix.")
+            completion("The converter couldn't start (\(error.localizedDescription)). Try reinstalling Mesh Mix-S2C.")
         }
     }
 
@@ -1283,12 +1338,12 @@ final class AppModel: ObservableObject {
         }
         do { try t.start() } catch {
             job.status = .failed
-            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Manifold Mesh Mix."
+            job.error = "The converter couldn't start (\(error.localizedDescription)). Try reinstalling Mesh Mix-S2C."
             pump()
         }
     }
 
-    static let engineMissingMessage = "Part of the app is missing (the converter). Please reinstall Manifold Mesh Mix."
+    static let engineMissingMessage = "Part of the app is missing (the converter). Please reinstall Mesh Mix-S2C."
 
     /// What to tell the user when the converter ends without a result.
     static func crashMessage(status: Int32, signaled: Bool) -> String {

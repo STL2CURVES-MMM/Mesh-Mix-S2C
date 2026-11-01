@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from . import system
 from .model import RUN_SETTINGS, result_unit
-from .settings import MAX_FACES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice, preset_title
+from .settings import MAX_FACES, PLATE_LAYOUTS, PRESETS, REPAIR_LEVELS, UNITS, choice
 from .version import __version__
 
 STATUS_WORDS = {"fixed": "Fixed", "not_fixed": "Not fixed", "action": "Your choice", "note": "Note"}
@@ -100,12 +100,13 @@ def build(job, settings):
     s = settings
     lines = []
     add = lines.append
-    add("Manifold Mesh Mix - problem report")
+    add("Mesh Mix-S2C - problem report")
     add("=" * 34)
     add(f"Created:   {time.strftime('%Y-%m-%d %H:%M')}")
-    add(f"App:       Manifold Mesh Mix {__version__} ({'installed app' if system.FROZEN else 'from source'})")
+    add(f"App:       Mesh Mix-S2C {__version__} ({'installed app' if system.FROZEN else 'from source'})")
     add(f"System:    {_system()}")
     add(f"Toolkit:   Python {platform.python_version()}, {_qt()}")
+    add(f"Theme:     {getattr(s, 'theme', 'dark')}, accent {getattr(s, 'accent', 'matte')}")
     add("")
     add("File")
     add(f"  Name:      {job.file_name}   (the folder isn't included)")
@@ -158,7 +159,7 @@ def build(job, settings):
     add(f"  Status: {job.status.title}" + (f" ({job.stage})" if job.stage and job.stage != job.status.title else ""))
     r = job.result
     if r is not None:
-        add(f"  Preset used: {preset_title(r.preset)}; faces {r.faces:,}; solids {r.solids}; shells {r.shells}; "
+        add(f"  Preset used: {r.preset_title}; faces {r.faces:,}; solids {r.solids}; shells {r.shells}; "
             f"STEP {_size(r.file_size)}; {r.seconds:.1f} s")
         if r.fidelity is not None:
             add(f"  Compared with the mesh: {r.fidelity.summary(result_unit(job, s))}"
@@ -200,7 +201,7 @@ def build(job, settings):
 
 def default_name(job):
     from .model import safe_file_name
-    return safe_file_name(f"Manifold Mesh Mix report - {job.name}") + ".txt"
+    return safe_file_name(f"Mesh Mix-S2C report - {job.name}") + ".txt"
 
 
 def save(job, settings, path):

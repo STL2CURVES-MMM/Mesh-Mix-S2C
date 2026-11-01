@@ -51,7 +51,7 @@ struct ManifoldMeshMixApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Manifold Mesh Mix") {
+        WindowGroup("Mesh Mix-S2C") {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(settings)
@@ -71,6 +71,7 @@ struct ManifoldMeshMixApp: App {
                         SelfTest.run(model: model, settings: settings, updater: updater)
                     } else {
                         Updater.reportPreviousFailure()
+                        Updater.offerRename()
                         if settings.checkUpdates {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
                                 if settings.checkUpdates { updater.check() }
@@ -83,7 +84,7 @@ struct ManifoldMeshMixApp: App {
         .defaultSize(width: 1280, height: 780)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About Manifold Mesh Mix") { Support.showAbout() }
+                Button("About Mesh Mix-S2C") { Support.showAbout() }
             }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { updater.checkFromMenu() }
@@ -122,7 +123,7 @@ struct ManifoldMeshMixApp: App {
                 .environmentObject(settings)
                 .environmentObject(updater)
                 .frame(width: 420)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(settings.theme.scheme)
         }
     }
 }
@@ -134,10 +135,13 @@ struct PreferencesView: View {
     var body: some View {
         Form {
             Section("Appearance") {
+                Picker("Theme", selection: $settings.theme) {
+                    ForEach(ThemeChoice.allCases) { t in Text(t.title).tag(t) }
+                }
                 Picker("Accent color", selection: $settings.accent) {
                     ForEach(AccentChoice.allCases) { a in
                         HStack {
-                            Circle().fill(a.color).frame(width: 10, height: 10)
+                            Circle().fill(a.baseColor).frame(width: 10, height: 10)
                             Text(a.title)
                         }
                         .tag(a)

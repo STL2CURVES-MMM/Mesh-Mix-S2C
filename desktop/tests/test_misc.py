@@ -171,6 +171,45 @@ def test_accent_change_restyles(window):
     assert theme.accent().name() == theme.ACCENT_COLORS["pink"].name()
 
 
+def test_theme_defaults_upgrade_and_bad_values(qapp, tmp_path):
+    """New users and 1.6.0 users get Dark with Matte blue; an accent someone chose is
+    kept; an unknown theme falls back to Dark."""
+    s = Settings(QSettings(str(tmp_path / "new.ini"), QSettings.Format.IniFormat))
+    assert (s.theme, s.accent) == ("dark", "matte")
+    q = QSettings(str(tmp_path / "old.ini"), QSettings.Format.IniFormat)
+    q.setValue("accent", "orange")      # chosen in 1.6.0 (unchosen ones were never stored)
+    q.setValue("theme", "neon")
+    t = Settings(q)
+    assert (t.theme, t.accent) == ("dark", "orange")
+
+
+def test_theme_change_restyles_live(window):
+    from PySide6.QtWidgets import QApplication
+
+    from mmm_app import icons, theme
+
+    window.settings.theme = "light"
+    assert theme.current() == "light" and theme.is_light()
+    assert theme.TEXT.lightnessF() < 0.3 and theme.CARD.lightnessF() > 0.9
+    assert icons.KNOCKOUT == "#ffffff" and theme.ink(0.1).red() == 0
+    assert theme.css(theme.TEXT) in QApplication.instance().styleSheet()
+    window.settings.accent = "lime"
+    # pale accents get a deeper shade on Light, for text and thin lines
+    assert theme.accent().lightnessF() < theme.ACCENT_COLORS["lime"].lightnessF()
+    window.settings.theme = "original"
+    assert not theme.is_light() and theme.BG.name() == "#0a0b0e"
+    window.settings.theme = "dark"
+    assert theme.BG.name() == "#0e1116"
+
+
+def test_match_system_follows_the_computer():
+    from mmm_app import theme
+
+    assert theme.resolve("system", system_dark=True) == "dark"
+    assert theme.resolve("system", system_dark=False) == "light"
+    assert theme.resolve("bogus") == "dark"
+
+
 def test_preview_switches_to_step_view(window, meshes):
     m = window.model
     m.add([meshes["one.stl"]])
@@ -363,3 +402,23 @@ def test_long_lists_of_touching_parts_are_cut_short():
     text = short_name_list(names)
     assert text == "Body0, Body1, Body2, Body3, Body4, Body5, Body6, Body7 and 326 more"
     assert short_name_list([["A", "B", "C"], ["D", "E"]], limit=4) == "A, B, C; D and 1 more"
+
+
+def test_open_window_starts_in_the_last_folder(settings, tmp_path):
+    """Add Files opens where the last one picked from, while that folder exists;
+    else the selected file's folder, else the home folder."""
+    from types import SimpleNamespace
+
+    from mmm_app.main_window import MainWindow
+    last = tmp_path / "meshes"
+    last.mkdir()
+    job = SimpleNamespace(path=str(tmp_path / "other" / "a.stl"))
+    fake = SimpleNamespace(settings=settings, model=SimpleNamespace(selected_job=job))
+    assert settings.lastOpenFolder == ""
+    assert MainWindow._last_dir(fake) == str(tmp_path / "other")
+    settings.lastOpenFolder = str(last)
+    assert MainWindow._last_dir(fake) == str(last)
+    last.rmdir()                       # (gone: back to the selected file's folder)
+    assert MainWindow._last_dir(fake) == str(tmp_path / "other")
+    fake.model.selected_job = None
+    assert MainWindow._last_dir(fake) == os.path.expanduser("~")

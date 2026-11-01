@@ -45,8 +45,13 @@ UNITS = [Choice("mm", "Millimeters"), Choice("cm", "Centimeters"), Choice("m", "
 
 MAX_FACES = [Choice(0, "None"), Choice(1000, "1,000"), Choice(4000, "4,000"), Choice(10000, "10,000"), Choice(25000, "25,000")]
 
+THEMES = [
+    Choice("dark", "Dark"), Choice("light", "Light"), Choice("original", "Original"),
+    Choice("system", "Match system"),
+]
+
 ACCENTS = [
-    Choice("cyan", "Cyan"), Choice("mint", "Mint"), Choice("violet", "Violet"),
+    Choice("matte", "Matte blue"), Choice("cyan", "Cyan"), Choice("mint", "Mint"), Choice("violet", "Violet"),
     Choice("orange", "Orange"), Choice("pink", "Pink"), Choice("lime", "Lime"),
 ]
 
@@ -74,11 +79,37 @@ def choice(options, value):
     return options[0]
 
 
-def preset_title(value):
-    """Display name of a preset the engine reports ("mixed" when some parts
-    of a file used CAD and others Smooth)."""
+# what the engine saved when neither CAD faces nor smooth surfaces followed a
+# mesh closely enough: its own flat triangles (not a preset anyone picks)
+FACETED_TITLE = "Flat faces"
+FACETED_TIP = ("Saved as flat faces, exactly like the mesh: neither CAD faces nor smooth surfaces followed it "
+               "closely enough, so Auto kept the mesh's own triangles as a valid solid. This isn't a preset you "
+               "pick; a higher quality may give real surfaces.")
+
+
+# result kinds that are another preset's faces: stl2curves' own sewn faces are CAD
+KIND_ALIASES = {"stl2curves": "cad"}
+
+
+def used_kinds(value, kinds=()):
+    """The methods behind a reported preset: the engine's list when it sends
+    one, else CAD and Smooth for "mixed" (what older engines meant by it)."""
+    if kinds:
+        return {KIND_ALIASES.get(k, k) for k in kinds}
     if value == "mixed":
-        return "CAD + Smooth"
+        return {"cad", "smooth"}
+    return {KIND_ALIASES.get(value, value)} if value else set()
+
+
+def preset_title(value, kinds=()):
+    """Display name of a preset the engine reports ("mixed" when the parts of
+    a file used different methods; `kinds` names them when known)."""
+    if value == "mixed":
+        names = [preset_title(k) for k in ("cad", "smooth", "precise", "faceted") if k in used_kinds(value, kinds)]
+        return " + ".join(names) or "Mixed"
+    if value == "faceted":
+        return FACETED_TITLE
+    value = KIND_ALIASES.get(value, value)
     for c in PRESETS:
         if c.value == value:
             return c.title
@@ -175,10 +206,17 @@ class Settings(QObject):
     outputMode = Field("subfolder", _values(OUTPUT_MODES))
     subfolderName = Field("STEP Files")
     outputFolder = Field("")
+    # the folder the last Add Files / Add Folder window picked from, where the next one opens
+    # (asked for by a user, 2026-11-01)
+    lastOpenFolder = Field("")
     plateLayout = Field("parts", _values(PLATE_LAYOUTS))
     replaceExisting = Field(False)
     parallelJobs = Field(2, lo=1, hi=6)
-    accent = Field("cyan", _values(ACCENTS))
+    # Dark (the default), Light, Original (1.6.0's look) or Match system
+    theme = Field("dark", _values(THEMES))
+    # (Matte blue since 2.0; settings store only what someone changed, so an accent
+    # chosen in 1.x is kept, and one never chosen becomes Matte blue)
+    accent = Field("matte", _values(ACCENTS))
     convertOnDrop = Field(False)
     revealWhenDone = Field(False)
     # 3MF projects: one STEP file per part (like "Split to parts" in a slicer)

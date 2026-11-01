@@ -9,7 +9,17 @@ Every primitive exposes:
 W are per-point weights (typically the mesh area a vertex represents), so a
 long strip of a cylinder outweighs many tiny triangles of a neighbouring
 fillet in the same neighbourhood.
+
+A surface turned about a known axis (on_axis: a hole's chamfer, a cap on a
+pin) has only its profile free: the radius and slope of a line, or a circle
+in the plane through the axis. Fitted that way it needs only a band of a few
+triangles, where a free fit needs a neighbourhood big enough to pin down the
+axis too, and that neighbourhood takes in the faces beside a narrow band.
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-28 (b13): surfaces on a known axis (on_axis, AxisCylinder, AxisCone,
+# AxisTorus, AxisSphere): only the profile is fitted, refits keep the axis, and two on one
+# axis are the same surface when their profiles agree (Segmenter._axis_hypotheses).
 import numpy as np
 from scipy.optimize import least_squares
 
@@ -627,3 +637,108 @@ class Torus:
 
 
 CURVED = [Cylinder, Cone, Sphere, Torus]
+
+
+# ----------------------------------------------------------------------------
+# Surfaces turned about a known axis
+
+
+def _profile_coords(a, d, P):
+    """(rho, z): distance from the axis through a along unit d, and height along it."""
+    rel = P - a
+    z = rel @ d
+    return np.linalg.norm(rel - np.outer(z, d), axis=1), z
+
+
+class _OnAxis:
+    """A surface turned about a known axis (ka, kd): refits move only its
+    profile, and on one axis two are the same surface when their profiles
+    agree over the heights both cover (zr: the height range fitted)."""
+
+    def refit(self, P, N=None, W=None):
+        p = on_axis(self.kind, self.ka, self.kd, P, W)
+        return self if p is None else p
+
+    def same_as(self, o, tol, ext):
+        if not isinstance(o, _OnAxis) or o.kind != self.kind:
+            return super().same_as(o, tol, ext)
+        if abs(self.kd @ o.kd) < np.cos(np.radians(0.5)):
+            return False
+        off = o.ka - self.ka
+        if np.linalg.norm(off - (off @ self.kd) * self.kd) > 4 * tol:
+            return False
+        if self.kind == "cylinder":
+            return abs(self.r - o.r) <= tol
+        if self.kind == "cone":
+            z = np.r_[self.zr, o.zr]
+            return float(np.abs(self.c0 + self.k * z - (o.c0 + o.k * z)).max()) <= tol
+        if self.kind == "torus":
+            return abs(self.R - o.R) <= tol and abs(self.r - o.r) <= tol and np.linalg.norm(self.c - o.c) <= tol
+        return np.linalg.norm(self.c - o.c) <= tol and abs(self.r - o.r) <= tol
+
+
+class AxisCylinder(_OnAxis, Cylinder):
+    pass
+
+
+class AxisCone(_OnAxis, Cone):
+    pass
+
+
+class AxisTorus(_OnAxis, Torus):
+    pass
+
+
+class AxisSphere(_OnAxis, Sphere):
+    pass
+
+
+STRAIGHT_SLOPE = 1e-4   # a line profile this close to parallel to its axis is a cylinder's
+
+
+def on_axis(kind, a, d, P, W=None):
+    """A cylinder, cone, torus or sphere (kind) about the axis through a along
+    d, fitted to points P (weights W): only the profile is free, so a narrow
+    band's few corners are enough. None when the points can't give it (no
+    height to slope over, a circle that doesn't keep clear of the axis)."""
+    d = unit(np.asarray(d, float))
+    a = np.asarray(a, float)
+    a = a - (a @ d) * d
+    rho, z = _profile_coords(a, d, P)
+    w = _norm_w(W, len(P))
+    if kind in ("cylinder", "cone"):
+        if kind == "cone" and np.ptp(z) <= EPS * max(1.0, float(np.abs(z).max())):
+            return None
+        if kind == "cylinder":
+            k, c0 = 0.0, float(np.average(rho, weights=w))
+        else:
+            k, c0 = np.polyfit(z, rho, 1, w=np.sqrt(w))
+            k, c0 = float(k), float(c0)
+        if abs(k) < STRAIGHT_SLOPE:
+            if kind == "cone":
+                return None     # (the cylinder is tried as itself)
+            p = AxisCylinder(a, d, c0)
+        else:
+            z0 = -c0 / k        # where the profile meets the axis: the apex
+            p = AxisCone(a + z0 * d, d if k > 0 else -d, float(np.arctan(abs(k))))
+        p.c0, p.k = c0, k
+    elif kind == "sphere":
+        # rho^2 + (z - zc)^2 = r^2, linear in zc and r^2 - zc^2
+        A = np.stack([2 * z, np.ones_like(z)], 1) * np.sqrt(w)[:, None]
+        b = (rho * rho + z * z) * np.sqrt(w)
+        (zc, e), *_ = np.linalg.lstsq(A, b, rcond=None)
+        r2 = e + zc * zc
+        if r2 <= 0:
+            return None
+        p = AxisSphere(a + zc * d, np.sqrt(r2))
+    else:
+        fc = fit_circle_2d(np.stack([rho, z], 1), W=W)
+        if fc is None:
+            return None
+        (rc, zc), r = fc
+        if rc <= 0.05 * r:
+            return None         # (Torus.degenerate: a spindle, nearly a sphere)
+        p = AxisTorus(a + zc * d, d, rc, r)
+    p.ka, p.kd = a, d
+    p.zr = np.array([z.min(), z.max()])
+    return p

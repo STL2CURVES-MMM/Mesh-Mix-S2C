@@ -1,15 +1,19 @@
-; Inno Setup script for Manifold Mesh Mix on Windows (built by desktop/build.py).
+; Inno Setup script for Mesh Mix-S2C on Windows (built by desktop/build.py).
 ;
 ; Installs for the current user only (no administrator password), so the
 ; app can update itself silently: it runs a newer installer with
 ; /SILENT /relaunch=1 and quits; this installer waits for it to close,
 ; replaces the files and starts it again.
 
-#define AppName "Manifold Mesh Mix"
+#define AppName "Mesh Mix-S2C"
 #define AppExe "ManifoldMeshMix.exe"
 #define AppMutex "ManifoldMeshMixRunning"
 #ifndef AppVersion
   #define AppVersion "0.0.0"
+#endif
+#ifndef AppNumVersion
+  ; Windows' version field takes numbers only ("2.0.0" for "2.0.0-test.1")
+  #define AppNumVersion "0.0.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\dist-desktop\ManifoldMeshMix"
@@ -29,11 +33,11 @@ AppId={{6B7D3C2A-4E1F-4C8B-9A5E-2F0D8C1B7E43}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher=Tuna-The-First
-AppPublisherURL=https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix
-AppSupportURL=https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix
-AppUpdatesURL=https://github.com/TUNA-THE-FIRST/Manifold-Mesh-Mix/releases
-VersionInfoVersion={#AppVersion}
+AppPublisher=STL2CURVES-MMM
+AppPublisherURL=https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C
+AppSupportURL=https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C
+AppUpdatesURL=https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C/releases
+VersionInfoVersion={#AppNumVersion}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -42,7 +46,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
-OutputBaseFilename=ManifoldMeshMix-{#AppVersion}-Windows-x64-Setup
+OutputBaseFilename=MeshMix-S2C-{#AppVersion}-Windows-x64-Setup
 SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
@@ -65,6 +69,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; an update replaces the program's libraries completely (no leftovers of the old version)
 Type: filesandordirs; Name: "{app}\_internal"
 Type: filesandordirs; Name: "{app}\engine"
+; the shortcuts of 1.x, from before the app was renamed (the new ones replace them)
+Type: files; Name: "{autoprograms}\Manifold Mesh Mix.lnk"
+Type: files; Name: "{autodesktop}\Manifold Mesh Mix.lnk"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

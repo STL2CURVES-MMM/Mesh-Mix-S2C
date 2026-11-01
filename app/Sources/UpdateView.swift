@@ -7,6 +7,8 @@ struct UpdateView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: Settings
 
+    @State private var showCredits = false
+
     private var state: Updater.State { updater.state }
 
     var body: some View {
@@ -41,6 +43,9 @@ struct UpdateView: View {
                     .tint(settings.accent.color)
             }
             HStack(spacing: 8) {
+                Button("Credits") { showCredits = true }
+                    .buttonStyle(GhostButtonStyle())
+                    .help("Who makes Mesh Mix-S2C, and its supporters")
                 if updater.release != nil || state == .failed {
                     Button("Open Download Page") {
                         NSWorkspace.shared.open(updater.release?.pageURL ?? Updater.releasesPage)
@@ -76,7 +81,10 @@ struct UpdateView: View {
         .background(Theme.panel)
         .foregroundStyle(Theme.text)
         .tint(settings.accent.color)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(settings.theme.scheme)
+        .sheet(isPresented: $showCredits) {
+            CreditsView().environmentObject(settings)
+        }
         .onChange(of: updater.state) { _, new in
             if new == .ready { installNow() }
         }
@@ -98,7 +106,7 @@ struct UpdateView: View {
         let current = Updater.currentVersion
         switch state {
         case .idle, .checking: return "You have version \(current)."
-        case .current: return "Version \(current) is the newest version of Manifold Mesh Mix for macOS."
+        case .current: return "Version \(current) is the newest version of Mesh Mix-S2C for macOS."
         case .available:
             if let p = updater.installProblem { return "You have version \(current). \(p)" }
             return "You have version \(current). Install and Restart downloads it, checks it, installs it and opens the app again."

@@ -1,14 +1,17 @@
 import SwiftUI
 
-/// Visual language shared with the "Manifold" family of tools:
-/// near-black surfaces, hairline borders, one vivid accent.
+/// Visual language shared with the Windows and Linux app: calm surfaces,
+/// hairline borders, one accent. Four themes (Dark, the default; Light;
+/// Original, 1.6.0's look; Match system), all with the same layout and corners.
 enum AccentChoice: String, CaseIterable, Identifiable {
-    case cyan, mint, violet, orange, pink, lime
+    case matte, cyan, mint, violet, orange, pink, lime
 
     var id: String { rawValue }
 
-    var color: Color {
+    /// The colour as chosen (for big fills, and the picker's dots).
+    var baseColor: Color {
         switch self {
+        case .matte: return Color(red: 0x7F / 255.0, green: 0xB4 / 255.0, blue: 0xD9 / 255.0)
         case .cyan: return Color(red: 0.13, green: 0.83, blue: 0.93)
         case .mint: return Color(red: 0.20, green: 0.93, blue: 0.68)
         case .violet: return Color(red: 0.62, green: 0.45, blue: 1.00)
@@ -18,31 +21,138 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The colour in the current theme: on Light, pale accents get a deeper
+    /// shade for text, outlines and thin lines (matte blue its own darker one,
+    /// the others about a third black).
+    var color: Color {
+        guard Theme.palette.light else { return baseColor }
+        if self == .matte { return Color(red: 0x3F / 255.0, green: 0x7F / 255.0, blue: 0xB3 / 255.0) }
+        let c = NSColor(baseColor).usingColorSpace(.sRGB) ?? NSColor(baseColor)
+        return Color(red: Double(c.redComponent) * 0.66, green: Double(c.greenComponent) * 0.66,
+                     blue: Double(c.blueComponent) * 0.66)
+    }
+
     var nsColor: NSColor { NSColor(color) }
 
     /// The color that marks the preset Auto chose: one that stands apart
     /// from the accent color.
     var autoPick: Color { (self == .violet || self == .pink) ? AccentChoice.mint.color : AccentChoice.violet.color }
 
-    var title: String { rawValue.capitalized }
+    var title: String { self == .matte ? "Matte blue" : rawValue.capitalized }
+}
+
+enum ThemeChoice: String, CaseIterable, Identifiable {
+    case dark, light, original, system
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dark: return "Dark"
+        case .light: return "Light"
+        case .original: return "Original"
+        case .system: return "Match system"
+        }
+    }
+
+    /// The palette this choice stands for (Match system: the computer's
+    /// own dark or light setting).
+    func palette(systemDark: Bool) -> Palette {
+        switch self {
+        case .dark: return .dark
+        case .light: return .light
+        case .original: return .original
+        case .system: return systemDark ? .dark : .light
+        }
+    }
+
+    /// The colour scheme windows and system controls use (nil: the system's).
+    var scheme: ColorScheme? {
+        switch self {
+        case .light: return .light
+        case .system: return nil
+        default: return .dark
+        }
+    }
+}
+
+private func hex(_ v: Int, _ a: Double = 1) -> Color {
+    Color(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255).opacity(a)
+}
+
+private func nsHex(_ v: Int) -> NSColor {
+    NSColor(red: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+            blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+}
+
+/// Every colour of a theme.
+struct Palette: Equatable {
+    let name: String
+    let light: Bool
+    let bg, panel, card, cardHover, stroke, strokeStrong, text, textDim, textFaint, good, warn, bad: Color
+    let viewportTop, viewportBottom: NSColor
+
+    static func == (a: Palette, b: Palette) -> Bool { a.name == b.name }
+
+    static let dark = Palette(
+        name: "dark", light: false, bg: hex(0x0E1116), panel: hex(0x141920), card: hex(0x1A2029),
+        cardHover: hex(0x212936), stroke: Color.white.opacity(0.08), strokeStrong: Color.white.opacity(0.15),
+        text: hex(0xE8EDF3), textDim: hex(0x9AA6B4), textFaint: hex(0x66717F),
+        good: hex(0x5CC98A), warn: hex(0xE3B04F), bad: hex(0xE06B6E),
+        viewportTop: nsHex(0x1A2029), viewportBottom: nsHex(0x0B0E12))
+
+    static let light = Palette(
+        name: "light", light: true, bg: hex(0xEEF1F5), panel: hex(0xF6F8FA), card: hex(0xFFFFFF),
+        cardHover: hex(0xF1F4F8), stroke: Color.black.opacity(0.08), strokeStrong: Color.black.opacity(0.15),
+        text: hex(0x1A1F26), textDim: hex(0x5A6573), textFaint: hex(0x8B95A2),
+        good: hex(0x1E9E57), warn: hex(0xB7791F), bad: hex(0xD64545),
+        viewportTop: nsHex(0xF4F6F9), viewportBottom: nsHex(0xDCE2E9))
+
+    /// Manifold Mesh Mix 1.6.0's look, colour for colour.
+    static let original = Palette(
+        name: "original", light: false, bg: Color(red: 0.039, green: 0.043, blue: 0.055),
+        panel: Color(red: 0.063, green: 0.070, blue: 0.086), card: Color(red: 0.090, green: 0.098, blue: 0.118),
+        cardHover: Color(red: 0.115, green: 0.125, blue: 0.150), stroke: Color.white.opacity(0.07),
+        strokeStrong: Color.white.opacity(0.14), text: Color.white.opacity(0.93), textDim: Color.white.opacity(0.58),
+        textFaint: Color.white.opacity(0.36), good: Color(red: 0.30, green: 0.88, blue: 0.55),
+        warn: Color(red: 1.00, green: 0.75, blue: 0.25), bad: Color(red: 1.00, green: 0.38, blue: 0.40),
+        viewportTop: NSColor(red: 0.085, green: 0.092, blue: 0.112, alpha: 1),
+        viewportBottom: NSColor(red: 0.035, green: 0.038, blue: 0.048, alpha: 1))
 }
 
 enum Theme {
-    static let bg = Color(red: 0.039, green: 0.043, blue: 0.055)
-    static let panel = Color(red: 0.063, green: 0.070, blue: 0.086)
-    static let card = Color(red: 0.090, green: 0.098, blue: 0.118)
-    static let cardHover = Color(red: 0.115, green: 0.125, blue: 0.150)
-    static let stroke = Color.white.opacity(0.07)
-    static let strokeStrong = Color.white.opacity(0.14)
-    static let text = Color.white.opacity(0.93)
-    static let textDim = Color.white.opacity(0.58)
-    static let textFaint = Color.white.opacity(0.36)
-    static let good = Color(red: 0.30, green: 0.88, blue: 0.55)
-    static let warn = Color(red: 1.00, green: 0.75, blue: 0.25)
-    static let bad = Color(red: 1.00, green: 0.38, blue: 0.40)
+    /// The current theme's colours. ContentView sets it from the settings and
+    /// rebuilds its views when it changes, so everything reads the new one.
+    static var palette: Palette = .dark
 
-    static let viewportTop = NSColor(red: 0.085, green: 0.092, blue: 0.112, alpha: 1)
-    static let viewportBottom = NSColor(red: 0.035, green: 0.038, blue: 0.048, alpha: 1)
+    static var bg: Color { palette.bg }
+    static var panel: Color { palette.panel }
+    static var card: Color { palette.card }
+    static var cardHover: Color { palette.cardHover }
+    static var stroke: Color { palette.stroke }
+    static var strokeStrong: Color { palette.strokeStrong }
+    static var text: Color { palette.text }
+    static var textDim: Color { palette.textDim }
+    static var textFaint: Color { palette.textFaint }
+    static var good: Color { palette.good }
+    static var warn: Color { palette.warn }
+    static var bad: Color { palette.bad }
+
+    static var viewportTop: NSColor { palette.viewportTop }
+    static var viewportBottom: NSColor { palette.viewportBottom }
+
+    /// A hairline or wash of the text's own colour: white on the dark themes,
+    /// black on Light (white washes would vanish on a light background).
+    static func ink(_ a: Double) -> Color { palette.light ? Color.black.opacity(a) : Color.white.opacity(a) }
+
+    /// Text and marks drawn on an accent fill.
+    static var onAccent: Color { palette.light ? Color.white : Color.black }
+
+    // Corner radii, the same in every theme: softened squares rather than pills
+    static let rBig: CGFloat = 8      // cards, panels, dialogs
+    static let rMed: CGFloat = 6      // banners, pills, list rows, overlays
+    static let rSmall: CGFloat = 4    // buttons, inputs, menus
+    static let rTiny: CGFloat = 2     // progress bars
 
     static func mono(_ size: CGFloat = 11, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
@@ -58,11 +168,11 @@ struct CardBackground: ViewModifier {
         content
             .padding(padding)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rBig, style: .continuous)
                     .fill(highlighted ? Theme.cardHover : Theme.card)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rBig, style: .continuous)
                     .strokeBorder(highlighted ? accent.opacity(0.85) : Theme.stroke, lineWidth: highlighted ? 1.2 : 1)
             )
     }
@@ -99,11 +209,12 @@ struct Pill: View {
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .foregroundStyle(filled ? Color.black.opacity(0.85) : color)
+        .foregroundStyle(filled ? Theme.onAccent.opacity(0.85) : color)
         .background(
-            Capsule().fill(filled ? color : color.opacity(0.12))
+            RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).fill(filled ? color : color.opacity(0.12))
         )
-        .overlay(Capsule().strokeBorder(color.opacity(filled ? 0 : 0.25), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
+            .strokeBorder(color.opacity(filled ? 0 : 0.25), lineWidth: 1))
     }
 }
 
@@ -119,14 +230,14 @@ struct AccentButtonStyle: ButtonStyle {
             .padding(.vertical, 9)
             .padding(.horizontal, 14)
             .frame(maxWidth: .infinity)
-            .foregroundStyle(prominent ? Color.black.opacity(isEnabled ? 0.88 : 0.5) : accent)
+            .foregroundStyle(prominent ? Theme.onAccent.opacity(isEnabled ? 0.88 : 0.5) : accent)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rSmall, style: .continuous)
                     .fill(prominent ? accent.opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.3)
                                     : accent.opacity(configuration.isPressed ? 0.22 : 0.12))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rSmall, style: .continuous)
                     .strokeBorder(prominent ? Color.clear : accent.opacity(0.35), lineWidth: 1)
             )
             .shadow(color: prominent && isEnabled ? accent.opacity(0.35) : .clear, radius: 10, y: 2)
@@ -144,10 +255,10 @@ struct GhostButtonStyle: ButtonStyle {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.white.opacity(configuration.isPressed ? 0.12 : 0.05))
+                RoundedRectangle(cornerRadius: Theme.rSmall, style: .continuous)
+                    .fill(Theme.ink(configuration.isPressed ? 0.12 : 0.05))
             )
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.stroke))
+            .overlay(RoundedRectangle(cornerRadius: Theme.rSmall, style: .continuous).strokeBorder(Theme.stroke))
             .contentShape(Rectangle())
     }
 }
@@ -162,7 +273,7 @@ struct ThinProgress: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.07))
+                Capsule().fill(Theme.ink(0.07))
                 if indeterminate {
                     Capsule()
                         .fill(LinearGradient(colors: [accent.opacity(0), accent, accent.opacity(0)], startPoint: .leading, endPoint: .trailing))

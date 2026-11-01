@@ -116,9 +116,7 @@ def main(argv=None):
     from .settings import Settings
 
     settings = Settings()
-    theme.set_accent(settings.accent)
-    app.setPalette(theme.palette())
-    app.setStyleSheet(theme.stylesheet())
+    theme.install(app, settings)
     window = MainWindow(settings)
     # kept alive with the window: the installer waits for the mutex to go,
     # the server receives files opened while the app runs

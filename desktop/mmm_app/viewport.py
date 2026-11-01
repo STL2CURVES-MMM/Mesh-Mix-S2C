@@ -194,8 +194,12 @@ class Viewport(QOpenGLWidget):
         self.message = QLabel(self)
         self.message.setWordWrap(True)
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.message.setStyleSheet(f"color: {theme.css(theme.TEXT_DIM)}; background: transparent; font-size: 12px;")
+        self.retheme()
         self.message.hide()
+
+    def retheme(self):
+        self.message.setStyleSheet(f"color: {theme.css(theme.TEXT_DIM)}; background: transparent; font-size: 12px;")
+        self.update()
 
     # ------------------------------------------------------------------ public
 

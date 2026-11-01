@@ -7,7 +7,10 @@ from PySide6.QtSvg import QSvgRenderer
 
 _S = 'fill="none" stroke="{c}" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"'
 _F = 'fill="{c}" stroke="none"'
-_DARK = "#0b0c0e"
+# the mark cut out of a filled icon (the check in a filled circle): near-black on the
+# dark themes, white on Light, where the fills are deeper (set by theme.apply_theme)
+KNOCKOUT = "#0b0c0e"
+_DARK = "{k}"
 
 PATHS = {
     "plus": f'<path {_S} d="M12 5v14M5 12h14"/>',
@@ -79,12 +82,16 @@ PATHS = {
     "chevron-right": f'<path {_S} d="M9 6l6 6-6 6"/>',
     "chevron-up": f'<path {_S} d="M6 15l6-6 6 6"/>',
     "dot": f'<circle {_F} cx="12" cy="12" r="5"/>',
+    "gear": f'<circle {_S} cx="12" cy="12" r="3"/><path {_S} d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4'
+            f'M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>'
+            f'<circle {_S} cx="12" cy="12" r="6.6"/>',
+    "heart": f'<path {_S} d="M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z"/>',
     "info": f'<circle {_S} cx="12" cy="12" r="9"/><path {_S} d="M12 11v5.5"/><circle {_F} cx="12" cy="7.6" r="1.3"/>',
 }
 
 
 def svg(name, color, weight=2.0):
-    body = PATHS[name].replace("{c}", color).replace("{w}", f"{weight:g}")
+    body = PATHS[name].replace("{c}", color).replace("{w}", f"{weight:g}").replace("{k}", KNOCKOUT)
     return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">{body}</svg>'
 
 
@@ -97,7 +104,7 @@ def pixmap(name, color, size, dpr=2.0, weight=2.0):
         c, opacity = color, 1.0
     else:
         c, opacity = color.name(), color.alphaF()  # "#rrggbb" + painter opacity
-    key = (name, c, round(size * dpr), round(opacity, 3), weight)
+    key = (name, c, round(size * dpr), round(opacity, 3), weight, KNOCKOUT)
     pm = _cache.get(key)
     if pm is None:
         px = max(1, round(size * dpr))

@@ -1,3 +1,5 @@
+# From Manifold Mesh Mix 1.6.0 (desktop/tests/test_engine_repair.py, AGPL-3.0), changed for this fork:
+# the engine is imported as mmm, from engine/ (Mesh-Mix-S2C).
 """The engine's automatic STEP repair (engine/mmm/repair.py)."""
 import os
 import sys

@@ -83,7 +83,7 @@ def write_3mf(path, parts):
 def write_stl(path, tris):
     """Binary STL (normals left at zero: readers work them out)."""
     with open(path, "wb") as fh:
-        fh.write(b"Manifold Mesh Mix test file".ljust(80, b" "))
+        fh.write(b"Mesh Mix-S2C test file".ljust(80, b" "))
         fh.write(struct.pack("<I", len(tris)))
         for t in tris:
             fh.write(struct.pack("<12fH", 0, 0, 0, *t[0], *t[1], *t[2], 0))

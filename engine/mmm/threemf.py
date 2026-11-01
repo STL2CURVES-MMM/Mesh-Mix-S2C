@@ -15,6 +15,14 @@ converted once, in the part's original orientation (the slicer's plate
 placement is removed), with any scaling done in the slicer kept. Each part
 becomes its own named body.
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-26 for the stl2curves merged engine: limits against files that ask for
+# more memory than any real project (MAX_MODEL_BYTES, MAX_VERTICES, MAX_TRIANGLES,
+# MAX_PIECES: a 2 kB file of components nested ten deep took 12 GB in 60 s), numbers kept
+# in flat arrays while parsing (a vertex as a tuple of strings took ~300 bytes, now 24),
+# and triangle corners checked against the vertex list (a negative index counted back
+# from the end and made up triangles).
+import array
 import os
 import re
 import zipfile
@@ -48,6 +56,18 @@ NEGATIVE_PART_TYPES = {"negative_part", "negativevolume"}
 
 class ThreeMFError(Exception):
     pass
+
+
+# Limits far above real projects (the biggest slicer projects seen hold a few million
+# triangles), below what would take the machine's memory:
+MAX_MODEL_BYTES = 4 << 30       # one .model file, unpacked (bytes)
+MAX_VERTICES = 50_000_000       # vertices in one .model file
+MAX_TRIANGLES = 50_000_000      # triangles over all parts, every component copy counted
+MAX_PIECES = 100_000            # meshes placed, every component copy counted
+MAX_VISITS = 1_000_000          # objects visited expanding the components (meshes or not)
+
+_TOO_BIG = ("This 3MF project is too big to convert: {what}. Split it into smaller projects, or export the parts "
+            "you need as STL files.")
 
 
 class Part:
@@ -84,13 +104,20 @@ class _ModelFile:
         self.objects = {}
         self.build = []
         self.unit = 1.0
+        self.n_vertices = 0
+        try:
+            size = zf.getinfo(path.lstrip("/")).file_size
+        except KeyError:
+            size = 0        # (zf.open below says it's missing)
+        if size > MAX_MODEL_BYTES:
+            raise ThreeMFError(_TOO_BIG.format(what=f"its model file unpacks to {size / 2**30:.1f} GB"))
         with zf.open(path.lstrip("/")) as fh:
             self._parse(fh)
 
     def _parse(self, fh):
         cur = None
-        verts = []
-        tris = []
+        verts = array.array("d")
+        tris = array.array("q")
         comps = []
         for event, el in ET.iterparse(fh, events=("start", "end")):
             tag = el.tag
@@ -99,13 +126,17 @@ class _ModelFile:
                     self.unit = UNIT_MM.get(el.get("unit", "millimeter"), 1.0)
                 elif tag == CORE + "object":
                     cur = dict(el.attrib)
-                    verts, tris, comps = [], [], []
+                    verts, tris, comps = array.array("d"), array.array("q"), []
                 continue
             # end events
             if tag == CORE + "vertex":
-                verts.append((el.get("x"), el.get("y"), el.get("z")))
+                # (a missing or broken number raises here: the reader calls the file damaged)
+                verts.extend((float(el.get("x")), float(el.get("y")), float(el.get("z"))))
+                self.n_vertices += 1
+                if self.n_vertices > MAX_VERTICES:
+                    raise ThreeMFError(_TOO_BIG.format(what=f"more than {MAX_VERTICES:,} vertices"))
             elif tag == CORE + "triangle":
-                tris.append((el.get("v1"), el.get("v2"), el.get("v3")))
+                tris.extend((int(el.get("v1")), int(el.get("v2")), int(el.get("v3"))))
             elif tag == CORE + "component":
                 comps.append(
                     {
@@ -118,8 +149,11 @@ class _ModelFile:
                 oid = cur.get("id")
                 entry = {"attrib": cur, "mesh": None, "components": comps}
                 if verts and tris:
-                    V = np.array(verts, dtype=np.float64)
-                    T = np.array(tris, dtype=np.int64)
+                    V = np.frombuffer(verts, dtype=np.float64).reshape(-1, 3)
+                    T = np.frombuffer(tris, dtype=np.int64).reshape(-1, 3)
+                    if T.min() < 0 or T.max() >= len(V):
+                        raise ThreeMFError("This 3MF file is damaged: some of its triangles use corners that "
+                                           "aren't in it. Try exporting it again.")
                     entry["mesh"] = (V, T)
                 self.objects[oid] = entry
                 cur = None
@@ -278,12 +312,28 @@ def read_3mf(path, layout="parts", report=None):
         root = model_file(main)
         cfg_names, cfg_parts, prusa_volumes, cfg_offsets = _read_config(zf)
         unit = root.unit
+        placed = {"pieces": 0, "triangles": 0, "visits": 0}
+
+        def budget(n_tris):
+            """Count one more mesh placed, before its corners are copied: components
+            can place a mesh in many copies, nested many deep (each level multiplies)."""
+            placed["pieces"] += 1
+            placed["triangles"] += n_tris
+            if placed["pieces"] > MAX_PIECES:
+                raise ThreeMFError(_TOO_BIG.format(what=f"its components place more than {MAX_PIECES:,} meshes"))
+            if placed["triangles"] > MAX_TRIANGLES:
+                raise ThreeMFError(_TOO_BIG.format(what=f"its parts hold more than {MAX_TRIANGLES:,} triangles"))
 
         def expand(mf, oid, M, top_oid, depth=0):
             """Yield (tris, name, part_type) for an object, recursing into
             components. ``top_oid`` is the build-level object id."""
             if depth > 16:
                 return
+            # (components that place nothing still multiply: ten each, nested to the depth
+            # limit, would be visited 1e16 times)
+            placed["visits"] += 1
+            if placed["visits"] > MAX_VISITS:
+                raise ThreeMFError(_TOO_BIG.format(what=f"its components nest more than {MAX_VISITS:,} copies"))
             obj = mf.objects.get(oid)
             if obj is None:
                 return
@@ -292,6 +342,7 @@ def read_3mf(path, layout="parts", report=None):
                 return
             if obj["mesh"] is not None:
                 V, T = obj["mesh"]
+                budget(len(T))
                 Vt = _apply(M, V)
                 if layout == "parts" and (top_oid, oid) in cfg_offsets:
                     # Bambu/Orca centre imported meshes and remember by how

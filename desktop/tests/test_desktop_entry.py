@@ -10,7 +10,7 @@ pytestmark = pytest.mark.skipif(not desktop_entry.system.IS_LINUX, reason="Linux
 
 @pytest.fixture
 def appimage(tmp_path, monkeypatch):
-    a = tmp_path / "My Apps" / "Manifold Mesh Mix.AppImage"
+    a = tmp_path / "My Apps" / "Mesh Mix-S2C.AppImage"
     a.parent.mkdir()
     a.write_bytes(b"x")
     monkeypatch.setenv("APPIMAGE", str(a))

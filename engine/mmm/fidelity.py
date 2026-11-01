@@ -20,6 +20,19 @@ largest gap, how much of the surface faces the wrong way, and where the
 worst spot is, so a conversion can be rejected (and another method tried)
 before it is saved.
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-25 for the stl2curves merged engine: tessellate() meshes each face from
+# a copy of its own (no edges shared, copied in memory after one round trip), 166x quicker
+# on one body where OpenCASCADE ground on. The KD-tree queries use every core (workers=-1;
+# the same answers).
+# Modified 2026-10-28: Verdict.summary names a failure by direction ("faces the wrong way",
+# "inside out"): before, a shape that failed only that way was reported as "100.0% of the
+# surface is within 0.077 mm ... which isn't close enough".
+# Modified 2026-10-28 (b2): chord_deflection and local_deflection count a bend as
+# curvature only where the curve goes on through the flat facets on both sides
+# (_bend_continues): a lone crease (a 30-degree chamfer between two big flat faces) made a
+# CAD part finely meshed elsewhere look tessellated to 0.24 mm (toolbox bottom and top),
+# so the engine took a bulging freeform face across the crease for right.
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -27,6 +40,13 @@ from scipy.spatial import cKDTree
 # than this from the mesh (faceted meshes of round shapes differ by a few
 # degrees; real wrinkles and dents by much more)
 WRONG_WAY_DEG = 30.0
+# triangles whose directions differ by less than this (degrees) belong to one flat facet
+# when telling a lone crease from curvature (see _bend_continues)
+FACET_DEG = 0.5
+# degrees: a bend continues through a flat facet of two triangles or more when the facet
+# also bends towards another one about an axis within this of the first bend's, the same
+# way round (a curve keeps turning; a coarse cylinder's strips bend about parallel axes)
+CONTINUE_DEG = 65.0
 
 
 def _round_trip(shape):
@@ -196,13 +216,25 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
     # and meshed as it is: coarsely, and its distances from the mesh show
     # what it is
     blown = [face_blown_up(f) for f in faces]
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
     B = BRep_Builder()
     comp = TopoDS_Compound()
     B.MakeCompound(comp)
     for f, b in zip(faces, blown):
         if not b:
             B.Add(comp, f)
-    copy = _round_trip(comp)
+    # (read back once, then each face copied on its own, so no edge is shared: meshed with
+    # their edges shared at 1e-7, 86 faces of the companion enclosure's merged CAD faces
+    # took OpenCASCADE 665 s where one by one they took 10 s, and copied apart 4 s in one
+    # call; the distances need no shared edges, see Surface and its _refine. A file round
+    # trip per face cost test12 35 s; in memory the copies are the same, 14x quicker)
+    copy = TopoDS_Compound()
+    B.MakeCompound(copy)
+    ex = TopExp_Explorer(_round_trip(comp), TopAbs_FACE)
+    while ex.More():
+        B.Add(copy, BRepBuilderAPI_Copy(ex.Current(), True, False).Shape())
+        ex.Next()
     ShapeFix_ShapeTolerance().SetTolerance(copy, 1e-7)
     # (edges further off than ``loose`` keep their real distance as
     # tolerance; None leaves every edge at 1e-7, as the build loop needs:
@@ -316,17 +348,98 @@ def chord_deflection(N, A, f, g, L, tiny=None):
     percentiles are weighted by edge length (a crease often has only a few
     tiny edges).
 
+    Lone creases are not curvature either: a chamfer between two big flat
+    faces bends by 30 degrees once, and with the faces' heights its sagitta
+    was 0.24 mm on a part meshed to 0.03 mm everywhere else (a toolbox
+    bottom), which made it "coarse" and let a freeform face bulge 0.4 mm
+    across the chamfer. Curvature goes on: the flat facets on both sides of
+    the edge bend again the same way round (_bend_continues).
+
     Returns (typical, high): the 95th and 99.5th percentiles."""
     th = np.arccos(np.clip((N[f] * N[g]).sum(1), -1, 1))
     smooth = (th > np.radians(1.0)) & (th < np.radians(40.0))
     if tiny is not None:
         smooth &= ~tiny[f] & ~tiny[g]
+    smooth &= _bend_continues(N, A, f, g, th, smooth)
     if smooth.sum() < 10:
         return 0.0, 0.0
     Ls = np.maximum(L, 1e-30)
     sag = np.minimum(2 * A[f] / Ls, 2 * A[g] / Ls) * th / 8.0
     return (weighted_percentile(sag[smooth], L[smooth], 95),
             weighted_percentile(sag[smooth], L[smooth], 99.5))
+
+
+def _bend_continues(N, A, f, g, th, bent):
+    """For each edge between triangles ``f`` and ``g`` (dihedral angle
+    ``th``), whether its bend is part of a curve: only where ``bent``, and
+    only where the flat facets on both sides (triangles joined across edges
+    under FACET_DEG) each bend again, towards another facet, about an axis
+    within CONTINUE_DEG of this edge's and the same way round. A coarse
+    cylinder's strips bend to the strip before and the strip after; a
+    sphere's triangles about axes 60 degrees apart; but a chamfer between
+    two flat faces turns once, and the faces beyond it don't go on turning
+    (they may bend elsewhere, into a fillet at a corner, about another axis).
+
+    Each bend's axis (n_f x n_g, the turn from f's side to g's) is listed at
+    both facets as a turn into them; along a curve the facet before turns
+    into f's facet about the same axis, and g's facet turns on into the next
+    the same way, which is a turn into g's facet about the opposite axis.
+    (An edge's own entries point the opposite way at each end, so they never
+    count for themselves.)"""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    out = np.zeros(len(f), dtype=bool)
+    if not bent.any():
+        return out
+    nt = len(N)
+    flat = th < np.radians(FACET_DEG)
+    _, fac = connected_components(coo_matrix((np.ones(int(flat.sum()), dtype=np.int8), (f[flat], g[flat])),
+                                             shape=(nt, nt)), directed=False)
+    FN = np.zeros((fac.max() + 1, 3))
+    np.add.at(FN, fac, N * np.asarray(A, float)[:, None])
+    FN /= np.maximum(np.linalg.norm(FN, axis=1), 1e-30)[:, None]
+    e = np.nonzero(bent & (fac[f] != fac[g]))[0]
+    if not len(e):
+        return out
+    u = np.cross(N[f[e]], N[g[e]])
+    u /= np.maximum(np.linalg.norm(u, axis=1), 1e-30)[:, None]
+    p, q = fac[f[e]], fac[g[e]]
+    # each facet's turns as angles in its own plane
+    ref = np.where(np.abs(FN[:, :1]) < 0.9, [[1.0, 0.0, 0.0]], [[0.0, 1.0, 0.0]])
+    e1 = np.cross(FN, ref)
+    e1 /= np.maximum(np.linalg.norm(e1, axis=1), 1e-30)[:, None]
+    e2 = np.cross(FN, e1)
+    two_pi = 2 * np.pi
+
+    def angle(at, axis):
+        return np.mod(np.arctan2((axis * e2[at]).sum(1), (axis * e1[at]).sum(1)), two_pi)
+
+    # turns into each facet: p -> q (axis u) into q, q -> p (axis -u) into p
+    at = np.r_[q, p]
+    key = np.sort(at * 8.0 + angle(at, np.r_[u, -u]))
+    half = np.radians(CONTINUE_DEG)
+
+    def any_within(fc, axis):
+        phi = angle(fc, axis)
+        base = fc * 8.0
+        n = np.zeros(len(fc), dtype=np.int64)
+        none = np.full(len(fc), 7.0)     # (an empty window: past every angle, short of the next facet)
+        wrap_lo, wrap_hi = phi - half < 0, phi + half > two_pi
+        for lo, hi in ((np.maximum(phi - half, 0.0), np.minimum(phi + half, two_pi)),
+                       (np.where(wrap_lo, phi - half + two_pi, none), np.where(wrap_lo, two_pi, none)),
+                       (np.where(wrap_hi, 0.0, none), np.where(wrap_hi, phi + half - two_pi, none))):
+            n += np.searchsorted(key, base + hi, side="right") - np.searchsorted(key, base + lo, side="left")
+        return n > 0
+
+    # (a single triangle says nothing: on a triangulated sphere or blob its turns run
+    # about its three edges, as far apart as its corners are sharp, 90 degrees at a
+    # quad's split; only flat facets of two triangles or more, a quad or a flat face,
+    # can show that the bend stops. cad_hollow_sphere's cavity lost 28% of its bends
+    # and its deflection fell 0.042 -> 0.034, leaving six of its long triangles off it)
+    single = np.bincount(fac)[:FN.shape[0]] < 2
+    out[e] = (single[p] | any_within(p, u)) & (single[q] | any_within(q, -u))
+    return out
 
 
 def mesh_deflection(V, F):
@@ -378,7 +491,10 @@ def local_deflection(V, F):
     f, g = a // 3, b // 3
     N, A = _tri_normals(V, F)
     th = np.arccos(np.clip((N[f] * N[g]).sum(1), -1.0, 1.0))
-    th = np.where((th > np.radians(1.0)) & (th < np.radians(40.0)), th, 0.0)
+    bent = (th > np.radians(1.0)) & (th < np.radians(40.0))
+    # (a lone crease is no coarseness either: see chord_deflection)
+    bent &= _bend_continues(N, A, f, g, th, bent)
+    th = np.where(bent, th, 0.0)
     # a flat triangle's centre stands off a curve bending by th along it by
     # about its longest edge * th / 6 (more than an edge's sagitta)
     T = V[F]
@@ -601,7 +717,7 @@ class Surface:
         V, F = self.V, self.F
         for s in range(0, len(P), chunk):
             Q = P[s:s + chunk]
-            _, idx = self.tree.query(Q, k=min(k, len(self.points)))
+            _, idx = self.tree.query(Q, k=min(k, len(self.points)), workers=-1)
             idx = np.atleast_2d(idx)
             if idx.shape[0] != len(Q):
                 idx = idx.T
@@ -656,7 +772,7 @@ class Surface:
             return
         tree, A, B, C, parent, rp = self._pieces()
         r = dist + rp * (1 + 1e-9) + 1e-12
-        counts = tree.query_ball_point(P, r, return_length=True)
+        counts = tree.query_ball_point(P, r, return_length=True, workers=-1)
         cum = np.cumsum(counts)
         start = 0
         while start < len(P):
@@ -666,7 +782,7 @@ class Surface:
             if end - start == 1 and counts[start] > max_pairs:
                 start = end  # (a point far from everything: the first answer stays)
                 continue
-            res = tree.query_ball_point(P[start:end], r[start:end], return_sorted=False)
+            res = tree.query_ball_point(P[start:end], r[start:end], return_sorted=False, workers=-1)
             lens = np.fromiter((len(x) for x in res), dtype=np.int64, count=len(res))
             if lens.sum():
                 k = np.fromiter(itertools.chain.from_iterable(res), dtype=np.int64, count=int(lens.sum()))
@@ -784,8 +900,14 @@ class Verdict:
         if r.get("empty"):
             return "the shape has no surface to compare with the mesh"
         within = 100.0 * r["within2"]
-        return (f"{within:.1f}% of the surface is within {2 * self.tol:.2g} {unit} of the mesh; "
-                f"largest gap {r['worst_distance']:.2g} {unit}")
+        out = (f"{within:.1f}% of the surface is within {2 * self.tol:.2g} {unit} of the mesh; "
+               f"largest gap {r['worst_distance']:.2g} {unit}")
+        ww = max(r.get("wrong_way", 0.0), r.get("wrong_way_shape", 0.0))
+        if ww > self.WRONG_WAY_MAX:
+            # (a failure by direction, which the distances don't show)
+            out += (f"; {100 * ww:.1f}% of it faces the wrong way, so the shape is inside out" if ww > 0.5 else
+                    f"; {100 * ww:.1f}% of it faces another way than the mesh (dents, wrinkles or flipped faces)")
+        return out
 
     def as_dict(self):
         r = self.r
@@ -942,7 +1064,7 @@ def _coherent(P, flags, rho, k=48):
     if not flags.any():
         return flags
     tree = cKDTree(P)
-    _, idx = tree.query(P[flags], k=min(k, len(P)), distance_upper_bound=rho)
+    _, idx = tree.query(P[flags], k=min(k, len(P)), distance_upper_bound=rho, workers=-1)
     idx = np.atleast_2d(idx)
     valid = idx < len(P)
     hit = np.where(valid, flags[np.minimum(idx, len(P) - 1)], False)

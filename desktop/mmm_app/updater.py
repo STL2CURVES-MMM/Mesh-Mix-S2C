@@ -3,9 +3,9 @@ releases.
 
 Every release carries one file per system and a SHA256SUMS.txt:
 
-    ManifoldMeshMix-<version>-Windows-x64-Setup.exe
-    ManifoldMeshMix-<version>-Linux-x86_64.AppImage
-    ManifoldMeshMix-<version>-macOS-arm64.zip
+    MeshMix-S2C-<version>-Windows-x64-Setup.exe
+    MeshMix-S2C-<version>-Linux-x86_64.AppImage
+    MeshMix-S2C-<version>-macOS-arm64.zip
 
 Windows runs the new installer silently (it installs for the current user
 only, so no administrator password is needed) and starts the app again.
@@ -51,8 +51,21 @@ def parse_version(s):
     return tuple(parts)
 
 
+def version_key(s):
+    """parse_version plus test builds: '2.0.0-test.2' comes after
+    '2.0.0-test.1' and before '2.0.0', so a tester is offered the release."""
+    base = parse_version(s)
+    if base is None:
+        return None
+    rest = re.sub(r"^\s*[vV]?\d+(?:\.\d+)*", "", s).strip()
+    if not rest.startswith("-"):
+        return base + (1, 0)
+    n = re.findall(r"\d+", rest)
+    return base + (0, int(n[-1]) if n else 0)
+
+
 def is_newer(latest, current=__version__):
-    a, b = parse_version(latest), parse_version(current)
+    a, b = version_key(latest), version_key(current)
     return a is not None and b is not None and a > b
 
 
@@ -130,6 +143,10 @@ def check():
     tag = data.get("tag_name") or ""
     if parse_version(tag) is None:
         raise UpdateError("The newest release has no version number the app understands.")
+    # test builds are GitHub pre-releases, which /releases/latest already skips;
+    # this guard keeps them from ever being offered even if one is mislabelled
+    if data.get("prerelease") or "-" in tag:
+        return None
     if not is_newer(tag):
         return None
     suffix = asset_suffix().lower()

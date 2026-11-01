@@ -1,14 +1,14 @@
 #!/bin/zsh
-# Build "Manifold Mesh Mix.app".
+# Build "Mesh Mix-S2C.app".
 #
 #   ./build.sh            build app + bundled engine
 #   ./build.sh --app      rebuild only the Swift app (reuse the engine build)
 #   ./build.sh --install  also copy the app to /Applications
-#   ./build.sh --zip      also make the release download (dist/ManifoldMeshMix-<version>-macOS-arm64.zip)
+#   ./build.sh --zip      also make the release download (dist/MeshMix-S2C-<version>-macOS-arm64.zip)
 set -euo pipefail
 ROOT="${0:A:h}"
 cd "$ROOT"
-APP_NAME="Manifold Mesh Mix"
+APP_NAME="Mesh Mix-S2C"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 PY="$ROOT/.venv/bin/python"
@@ -41,7 +41,10 @@ echo "==> Assembling bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp app/Info.plist "$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+# macOS wants plain numbers here, so a test build ("2.0.0-test.1") keeps its
+# full version in MMSFullVersion, which the updater reads
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION%%-*}" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :MMSFullVersion string $VERSION" "$APP/Contents/Info.plist"
 cp app/build/ManifoldMeshMix "$APP/Contents/MacOS/ManifoldMeshMix"
 cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp app/Resources/install-update.sh "$APP/Contents/Resources/install-update.sh"
@@ -57,7 +60,7 @@ echo "==> Smoke test"
 
 if [[ $ZIP -eq 1 ]]; then
   echo "==> Zipping the release download"
-  ZIPFILE="$DIST/ManifoldMeshMix-$VERSION-macOS-arm64.zip"
+  ZIPFILE="$DIST/MeshMix-S2C-$VERSION-macOS-arm64.zip"
   rm -f "$ZIPFILE"
   ditto -c -k --keepParent "$APP" "$ZIPFILE"
   echo "Built $ZIPFILE"

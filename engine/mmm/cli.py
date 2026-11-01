@@ -3,6 +3,15 @@
     mmm-engine convert INPUT [-o OUTPUT] [--preset auto|exact|cad|smooth] ...
     mmm-engine inspect INPUT [--preview FILE]
 """
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-26 for the stl2curves merged engine: the error messages are one
+# function, failure(), which mms2c/merged.py's command line shares, and they cover
+# the path and option checks (pipeline.PathError, pipeline.OptionError).
+# Modified 2026-10-26 for Mesh Mix-S2C: Auto and CAD on an STL go through the merged engine
+# (mms2c/merged.py: stl2curves' features seed this engine's CAD build, raced against
+# both programs alone); --engine mmm keeps this engine's own pipeline.
+# Modified 2026-10-31: every mesh format goes through the merged engine for Auto and CAD: 3MF
+# projects whole (laid out as on the plate) or split into parts, and OBJ, PLY and OFF files.
 import argparse
 import json
 import os
@@ -114,6 +123,15 @@ def _inspect(args, rep):
     rep.result(d)
 
 
+def _merged(args):
+    """Whether a conversion goes through the merged engine: Auto and CAD on any mesh (the
+    owners' choice, 2026-10-30/31): an STL, OBJ, PLY or OFF file, or a 3MF project whole as
+    on its plate or split into parts, one STEP per part. The Smooth and Precise presets, a
+    different method, stay this engine's own."""
+    return (args.engine == "merged" and args.preset in ("auto", "cad")
+            and args.input.lower().endswith((".stl", ".3mf", ".obj", ".ply", ".off")))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="mmm-engine", description="Manifold Mesh Mix STL to STEP engine")
     sub = p.add_subparsers(dest="cmd")
@@ -126,7 +144,8 @@ def main(argv=None):
     c.add_argument("--keep-debris", action="store_true")
     c.add_argument("--unit", default="mm", choices=["mm", "cm", "m", "in", "um", "ft"])
     c.add_argument("--tolerance", type=float, default=None, help="absolute fit tolerance (model units)")
-    c.add_argument("--quality", "--detail", dest="quality", type=float, default=0.7, help="0 = fastest, 1 = best quality")
+    c.add_argument("--quality", "--detail", dest="quality", type=float, default=None,
+                   help="0 = fastest, 1 = best quality (default: by the mesh's size for the merged engine, 0.7 otherwise)")
     c.add_argument("--layout", default="parts", choices=["parts", "plate"], help="3MF: one copy of each part, or the full build plate")
     c.add_argument("--max-faces", type=int, default=0)
     c.add_argument("--preview", default=None, help="write a preview file for the app")
@@ -135,6 +154,9 @@ def main(argv=None):
     c.add_argument("--part-output", action="append", default=[], help="with --split: output file for part 1, 2, ... (repeat)")
     c.add_argument("--part-preview", action="append", default=[], help="with --split: preview file for part 1, 2, ... (repeat)")
     c.add_argument("--json", action="store_true", help="JSON-lines progress on stdout")
+    c.add_argument("--engine", default="merged", choices=["merged", "mmm"],
+                   help="merged: stl2curves' features and this engine's CAD build, for Auto and CAD on an STL "
+                        "(the default); mmm: this engine's own pipeline")
 
     c.add_argument("--merge-overlaps", action="store_true", help="join overlapping pieces of a part into one solid")
     c.add_argument("--touching-parts", default="ask", choices=TOUCHING,
@@ -210,7 +232,7 @@ def main(argv=None):
             remove_debris=not args.keep_debris,
             unit=args.unit,
             tolerance=args.tolerance,
-            quality=args.quality,
+            quality=args.quality if args.quality is not None else 0.7,
             layout=args.layout,
             max_faces=args.max_faces,
             preview=args.preview,
@@ -221,52 +243,68 @@ def main(argv=None):
             merge_overlaps=args.merge_overlaps,
             touching_parts=args.touching_parts,
         )
-        res = convert(args.input, out, opts, rep)
+        if _merged(args):
+            from mms2c import merged
+
+            res = merged.convert_file(args.input, out, args.quality, rep, preset=args.preset, base=opts)
+        else:
+            res = convert(args.input, out, opts, rep)
         if not rep.json_mode:
             print(json.dumps({k: v for k, v in res.items() if k != "input"}, indent=1))
         return 0
     except Exception as e:  # report and exit non-zero
-        import errno
+        return failure(e, args.input, rep)
 
-        from .meshio import MeshError
-        from .pipeline import ConversionError
 
-        reason = None
-        if isinstance(e, (MeshError, ConversionError)):
-            msg = str(e)
-            reason = "The file itself is the problem, not the app."
-        elif isinstance(e, MemoryError):
-            msg = "Ran out of memory. Move the slider toward Faster, or convert fewer files at once (Advanced → Files at once)."
-        elif isinstance(e, FileNotFoundError) and os.path.exists(args.input):
-            msg = "The folder to save into couldn't be found. Was it moved or deleted?"
-            reason = "The app saves its files there, and it wasn't there any more."
-        elif isinstance(e, FileNotFoundError):
-            msg = "The file couldn't be found. Was it moved, renamed or deleted?"
-        elif isinstance(e, PermissionError):
-            system = "macOS" if sys.platform == "darwin" else "Windows" if sys.platform == "win32" else "Linux"
-            msg = f"{system} didn't allow reading this file or saving the STEP file in that folder. Choose another output folder in Save STEP files to."
-        elif isinstance(e, OSError) and e.errno == errno.ENOSPC:
-            msg = "The disk is full, so the STEP file couldn't be saved. Free up some space and convert again."
-        elif "STEP write failed" in str(e) or "STEP transfer failed" in str(e):
-            msg = "The STEP file couldn't be written. Check that the output folder still exists and has free space."
-        else:
-            msg = "Something went wrong while converting."
-            reason = ("This is a bug in the converter, not a problem with your file. "
-                      "Save a report and send it, so it can be fixed.")
-        if isinstance(e, MemoryError):
-            reason = "Very big or very detailed meshes need a lot of memory, and this one needed more than was free."
-        elif isinstance(e, FileNotFoundError) and not os.path.exists(args.input):
-            reason = "The app reads the file again when it converts it, and it wasn't there any more."
-        elif isinstance(e, PermissionError):
-            reason = "The system's file permissions blocked the app."
-        details = f"{type(e).__name__}: {e}\n" + traceback.format_exc()
-        if rep.json_mode:
-            rep.error(msg, reason=reason, details=details)
-            sys.stderr.write(traceback.format_exc())
-        else:
-            print(msg + (f" {reason}" if reason else ""), file=sys.stderr)
-            traceback.print_exc()
-        return 1
+def failure(e, input_path, rep):
+    """Report exception e, raised converting input_path, as a message for the user (a
+    JSON error event in JSON mode, with the details), and return the exit code (1)."""
+    import errno
+
+    from .meshio import MeshError
+    from .pipeline import ConversionError, OptionError, PathError
+
+    reason = None
+    if isinstance(e, (MeshError, ConversionError)):
+        msg = str(e)
+        reason = "The file itself is the problem, not the app."
+    elif isinstance(e, PathError):
+        msg = str(e)
+    elif isinstance(e, OptionError):
+        msg = str(e)
+        reason = "A setting is out of range."
+    elif isinstance(e, MemoryError):
+        msg = "Ran out of memory. Move the slider toward Faster, or convert fewer files at once (Advanced → Files at once)."
+    elif isinstance(e, FileNotFoundError) and os.path.exists(input_path):
+        msg = "The folder to save into couldn't be found. Was it moved or deleted?"
+        reason = "The app saves its files there, and it wasn't there any more."
+    elif isinstance(e, FileNotFoundError):
+        msg = "The file couldn't be found. Was it moved, renamed or deleted?"
+    elif isinstance(e, PermissionError):
+        system = "macOS" if sys.platform == "darwin" else "Windows" if sys.platform == "win32" else "Linux"
+        msg = f"{system} didn't allow reading this file or saving the STEP file in that folder. Choose another output folder in Save STEP files to."
+    elif isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        msg = "The disk is full, so the STEP file couldn't be saved. Free up some space and convert again."
+    elif "STEP write failed" in str(e) or "STEP transfer failed" in str(e):
+        msg = "The STEP file couldn't be written. Check that the output folder still exists and has free space."
+    else:
+        msg = "Something went wrong while converting."
+        reason = ("This is a bug in the converter, not a problem with your file. "
+                  "Save a report and send it, so it can be fixed.")
+    if isinstance(e, MemoryError):
+        reason = "Very big or very detailed meshes need a lot of memory, and this one needed more than was free."
+    elif isinstance(e, FileNotFoundError) and not os.path.exists(input_path):
+        reason = "The app reads the file again when it converts it, and it wasn't there any more."
+    elif isinstance(e, PermissionError):
+        reason = "The system's file permissions blocked the app."
+    details = f"{type(e).__name__}: {e}\n" + traceback.format_exc()
+    if rep.json_mode:
+        rep.error(msg, reason=reason, details=details)
+        sys.stderr.write(traceback.format_exc())
+    else:
+        print(msg + (f" {reason}" if reason else ""), file=sys.stderr)
+        traceback.print_exc()
+    return 1
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# PyInstaller spec for the Manifold Mesh Mix window on Windows and Linux (onedir).
+# PyInstaller spec for the Mesh Mix-S2C window on Windows and Linux (onedir).
 # The conversion engine is built separately (engine/mmm-engine.spec) and
 # copied into an "engine" folder next to the app by desktop/build.py.
 import os

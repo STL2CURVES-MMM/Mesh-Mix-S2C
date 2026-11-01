@@ -1,6 +1,6 @@
 """End-to-end test of the Linux self-update.
 
-    python appimage_update_test.py path/to/ManifoldMeshMix-X-Linux-x86_64.AppImage
+    python appimage_update_test.py path/to/MeshMix-S2C-X-Linux-x86_64.AppImage
 
 Publishes a fake "version 9.9.9" release on a local web server (the same
 AppImage plus a few extra bytes, so the file is different), starts the
@@ -54,7 +54,7 @@ def main():
     os.chmod(installed, 0o755)
     site = os.path.join(work, "site")
     os.makedirs(site)
-    name = "ManifoldMeshMix-9.9.9-Linux-x86_64.AppImage"
+    name = "MeshMix-S2C-9.9.9-Linux-x86_64.AppImage"
     new = os.path.join(site, name)
     shutil.copy2(src, new)
     with open(new, "ab") as fh:

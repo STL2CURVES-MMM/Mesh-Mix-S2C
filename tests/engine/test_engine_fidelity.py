@@ -1,3 +1,5 @@
+# From Manifold Mesh Mix 1.6.0 (desktop/tests/test_engine_fidelity.py, AGPL-3.0), changed for this fork:
+# the engine is imported as mmm, from engine/ (Mesh-Mix-S2C).
 """How closely converted shapes follow their meshes (engine/mmm/fidelity.py),
 and the conversion choices built on it (engine/mmm/pipeline.py, cad.py)."""
 import os

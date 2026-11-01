@@ -1,6 +1,6 @@
 """End-to-end test of the Mac app's self-update (run on a Mac).
 
-    python3 app/Tests/update_test.py "dist/Manifold Mesh Mix.app"
+    python3 app/Tests/update_test.py "dist/Mesh Mix-S2C.app"
 
 Copies the app into a temporary "Applications" folder, publishes a fake
 "version 9.9.9" release on a local web server (the same app with a marker
@@ -60,18 +60,18 @@ def main():
 
     apps = os.path.join(work, "Applications")
     os.makedirs(apps)
-    installed = os.path.join(apps, "Manifold Mesh Mix.app")
+    installed = os.path.join(apps, "Mesh Mix-S2C.app")
     sh("/usr/bin/ditto", src, installed)
     staging = os.path.join(work, "new")
     os.makedirs(staging)
-    new_app = os.path.join(staging, "Manifold Mesh Mix.app")
+    new_app = os.path.join(staging, "Mesh Mix-S2C.app")
     sh("/usr/bin/ditto", src, new_app)
     with open(os.path.join(new_app, "Contents", "Resources", MARKER), "w") as fh:
         fh.write("9.9.9")
     sh("codesign", "--force", "--deep", "--sign", "-", new_app)
     site = os.path.join(work, "site")
     os.makedirs(site)
-    name = "ManifoldMeshMix-9.9.9-macOS-arm64.zip"
+    name = "MeshMix-S2C-9.9.9-macOS-arm64.zip"
     sh("/usr/bin/ditto", "-c", "-k", "--keepParent", new_app, os.path.join(site, name))
     with open(os.path.join(site, name), "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()
@@ -127,7 +127,7 @@ def main():
         problems.append("the updated app didn't open again")
     # the installer removes the old app after copying the new one (the
     # marker shows up during the copy), then opens the app: check after that
-    leftovers = [n for n in os.listdir(apps) if n != "Manifold Mesh Mix.app"]
+    leftovers = [n for n in os.listdir(apps) if n != "Mesh Mix-S2C.app"]
     if leftovers:
         problems.append(f"files left in the Applications folder: {leftovers}")
     for pid in pids:

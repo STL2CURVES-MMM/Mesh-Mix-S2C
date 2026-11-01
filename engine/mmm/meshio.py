@@ -1,4 +1,12 @@
 """Mesh loading, cleaning and repair."""
+# Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-10-26 for the stl2curves merged engine: the weld tolerance is a Python
+# float (a float32 product overflowed to inf on huge coordinates and stopped cKDTree),
+# coordinates too large to calculate with and models too small for CAD's precision are
+# refused (check_size; any other size is converted, with the mesh check's note on the
+# unit), and check_triangles() gives the merged engine's entrance this reader's refusals
+# without the repair. read_stl refuses a text file that isn't an STL (an OBJ renamed .stl
+# was read as binary garbage).
 import io
 import os
 import re
@@ -14,6 +22,15 @@ from .report import NULL
 
 class MeshError(Exception):
     pass
+
+
+# Any size CAD can hold is converted, as MMM always has (a model in the wrong unit is
+# still a valid shape: the mesh check notes the unit, meshcheck step 13). Refused only:
+# coordinates whose size or spread overflows to infinity, and models under MIN_SIZE across,
+# whose edges fall below OpenCascade's precision (1e-7: a cube 1.7e-9 across failed to
+# build its first edge, a sphere 3.5e-9 across came out with no surface). The merged
+# engine sends models outside its own front end's range to this pipeline.
+MIN_SIZE = 1e-3     # smallest model diagonal, in model units
 
 
 # ----------------------------------------------------------------------------
@@ -59,6 +76,10 @@ def read_stl(path):
                 raise
     if size < 84:
         raise MeshError("This doesn't look like a valid STL file (it may be damaged or incomplete).")
+    if not exact_binary and _is_text(data[:4096]):
+        # (binary triangles are never all printable characters)
+        raise MeshError("This file holds text, but not an STL's. It may be another kind of mesh file (OBJ, PLY) "
+                        "with the wrong extension: give it its own extension, or export it again as STL.")
     count = binary_count
     avail = (size - 84) // 50
     if count > avail or count == 0:
@@ -177,10 +198,61 @@ def triangles_to_indexed(tris, merge_tol_rel=1e-7):
     if diag <= 0:
         raise MeshError("All of this mesh's points are in the same spot, so there is no shape to convert.")
     scale = float(np.abs(pts).max())
-    tol = max(merge_tol_rel * diag, 8 * np.finfo(np.float32).eps * scale)
+    check_size(diag, scale)
+    tol = _weld_tol(diag, scale, merge_tol_rel)
     V, inv = _union_find_merge(pts, tol)
     F = inv.reshape(-1, 3).astype(np.int64)
     return V, F
+
+
+def _weld_tol(diag, scale, merge_tol_rel=1e-7):
+    """Corners closer than this are one corner: a share of the size, or the float32
+    spacing STL files store at that distance from the origin (a Python float: the
+    float32 product overflowed to inf on huge coordinates)."""
+    return max(merge_tol_rel * diag, 8 * float(np.finfo(np.float32).eps) * scale)
+
+
+def check_size(diag, scale):
+    """Refuse coordinates too large to calculate with (their size or spread overflows), and
+    a model too small for CAD's precision."""
+    if not np.isfinite(diag) or not np.isfinite(scale):
+        raise MeshError("This model's coordinates are too large to calculate with, so it can't be converted. "
+                        "Scale it down in the program that made it (it may have been saved in the wrong "
+                        "unit), and export it again.")
+    if diag < MIN_SIZE:
+        raise MeshError(f"This model is only {diag:.3g} units across, too small for CAD's precision, so it "
+                        "can't be converted. It may have been saved in the wrong unit: scale it up in the "
+                        "program that made it, and export it again.")
+
+
+def check_triangles(tris):
+    """The refusals of the mesh check (meshcheck.prepare_part), without its repair: broken
+    coordinates everywhere, all points in one spot, coordinates too large to calculate with, every triangle squashed
+    flat once corners closer than the weld tolerance are joined. For an entrance that reads
+    the file before another front end mends it (mms2c/merged.py), so both engines
+    refuse the same files. The weld itself (2 s a million triangles) runs only when a
+    quick look finds triangles at most twice the tolerance long on their shortest side
+    (a 10 mm sphere 1e7 mm from the origin, where float32 spacing is 1 mm): with half
+    of them well above it, joined corners can't squash every one."""
+    tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
+    if len(tris) == 0:
+        raise MeshError("This file contains no triangles.")
+    finite = np.isfinite(tris).all(axis=(1, 2))
+    if not finite.any():
+        raise MeshError("This file's triangles have broken coordinates, so it can't be read. Try exporting it again.")
+    tris = tris[finite]
+    pts = tris.reshape(-1, 3)
+    diag = float(np.linalg.norm(pts.max(0) - pts.min(0)))
+    if diag <= 0:
+        raise MeshError("All of this mesh's points are in the same spot, so there is no shape to convert.")
+    check_size(diag, float(np.abs(pts).max()))
+    tol = _weld_tol(diag, float(np.abs(pts).max()))
+    shortest = np.min([np.linalg.norm(tris[:, k] - tris[:, (k + 1) % 3], axis=1) for k in range(3)], axis=0)
+    if (shortest > 2 * tol).mean() >= 0.5:
+        return
+    V, F = triangles_to_indexed(tris)
+    if not ((F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])).any():
+        raise MeshError("Every triangle in this mesh is squashed flat, so there is no shape to convert.")
 
 
 def remove_degenerate(V, F, stats=None):

@@ -64,7 +64,7 @@ def install():
         text = "\n".join([
             "[Desktop Entry]",
             "Type=Application",
-            "Name=Manifold Mesh Mix",
+            "Name=Mesh Mix-S2C",
             "GenericName=Mesh to STEP Converter",
             "Comment=Convert 3D-printing meshes (STL, 3MF, OBJ, PLY) into editable STEP files",
             f"Exec={_quote(a)} %F",

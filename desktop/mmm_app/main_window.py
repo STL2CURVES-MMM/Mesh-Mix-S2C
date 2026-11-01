@@ -34,7 +34,7 @@ def short_name_list(groups, limit=8):
 
 class EngineMissingBanner(Card):
     def __init__(self, parent=None):
-        super().__init__(parent, padding=12, radius=10, vertical=False, spacing=10)
+        super().__init__(parent, padding=12, radius=theme.R_MED, vertical=False, spacing=10)
         self.border = theme.with_alpha(theme.WARN, 0.5)
         self.lay.addWidget(IconLabel("warning", theme.WARN, 14))
         self.lay.addWidget(Label(ENGINE_MISSING_MESSAGE, 12))
@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar.add_clicked.connect(self.open_files)
         self.sidebar.header.update_clicked.connect(self.check_for_updates)
+        self.sidebar.header.settings_clicked.connect(self.show_preferences)
         self.sidebar.update_banner.clicked.connect(self.check_for_updates)
         self.model.export_requested.connect(self.show_export)
         self.model.all_finished.connect(lambda: QApplication.alert(self))
@@ -83,6 +84,8 @@ class MainWindow(QMainWindow):
         self.updates.changed.connect(self._updates_changed)
         self.updates.install_requested.connect(self._install_update)
         settings.changed.connect(self._setting_changed)
+        # Match system follows the computer's dark/light setting as it changes
+        QApplication.instance().styleHints().colorSchemeChanged.connect(self._system_scheme_changed)
         self._build_menus()
         if not os.environ.get("MMM_SELFTEST"):
             schedule_launch_check(self.updates, settings)
@@ -165,7 +168,7 @@ class MainWindow(QMainWindow):
         if err:
             QMessageBox.warning(self, APP_NAME, err)
         else:
-            QMessageBox.information(self, APP_NAME, "Manifold Mesh Mix is now in your applications menu, and in "
+            QMessageBox.information(self, APP_NAME, "Mesh Mix-S2C is now in your applications menu, and in "
                                     "“Open With” for STL, 3MF, OBJ and PLY files. If you move the AppImage, add it again.")
 
     def _export_selected(self):
@@ -271,14 +274,22 @@ class MainWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, "Choose mesh files (STL, 3MF, OBJ, PLY) to convert",
                                                 self._last_dir(), f"Meshes ({exts});;All files (*)")
         if files:
+            self.settings.lastOpenFolder = os.path.dirname(files[0])
             self.model.add(files)
 
     def open_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Choose a folder with mesh files", self._last_dir())
         if d:
+            # (the folder it sits in: the next pick is most likely a folder next to it)
+            self.settings.lastOpenFolder = os.path.dirname(os.path.normpath(d)) or d
             self.model.add([d])
 
     def _last_dir(self):
+        """Where the open window starts: the folder the last one picked from, while it
+        still exists; else the selected file's folder; else the home folder."""
+        last = self.settings.lastOpenFolder
+        if last and os.path.isdir(last):
+            return last
         j = self.model.selected_job
         return os.path.dirname(j.path) if j else os.path.expanduser("~")
 
@@ -301,7 +312,7 @@ class MainWindow(QMainWindow):
     def show_about(self):
         QMessageBox.about(self, f"About {APP_NAME}",
                           f"<b>{APP_NAME}</b> {__version__}<br>STL / 3MF / OBJ / PLY → editable STEP<br><br>"
-                          "Copyright © 2026 Tuna-The-First and Claude.<br>"
+                          "Copyright © 2026 Tuna-The-First, Duvdivan and Claude.<br>"
                           "Free software under the GNU Affero General Public License v3, with no warranty.<br><br>"
                           f'Source code: <a href="{REPO_URL}">{REPO_URL}</a><br><br>'
                           f'Free to use. If it saves you time, you can <a href="{SUPPORT_URL}">buy me a coffee ☕</a>: '
@@ -357,18 +368,28 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ settings / theme
 
     def _setting_changed(self, key):
-        if key == "accent":
-            theme.set_accent(self.settings.accent)
-            app = QApplication.instance()
-            app.setPalette(theme.palette())
-            app.setStyleSheet(theme.stylesheet())
-            self.sidebar.refresh_theme()
-            self.settings_panel.refresh_theme()
-            self.preview.preview.refresh()
-            for w in app.allWidgets():
-                w.update()
+        if key in ("accent", "theme"):
+            self.apply_theme()
         if key in ("plateLayout",):
             self.preview.preview.refresh()
+
+    def apply_theme(self):
+        """Apply the current theme and accent everywhere, live (no restart): widgets that
+        were given a theme colour take the new theme's one (retheme)."""
+        app = QApplication.instance()
+        theme.install(app, self.settings)
+        for w in app.allWidgets():
+            if hasattr(w, "retheme"):
+                w.retheme()
+        self.sidebar.refresh_theme()
+        self.settings_panel.refresh_theme()
+        self.preview.preview.refresh()
+        for w in app.allWidgets():
+            w.update()
+
+    def _system_scheme_changed(self, *_):
+        if self.settings.theme == "system":
+            self.apply_theme()
 
     # ------------------------------------------------------------------ drag and drop
 

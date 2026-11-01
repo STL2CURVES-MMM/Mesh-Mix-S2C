@@ -23,7 +23,7 @@ struct EmptyPreview: View {
         ZStack {
             LinearGradient(colors: [Color(nsColor: Theme.viewportTop), Color(nsColor: Theme.viewportBottom)],
                            startPoint: .top, endPoint: .bottom)
-            GridPattern().stroke(Color.white.opacity(0.035), lineWidth: 1)
+            GridPattern().stroke(Theme.ink(0.035), lineWidth: 1)
             VStack(spacing: 14) {
                 ZStack {
                     Circle().fill(settings.accent.color.opacity(0.10)).frame(width: 110, height: 110)
@@ -59,8 +59,8 @@ struct FeatureChip: View {
             Text(text).font(.system(size: 11, weight: .medium))
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Capsule().fill(Theme.card))
-        .overlay(Capsule().strokeBorder(Theme.stroke))
+        .background(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).fill(Theme.card))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).strokeBorder(Theme.stroke))
     }
 }
 
@@ -347,6 +347,10 @@ struct JobPreview: View {
             Pill(text: "Doesn't match the mesh everywhere", color: Theme.warn, icon: "exclamationmark")
                 .fixedSize()
                 .help("The shape was compared with the mesh: \(f.summary(unit: modelUnit)).\nNo method followed it closely everywhere; this is the closest result. A higher quality, or another preset, may do better.")
+        } else if r.faceted {
+            Pill(text: "Saved as flat faces", color: settings.accent.color, icon: "info.circle")
+                .fixedSize()
+                .help(ConversionResult.facetedTip + fitLine(r))
         } else if r.checked && !r.repaired.isEmpty {
             Pill(text: "Repaired automatically", color: Theme.good, icon: "checkmark")
                 .fixedSize()
@@ -751,18 +755,18 @@ struct FileTab: View {
                         .font(Theme.mono(9.5, .semibold))
                         .foregroundStyle(Theme.textDim)
                         .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.white.opacity(0.07)))
+                        .background(RoundedRectangle(cornerRadius: Theme.rSmall, style: .continuous).fill(Theme.ink(0.07)))
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(maxWidth: maxWidth)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? settings.accent.color.opacity(0.14) : (hover ? Color.white.opacity(0.06) : Theme.card.opacity(0.7)))
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
+                    .fill(selected ? settings.accent.color.opacity(0.14) : (hover ? Theme.ink(0.06) : Theme.card.opacity(0.7)))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
                     .strokeBorder(selected ? settings.accent.color.opacity(0.7) : Theme.stroke, lineWidth: 1)
             )
             .contentShape(Rectangle())
@@ -785,8 +789,8 @@ struct StatChip: View {
                 .lineLimit(1).helpIfTruncated(value)
         }
         .padding(.horizontal, 9).padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.card.opacity(0.92)))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.stroke))
+        .background(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).fill(Theme.card.opacity(0.92)))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous).strokeBorder(Theme.stroke))
     }
 }
 
@@ -800,16 +804,14 @@ struct SettingsPanel: View {
     var accent: Color { settings.accent.color }
 
     /// With Auto selected, marks the preset Auto actually used for the
-    /// selected file (both CAD and Smooth when its parts used different
-    /// ones): the card's tooltip, or nil when it isn't marked. Only for a
-    /// file whose last conversion was asked to use Auto.
+    /// selected file (each one when its parts used different ones): the
+    /// card's tooltip, or nil when it isn't marked. Only for a file whose
+    /// last conversion was asked to use Auto. Flat faces have no card: the
+    /// result's badge explains them.
     private func autoPickTip(for p: Preset) -> String? {
         guard settings.preset == .auto, p != .auto, let j = model.selectedJob, j.status == .done,
-              j.runSettings?.preset == .auto, let used = j.result?.preset else { return nil }
-        if used == "mixed" {
-            return (p == .cad || p == .smooth) ? "Auto used CAD + Smooth for “\(j.fileName)”." : nil
-        }
-        return used == p.rawValue ? "Auto used \(p.title) for “\(j.fileName)”." : nil
+              j.runSettings?.preset == .auto, let r = j.result, r.usedKinds.contains(p.rawValue) else { return nil }
+        return r.preset == "mixed" ? "Auto used \(r.presetTitle) for “\(j.fileName)”." : "Auto used \(p.title) for “\(j.fileName)”."
     }
 
     func qualityWord(_ q: Double) -> String {
@@ -1099,13 +1101,13 @@ struct PresetCard: View {
 
     private var iconBackground: Color {
         if let c = markColor { return c.opacity(0.18) }
-        return Color.white.opacity(0.05)
+        return Theme.ink(0.05)
     }
 
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.rMed, style: .continuous)
                     .fill(iconBackground)
                 Image(systemName: preset.icon)
                     .font(.system(size: 13, weight: .semibold))

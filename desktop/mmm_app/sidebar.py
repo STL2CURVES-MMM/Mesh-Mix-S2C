@@ -28,15 +28,20 @@ def format_bytes(n):
 
 class BrandHeader(QWidget):
     update_clicked = Signal()
+    settings_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        title = Label("Manifold Mesh Mix", 15, BOLD)
+        title = Label("Mesh Mix-S2C", 15, BOLD)
         sub = Label("STL → STEP converter", 11, color=theme.TEXT_DIM)
         self.update_button = IconButton("update", "Check for updates", size=26)
         self.update_button.clicked.connect(self.update_clicked)
+        # (Settings, with the theme and accent, is otherwise only in the File menu, where
+        # testers of 2.0.0-test.2 didn't find it)
+        self.settings_button = IconButton("gear", "Settings: theme, accent colour, updates", size=26)
+        self.settings_button.clicked.connect(self.settings_clicked)
         self.badge = False
-        lay = hbox(brand_mark(), vbox(title, sub, spacing=1), None, self.update_button, spacing=10)
+        lay = hbox(brand_mark(), vbox(title, sub, spacing=1), None, self.settings_button, self.update_button, spacing=6)
         lay.setContentsMargins(0, 0, 0, 2)
         self.setLayout(lay)
 
@@ -84,7 +89,7 @@ class DropZone(Card):
     clicked = Signal()
 
     def __init__(self, parent=None):
-        super().__init__(parent, padding=0, radius=12)
+        super().__init__(parent, padding=0, radius=theme.R_BIG)
         self.targeted = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(100)
@@ -108,7 +113,7 @@ class DropZone(Card):
         pen = QPen(a if self.targeted else theme.STROKE_STRONG, 1.3)
         pen.setDashPattern([6 / 1.3, 5 / 1.3])
         p.setPen(pen)
-        p.drawRoundedRect(r, 12, 12)
+        p.drawRoundedRect(r, theme.R_BIG, theme.R_BIG)
         ic = icons.pixmap("arrow-down-circle" if self.targeted else "import", a if self.targeted else theme.TEXT_DIM, 24,
                           max(1.0, self.devicePixelRatioF()), 1.6)
         p.drawPixmap(int((self.width() - 24) / 2), 18, ic)
@@ -300,7 +305,7 @@ class Sidebar(QWidget):
         self.model = model
         self.rows = {}
         self.setAutoFillBackground(True)
-        self.setStyleSheet(f"Sidebar {{ background: {theme.css(theme.PANEL)}; }}")
+        self.retheme()
         self.header = BrandHeader()
         self.update_banner = UpdateBanner()
         self.drop = DropZone()
@@ -371,6 +376,9 @@ class Sidebar(QWidget):
         jobs = self.model.jobs
         self.clear.setVisible(any(j.status == JobStatus.DONE for j in jobs))
         self.stop.setVisible(any(j.status in (JobStatus.CONVERTING, JobStatus.QUEUED) for j in jobs))
+
+    def retheme(self):
+        self.setStyleSheet(f"Sidebar {{ background: {theme.css(theme.PANEL)}; }}")
 
     def refresh_theme(self):
         for row in self.rows.values():

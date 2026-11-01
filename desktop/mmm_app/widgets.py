@@ -21,7 +21,7 @@ def rounded(rect, r):
 class Card(QFrame):
     """Rounded card with a hairline border; highlighted cards get an accent border."""
 
-    def __init__(self, parent=None, padding=12, radius=12, highlighted=False, accent=None, spacing=8, vertical=True):
+    def __init__(self, parent=None, padding=12, radius=theme.R_BIG, highlighted=False, accent=None, spacing=8, vertical=True):
         super().__init__(parent)
         self.radius = radius
         self.highlighted = highlighted
@@ -63,6 +63,9 @@ class SectionLabel(QLabel):
         f = theme.font(10, SEMIBOLD)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
         self.setFont(f)
+        self.retheme()
+
+    def retheme(self):
         self.setStyleSheet(f"color: {theme.css(theme.TEXT_FAINT)}; background: transparent;")
 
 
@@ -75,7 +78,11 @@ class Label(QLabel):
             self.setWordWrap(True)
 
     def set_color(self, c):
+        self._token, self._color = theme.token_of(c), c
         self.setStyleSheet(f"color: {theme.css(c)}; background: transparent;")
+
+    def retheme(self):
+        self.set_color(theme.color_of(self._token, self._color))
 
 
 class ElidedLabel(QWidget):
@@ -89,6 +96,7 @@ class ElidedLabel(QWidget):
         super().__init__(parent)
         self._text = text
         self.color = color or theme.TEXT
+        self._token = theme.token_of(self.color)   # (the theme colour it is, kept across themes)
         self.mode = mode
         self.extra_tooltip = tooltip
         self.setFont(theme.font(size, weight, mono))
@@ -106,7 +114,11 @@ class ElidedLabel(QWidget):
 
     def set_color(self, c):
         self.color = c
+        self._token = theme.token_of(c)
         self.update()
+
+    def retheme(self):
+        self.set_color(theme.color_of(self._token, self.color))
 
     def sizeHint(self):
         fm = QFontMetrics(self.font())
@@ -169,7 +181,7 @@ class Pill(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        rad = r.height() / 2
+        rad = theme.R_MED
         if self.filled:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self.color)
@@ -177,7 +189,7 @@ class Pill(QWidget):
             p.setPen(QPen(theme.with_alpha(self.color, 0.25), 1))
             p.setBrush(theme.with_alpha(self.color, 0.12))
         p.drawRoundedRect(r, rad, rad)
-        fg = QColor(10, 11, 14, 217) if self.filled else self.color
+        fg = theme.with_alpha(theme.on_accent(), 0.85) if self.filled else self.color
         x = 7
         if self.icon:
             pm = icons.pixmap(self.icon, fg, 9, _dpr(self), 3.0)
@@ -255,10 +267,10 @@ class GhostButton(_Button):
             border = theme.with_alpha(theme.accent(), 0.5)
         else:
             a = 0.12 if self.isDown() else (0.09 if self.underMouse() and self.isEnabled() else 0.05)
-            fill, border = theme.white(a), theme.STROKE
+            fill, border = theme.ink(a), theme.STROKE
         p.setPen(QPen(border, 1))
         p.setBrush(fill)
-        p.drawRoundedRect(r, 7, 7)
+        p.drawRoundedRect(r, theme.R_SMALL, theme.R_SMALL)
         self._draw_content(p, self.color(), 13)
 
 
@@ -290,12 +302,12 @@ class AccentButton(_Button):
             alpha = (0.75 if self.isDown() else (0.9 if self.underMouse() else 1.0)) if on else 0.3
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(theme.with_alpha(a, alpha))
-            fg = QColor.fromRgbF(0, 0, 0, 0.88 if on else 0.5)
+            fg = theme.with_alpha(theme.on_accent(), 0.88 if on else 0.5)
         else:
             p.setPen(QPen(theme.with_alpha(a, 0.35 if on else 0.15), 1))
             p.setBrush(theme.with_alpha(a, (0.22 if self.isDown() else (0.17 if self.underMouse() else 0.12)) if on else 0.05))
             fg = a if on else theme.with_alpha(a, 0.4)
-        p.drawRoundedRect(r, 10, 10)
+        p.drawRoundedRect(r, theme.R_SMALL, theme.R_SMALL)
         self._draw_content(p, fg, 14)
 
 
@@ -318,7 +330,7 @@ class IconButton(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         a = 0.16 if self.isDown() else (0.12 if self.underMouse() else 0.07)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.white(a))
+        p.setBrush(theme.ink(a))
         p.drawEllipse(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
         s = round(self._size * 0.46)
         pm = icons.pixmap(self.icon_name, self.color or (theme.TEXT if self.underMouse() else theme.TEXT_DIM), s, _dpr(self), 2.6)
@@ -332,6 +344,7 @@ class IconLabel(QWidget):
         super().__init__(parent)
         self.icon_name = icon
         self.color = color
+        self._token = theme.token_of(color)
         self.size_ = size
         self.weight = weight
         self.setFixedSize(size, size)
@@ -342,7 +355,11 @@ class IconLabel(QWidget):
             self.icon_name = icon
         if color is not None:
             self.color = color
+            self._token = theme.token_of(color)
         self.update()
+
+    def retheme(self):
+        self.set(color=theme.color_of(self._token, self.color))
 
     def paintEvent(self, _):
         if not self.icon_name:
@@ -393,7 +410,7 @@ class ThinProgress(QWidget):
         w, h = self.width(), self.height()
         clip = rounded(self.rect(), h / 2)
         p.setClipPath(clip)
-        p.fillPath(clip, theme.white(0.07))
+        p.fillPath(clip, theme.ink(0.07))
         a = theme.accent()
         if self.indeterminate:
             bw = w * 0.35
@@ -428,7 +445,7 @@ class StatChip(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(theme.STROKE, 1))
         p.setBrush(theme.with_alpha(theme.CARD, 0.92))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), theme.R_MED, theme.R_MED)
         a = QFontMetrics(self.lf)
         p.setFont(self.lf)
         p.setPen(theme.TEXT_FAINT)
@@ -457,7 +474,7 @@ class FeatureChip(QWidget):
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         p.setPen(QPen(theme.STROKE, 1))
         p.setBrush(theme.CARD)
-        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.drawRoundedRect(r, theme.R_MED, theme.R_MED)
         p.drawPixmap(QPointF(10, (self.height() - 10) / 2), icons.pixmap(self.icon_name, theme.accent(), 10, _dpr(self)))
         p.setFont(self.font())
         p.setPen(theme.TEXT)
@@ -519,11 +536,11 @@ class FileTab(QAbstractButton):
         if self.selected:
             fill, border = theme.with_alpha(a, 0.14), theme.with_alpha(a, 0.7)
         else:
-            fill = theme.white(0.06) if self.underMouse() else theme.with_alpha(theme.CARD, 0.7)
+            fill = theme.ink(0.06) if self.underMouse() else theme.with_alpha(theme.CARD, 0.7)
             border = theme.STROKE
         p.setPen(QPen(border, 1))
         p.setBrush(fill)
-        p.drawRoundedRect(r, 8, 8)
+        p.drawRoundedRect(r, theme.R_MED, theme.R_MED)
         x = 10
         p.drawPixmap(QPointF(x, (self.height() - 11) / 2), icons.pixmap(self.icon_name, self.icon_color, 11, _dpr(self), 2.4))
         x += 17
@@ -539,8 +556,8 @@ class FileTab(QAbstractButton):
             bf = QFontMetrics(self.bf)
             br = QRectF(bx, (self.height() - bf.height() - 2) / 2, bw, bf.height() + 2)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(theme.white(0.07))
-            p.drawRoundedRect(br, br.height() / 2, br.height() / 2)
+            p.setBrush(theme.ink(0.07))
+            p.drawRoundedRect(br, theme.R_SMALL, theme.R_SMALL)
             p.setFont(self.bf)
             p.setPen(theme.TEXT_DIM)
             p.drawText(br, Qt.AlignmentFlag.AlignCenter, self.badge)
@@ -576,12 +593,12 @@ class Segmented(QWidget):
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         p.setPen(QPen(theme.STROKE_STRONG, 1))
         p.setBrush(theme.with_alpha(theme.CARD, 0.92))
-        p.drawRoundedRect(r, 7, 7)
+        p.drawRoundedRect(r, theme.R_SMALL, theme.R_SMALL)
         w = r.width() / len(self.options)
         sel = QRectF(r.x() + w * self.index + 2, r.y() + 2, w - 4, r.height() - 4)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.white(0.16))
-        p.drawRoundedRect(sel, 5, 5)
+        p.setBrush(theme.ink(0.16))
+        p.drawRoundedRect(sel, theme.R_SMALL - 1, theme.R_SMALL - 1)
         p.setFont(self.font())
         for i, o in enumerate(self.options):
             p.setPen(theme.TEXT if i == self.index else theme.TEXT_DIM)
@@ -691,8 +708,8 @@ class _IconBox(QWidget):
         a = self.color or theme.accent()
         on = self.selected or self.color is not None
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.with_alpha(a, 0.18) if on else theme.white(0.05))
-        p.drawRoundedRect(QRectF(self.rect()), 8, 8)
+        p.setBrush(theme.with_alpha(a, 0.18) if on else theme.ink(0.05))
+        p.drawRoundedRect(QRectF(self.rect()), theme.R_MED, theme.R_MED)
         p.drawPixmap(QPointF(9.5, 9.5), icons.pixmap(self.icon_name, a if on else theme.TEXT_DIM, 13, _dpr(self)))
 
 
@@ -703,6 +720,9 @@ class Divider(QFrame):
             self.setFixedWidth(1)
         else:
             self.setFixedHeight(1)
+        self.retheme()
+
+    def retheme(self):
         self.setStyleSheet(f"background: {theme.css(theme.STROKE)}; border: none;")
 
 

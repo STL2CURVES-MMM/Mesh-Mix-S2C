@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 
 /// Finds, downloads and installs a newer version from the project's GitHub
-/// releases. Every release carries ManifoldMeshMix-<version>-macOS-arm64.zip
+/// releases. Every release carries MeshMix-S2C-<version>-macOS-arm64.zip
 /// and a SHA256SUMS.txt; the zip is checked against it before installing.
 /// Installing hands over to install-update.sh, which waits for the app to
 /// quit, swaps the app bundle and opens the new version.
@@ -24,7 +24,7 @@ final class Updater: ObservableObject {
         let pageURL: URL
     }
 
-    static let repo = "TUNA-THE-FIRST/Manifold-Mesh-Mix"
+    static let repo = "STL2CURVES-MMM/Mesh-Mix-S2C"
     static let assetSuffix = "-macOS-arm64.zip"
     static let sumsName = "SHA256SUMS.txt"
     static let releasesPage = URL(string: "https://github.com/\(repo)/releases/latest")!
@@ -39,8 +39,11 @@ final class Updater: ObservableObject {
     private(set) var downloadedApp: URL?
     private var downloader: Downloader?
 
+    /// The full version, test-build suffix included (build.sh keeps it in
+    /// MMSFullVersion because CFBundleShortVersionString must be numbers).
     static var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        Bundle.main.object(forInfoDictionaryKey: "MMSFullVersion") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
     var availableVersion: String? {
@@ -64,10 +67,27 @@ final class Updater: ObservableObject {
         return parts + Array(repeating: 0, count: max(0, 3 - parts.count))
     }
 
+    /// parse plus test builds: "2.0.0-test.2" comes after "2.0.0-test.1"
+    /// and before "2.0.0", so a tester is offered the release.
+    static func key(_ s: String) -> [Int]? {
+        guard let base = parse(s) else { return nil }
+        var t = s.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("v") || t.hasPrefix("V") { t.removeFirst() }
+        let rest = t.drop { $0.isNumber || $0 == "." }
+        guard rest.hasPrefix("-") else { return base + [1, 0] }
+        let numbers = rest.split { !$0.isNumber }.compactMap { Int($0) }
+        return base + [0, numbers.last ?? 0]
+    }
+
     static func isNewer(_ latest: String, than current: String) -> Bool {
-        guard let a = parse(latest), let b = parse(current) else { return false }
+        guard var a = key(latest), var b = key(current) else { return false }
+        // the release-or-test part sits after the version numbers, which may
+        // differ in count ("1.2" and "1.2.3")
+        let n = max(a.count, b.count)
+        a.insert(contentsOf: Array(repeating: 0, count: n - a.count), at: a.count - 2)
+        b.insert(contentsOf: Array(repeating: 0, count: n - b.count), at: b.count - 2)
         for (x, y) in zip(a, b) where x != y { return x > y }
-        return a.count > b.count && a[b.count...].contains { $0 > 0 }
+        return false
     }
 
     // MARK: checking
@@ -123,6 +143,9 @@ final class Updater: ObservableObject {
               let tag = obj["tag_name"] as? String, parse(tag) != nil else {
             throw UpdateError("The newest release has no version number the app understands.")
         }
+        // test builds are GitHub pre-releases, which /releases/latest already skips;
+        // this guard keeps them from ever being offered even if one is mislabelled
+        if obj["prerelease"] as? Bool == true || tag.contains("-") { return nil }
         guard isNewer(tag, than: currentVersion) else { return nil }
         let version = tag.hasPrefix("v") || tag.hasPrefix("V") ? String(tag.dropFirst()) : tag
         let assets = obj["assets"] as? [[String: Any]] ?? []
@@ -214,7 +237,7 @@ final class Updater: ObservableObject {
     var installProblem: String? {
         let dest = Bundle.main.bundleURL
         if dest.path.contains("/AppTranslocation/") {
-            return "macOS is running the app from a temporary place. Move Manifold Mesh Mix into your Applications folder, open it from there, then update."
+            return "macOS is running the app from a temporary place. Move Mesh Mix-S2C into your Applications folder, open it from there, then update."
         }
         let fm = FileManager.default
         if !fm.isWritableFile(atPath: dest.deletingLastPathComponent().path) || !fm.isWritableFile(atPath: dest.path) {
@@ -274,6 +297,33 @@ final class Updater: ObservableObject {
         a.informativeText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         a.addButton(withTitle: "OK")
         a.runModal()
+    }
+
+    /// Once, after an update from Manifold Mesh Mix: the app's folder in Applications keeps
+    /// the old name (an update replaces the app where it is, under the name it has), so say
+    /// how to rename it. Either name keeps getting updates.
+    static func offerRename() {
+        let app = Bundle.main.bundleURL
+        let name = app.deletingPathExtension().lastPathComponent
+        let key = "renameHintShown"
+        guard name.hasPrefix("Manifold Mesh Mix"), !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        let a = NSAlert()
+        a.messageText = "Rename the app to Mesh Mix-S2C?"
+        a.informativeText = """
+            Manifold Mesh Mix is now called Mesh Mix-S2C, but your Applications folder still shows \
+            the old name, "\(name)".
+
+            To rename it: quit the app, open the Applications folder in Finder, click the app once, \
+            press Return, type Mesh Mix-S2C and press Return again. Your settings stay as they are.
+
+            Updates keep coming either way: the app updates itself wherever it is, whatever its name.
+            """
+        a.addButton(withTitle: "Show in Finder")
+        a.addButton(withTitle: "Not Now")
+        if a.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([app])
+        }
     }
 
     /// State name for the self-test report (same words as the Windows/Linux app).
@@ -353,7 +403,7 @@ final class Updater: ObservableObject {
         let items = (try? FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)) ?? []
         guard let app = items.first(where: { $0.pathExtension == "app" }),
               Bundle(url: app)?.bundleIdentifier == Bundle.main.bundleIdentifier else {
-            throw UpdateError("The downloaded update doesn't contain Manifold Mesh Mix.")
+            throw UpdateError("The downloaded update doesn't contain Mesh Mix-S2C.")
         }
         try? FileManager.default.removeItem(at: zip)
         return app
