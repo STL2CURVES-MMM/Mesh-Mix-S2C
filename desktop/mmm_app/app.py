@@ -105,7 +105,9 @@ def main(argv=None):
     app.setApplicationVersion(__version__)
     app.setDesktopFileName("manifold-mesh-mix")
     app.setStyle("Fusion")
-    app.setWindowIcon(QIcon(system.resource("icon-256.png")))
+    # (Windows: its own icon, filling the taskbar square at every size; the Mac-style one,
+    # with Apple's margins and the badge, came out at half the size of its neighbours)
+    app.setWindowIcon(QIcon(system.resource("app-win.ico" if system.IS_WINDOWS else "icon-256.png")))
 
     files = _file_args(argv[1:])
     single = not selftest and not os.environ.get("MMM_NO_SINGLE_INSTANCE")
