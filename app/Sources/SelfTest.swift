@@ -147,12 +147,12 @@ enum SelfTest {
             settings.outputMode = .subfolder
             await sleep(0.3)
             shot("quality-auto", dir)
-            settings.autoQuality = false
+            settings.preset = .smooth          // (the slider is only shown with Smooth)
             settings.quality = 0.15
             await sleep(0.3)
             shot("quality-fast", dir)
             settings.quality = 0.7
-            settings.autoQuality = true
+            settings.preset = .auto
         }
 
         model.convertAll()

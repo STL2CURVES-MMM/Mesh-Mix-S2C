@@ -305,8 +305,9 @@ def test_fine_detail_estimate():
 
 
 def test_fine_detail_warning_in_panel(window, meshes):
+    """Only Smooth has the detail slider, so only Smooth at its top warns of a big file."""
     m, s, panel = window.model, window.settings, window.settings_panel
-    s.preset = "precise"
+    s.preset = "smooth"
     s.quality = 1.0
     m.add([meshes["one.stl"]])
     assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
@@ -319,35 +320,34 @@ def test_fine_detail_warning_in_panel(window, meshes):
     s.quality = 0.7
     assert panel.detail_warning.isHidden()
     s.quality = 1.0
-    s.preset = "cad"
-    assert panel.detail_warning.isHidden()
+    for preset in ("cad", "precise", "auto"):           # the quality comes from the size there
+        s.preset = preset
+        assert panel.detail_warning.isHidden()
     s.preset = "smooth"
     assert not panel.detail_warning.isHidden()
     m.remove(next(j for j in m.jobs if "dense" in j.path))
     assert wait_until(lambda: panel.detail_warning.isHidden())
 
 
-def test_auto_quality_slider(window, meshes):
+def test_quality_slider_only_for_smooth(window, meshes):
+    """CAD, Auto and Precise take the quality from each file's size and hide the slider
+    (the owners, 2026-11-01); Smooth shows it and uses it for every file."""
     m, s, panel = window.model, window.settings, window.settings_panel
-    s.preset = "auto"
-    s.autoQuality = True
     s.quality = 0.4
     m.add([meshes["dense_sculpt.stl"]])
     assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
     m.select(m.jobs[0].id)
+    for preset in ("auto", "cad", "precise"):
+        s.preset = preset
+        panel.refresh()
+        assert panel.quality_card.isHidden()
+        assert s.quality_for(m.jobs[0].triangles) == 0.6
+    s.preset = "smooth"
     panel.refresh()
-    # the slider shows the quality picked for the selected file
-    assert panel.slider.value() == 600 and panel.auto_q.isHidden()
-    assert panel.quality_word.text() == "Auto · 60%" and "dense_sculpt.stl" in panel.quality_hint.text()
-    # moving the slider: one quality for every file
+    assert not panel.quality_card.isHidden() and panel.slider.value() == 400
     panel.slider.setValue(250)
-    assert not s.autoQuality and s.quality == 0.25 and not panel.auto_q.isHidden()
+    assert s.quality == 0.25 and s.quality_for(m.jobs[0].triangles) == 0.25
     assert panel.quality_word.text() == "Fast"
-    panel.auto_q.click()
-    assert s.autoQuality and panel.slider.value() == 600 and panel.auto_q.isHidden()
-    s.autoQuality = False
-    s.preset = "cad"
-    assert panel.auto_q.isHidden() and panel.slider.value() == 250
 
 
 def test_auto_used_mark_only_for_auto_runs(window, meshes):
