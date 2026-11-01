@@ -22,9 +22,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import REPO, REPO_URL, __version__, system
+from . import REPO, REPO_ID, REPO_URL, __version__, system
 
-API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
+# by the repository's number first (no rename breaks it), then by its name
+API_LATEST = f"https://api.github.com/repositories/{REPO_ID}/releases/latest"
+API_LATEST_BY_NAME = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_PAGE = f"{REPO_URL}/releases/latest"
 SUMS_NAME = "SHA256SUMS.txt"
 WINDOWS_MUTEX = "ManifoldMeshMixRunning"
@@ -94,10 +96,10 @@ def _allowed(url):
     return url.startswith("https://") or (url.startswith("http://") and _is_local(url))
 
 
-def _api_url():
+def _api_urls():
     # MMM_UPDATE_URL is for tests against a server on this computer only
     url = os.environ.get("MMM_UPDATE_URL")
-    return url if url and _is_local(url) else API_LATEST
+    return [url] if url and _is_local(url) else [API_LATEST, API_LATEST_BY_NAME]
 
 
 def _ssl_context():
@@ -132,14 +134,26 @@ def _open(url, timeout=30):
         raise UpdateError("Couldn't reach GitHub. Check your internet connection and try again.") from e
 
 
+def _latest():
+    """The newest release's details: asked by the repository's number, then by its
+    name if that fails (the first error is the one reported if both do)."""
+    first = None
+    for url in _api_urls():
+        try:
+            with _open(url) as r:
+                try:
+                    return json.loads(r.read().decode("utf-8"))
+                except ValueError as e:
+                    raise UpdateError("GitHub sent an answer the app doesn't understand. Try again later.") from e
+        except UpdateError as e:
+            first = first or e
+    raise first
+
+
 def check():
     """Returns UpdateInfo for a newer release for this system, or None when
     this version is the newest."""
-    with _open(_api_url()) as r:
-        try:
-            data = json.loads(r.read().decode("utf-8"))
-        except ValueError as e:
-            raise UpdateError("GitHub sent an answer the app doesn't understand. Try again later.") from e
+    data = _latest()
     tag = data.get("tag_name") or ""
     if parse_version(tag) is None:
         raise UpdateError("The newest release has no version number the app understands.")

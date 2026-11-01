@@ -195,12 +195,37 @@ def test_update_addresses_are_restricted(monkeypatch):
     """The test override only works for a server on this computer, and
     downloads must use HTTPS (plain HTTP only from such a test server)."""
     monkeypatch.setenv("MMM_UPDATE_URL", "http://example.com/latest")
-    assert updater._api_url() == updater.API_LATEST
+    assert updater._api_urls() == [updater.API_LATEST, updater.API_LATEST_BY_NAME]
     monkeypatch.setenv("MMM_UPDATE_URL", "http://127.0.0.1:8000/latest")
-    assert updater._api_url() == "http://127.0.0.1:8000/latest"
+    assert updater._api_urls() == ["http://127.0.0.1:8000/latest"]
     assert updater._allowed("https://github.com/x/y.exe")
     assert updater._allowed("http://localhost:9/a")
     assert not updater._allowed("http://github.com/x/y.exe")
     assert not updater._allowed("ftp://127.0.0.1/a")
     with pytest.raises(updater.UpdateError):
         updater._open("http://github.com/x/y.exe")
+
+
+def test_update_check_asks_by_repository_number_first(monkeypatch):
+    """GitHub's API answers 404 for an organization's old name after a rename, so the
+    check asks by the repository's permanent number, and by name only if that fails."""
+    import io
+    from mmm_app import REPO, REPO_ID
+    assert updater.API_LATEST == f"https://api.github.com/repositories/{REPO_ID}/releases/latest"
+    assert REPO in updater.API_LATEST_BY_NAME
+    monkeypatch.delenv("MMM_UPDATE_URL", raising=False)
+    asked = []
+
+    def fake_open(url, timeout=30):
+        asked.append(url)
+        if url == updater.API_LATEST:
+            raise updater.UpdateError("No release has been published yet.")
+        return io.BytesIO(b'{"tag_name": "v0.0.1", "assets": []}')
+    monkeypatch.setattr(updater, "_open", fake_open)
+    assert updater.check() is None          # (older than this version: nothing to offer)
+    assert asked == [updater.API_LATEST, updater.API_LATEST_BY_NAME]
+
+    asked.clear()
+    monkeypatch.setattr(updater, "_open", lambda url, timeout=30: asked.append(url) or io.BytesIO(b'{"tag_name": "v0.0.1"}'))
+    updater.check()
+    assert asked == [updater.API_LATEST]    # (the number answered: the name isn't asked)
