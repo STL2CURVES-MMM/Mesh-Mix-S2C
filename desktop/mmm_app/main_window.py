@@ -274,14 +274,22 @@ class MainWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, "Choose mesh files (STL, 3MF, OBJ, PLY) to convert",
                                                 self._last_dir(), f"Meshes ({exts});;All files (*)")
         if files:
+            self.settings.lastOpenFolder = os.path.dirname(files[0])
             self.model.add(files)
 
     def open_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Choose a folder with mesh files", self._last_dir())
         if d:
+            # (the folder it sits in: the next pick is most likely a folder next to it)
+            self.settings.lastOpenFolder = os.path.dirname(os.path.normpath(d)) or d
             self.model.add([d])
 
     def _last_dir(self):
+        """Where the open window starts: the folder the last one picked from, while it
+        still exists; else the selected file's folder; else the home folder."""
+        last = self.settings.lastOpenFolder
+        if last and os.path.isdir(last):
+            return last
         j = self.model.selected_job
         return os.path.dirname(j.path) if j else os.path.expanduser("~")
 

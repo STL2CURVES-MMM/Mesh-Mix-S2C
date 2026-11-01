@@ -206,6 +206,9 @@ class Settings(QObject):
     outputMode = Field("subfolder", _values(OUTPUT_MODES))
     subfolderName = Field("STEP Files")
     outputFolder = Field("")
+    # the folder the last Add Files / Add Folder window picked from, where the next one opens
+    # (asked for by a user, 2026-11-01)
+    lastOpenFolder = Field("")
     plateLayout = Field("parts", _values(PLATE_LAYOUTS))
     replaceExisting = Field(False)
     parallelJobs = Field(2, lo=1, hi=6)

@@ -402,3 +402,23 @@ def test_long_lists_of_touching_parts_are_cut_short():
     text = short_name_list(names)
     assert text == "Body0, Body1, Body2, Body3, Body4, Body5, Body6, Body7 and 326 more"
     assert short_name_list([["A", "B", "C"], ["D", "E"]], limit=4) == "A, B, C; D and 1 more"
+
+
+def test_open_window_starts_in_the_last_folder(settings, tmp_path):
+    """Add Files opens where the last one picked from, while that folder exists;
+    else the selected file's folder, else the home folder."""
+    from types import SimpleNamespace
+
+    from mmm_app.main_window import MainWindow
+    last = tmp_path / "meshes"
+    last.mkdir()
+    job = SimpleNamespace(path=str(tmp_path / "other" / "a.stl"))
+    fake = SimpleNamespace(settings=settings, model=SimpleNamespace(selected_job=job))
+    assert settings.lastOpenFolder == ""
+    assert MainWindow._last_dir(fake) == str(tmp_path / "other")
+    settings.lastOpenFolder = str(last)
+    assert MainWindow._last_dir(fake) == str(last)
+    last.rmdir()                       # (gone: back to the selected file's folder)
+    assert MainWindow._last_dir(fake) == str(tmp_path / "other")
+    fake.model.selected_job = None
+    assert MainWindow._last_dir(fake) == os.path.expanduser("~")

@@ -144,6 +144,12 @@ final class Settings: ObservableObject {
     @Published var colorFaces: Bool { didSet { d.set(colorFaces, forKey: "colorFaces") } }
     /// Look for a newer version once when the app opens (installing always needs a click)
     @Published var checkUpdates: Bool { didSet { d.set(checkUpdates, forKey: "checkUpdates") } }
+    /// The folder the last Add Files window picked from, where the next one opens
+    /// (asked for by a user, 2026-11-01). Not shown anywhere, so not published.
+    var lastOpenFolder: String {
+        get { d.string(forKey: "lastOpenFolder") ?? "" }
+        set { d.set(newValue, forKey: "lastOpenFolder") }
+    }
 
     init() {
         preset = Preset(rawValue: d.string(forKey: "preset") ?? "") ?? .auto
@@ -792,7 +798,17 @@ final class AppModel: ObservableObject {
         p.canChooseFiles = true
         p.allowedContentTypes = Self.acceptedExtensions.compactMap { UTType(filenameExtension: $0) }
         p.message = "Choose mesh files (STL, 3MF, OBJ, PLY) or folders to convert"
-        if p.runModal() == .OK { add(urls: p.urls) }
+        // start where the last pick was made, while that folder still exists
+        var isDir: ObjCBool = false
+        let last = settings.lastOpenFolder
+        if !last.isEmpty, FileManager.default.fileExists(atPath: last, isDirectory: &isDir), isDir.boolValue {
+            p.directoryURL = URL(fileURLWithPath: last, isDirectory: true)
+        }
+        if p.runModal() == .OK {
+            // (the folder the pick sits in: for a chosen folder, the one around it)
+            if let first = p.urls.first { settings.lastOpenFolder = first.deletingLastPathComponent().path }
+            add(urls: p.urls)
+        }
     }
 
     @discardableResult
