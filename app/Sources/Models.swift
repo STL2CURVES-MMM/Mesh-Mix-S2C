@@ -5,7 +5,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum Preset: String, CaseIterable, Identifiable, Codable {
-    case auto, cad, smooth, precise
+    case auto, cad, smooth
 
     var id: String { rawValue }
 
@@ -14,7 +14,6 @@ enum Preset: String, CaseIterable, Identifiable, Codable {
         case .auto: return "Auto"
         case .cad: return "CAD"
         case .smooth: return "Smooth"
-        case .precise: return "Precise"
         }
     }
 
@@ -23,7 +22,6 @@ enum Preset: String, CaseIterable, Identifiable, Codable {
         case .auto: return "Chooses CAD or Smooth for each part automatically"
         case .cad: return "For mechanical parts: flat faces, holes, cylinders, cones and fillets you can select and edit"
         case .smooth: return "For organic shapes, sculpts and scans: smooth surfaces that follow the shape"
-        case .precise: return "Follows the mesh most closely: tighter CAD faces for mechanical parts, more detailed smooth surfaces for organic ones (slower)"
         }
     }
 
@@ -32,7 +30,6 @@ enum Preset: String, CaseIterable, Identifiable, Codable {
         case .auto: return "wand.and.stars"
         case .cad: return "cube.transparent"
         case .smooth: return "drop.fill"
-        case .precise: return "scope"
         }
     }
 
@@ -42,7 +39,6 @@ enum Preset: String, CaseIterable, Identifiable, Codable {
         case .auto: return "Higher quality fits surfaces more tightly and adds detail, but takes longer."
         case .cad: return "Higher quality makes the faces follow the mesh more closely and adds detail to curved freeform areas, but takes longer."
         case .smooth: return "Higher quality uses more surfaces, so finer details are kept, but takes longer and makes bigger files."
-        case .precise: return "Higher quality makes the fit even tighter, but takes longer."
         }
     }
 }
@@ -250,7 +246,7 @@ enum JobStatus: Equatable {
 
 struct ConversionResult {
     var preset: String
-    /// The methods behind "mixed" (cad, smooth, precise, faceted), when the
+    /// The methods behind "mixed" (cad, smooth, faceted), when the
     /// engine names them
     var presets: [String] = []
 
@@ -284,7 +280,7 @@ struct ConversionResult {
     /// the parts of a file used different methods).
     var presetTitle: String {
         if preset == "mixed" {
-            let names = ["cad", "smooth", "precise", "faceted"].filter { usedKinds.contains($0) }.map(Self.title(of:))
+            let names = ["cad", "smooth", "faceted"].filter { usedKinds.contains($0) }.map(Self.title(of:))
             return names.isEmpty ? "Mixed" : names.joined(separator: " + ")
         }
         return Self.title(of: preset)

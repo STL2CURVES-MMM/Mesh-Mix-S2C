@@ -117,7 +117,6 @@ If a conversion fails, the app says what went wrong and **why**, in plain words 
 | **Auto** | Everything | Checks every part and picks CAD or Smooth for it. After converting, the preset Auto used is marked **Auto used** in its own color. |
 | **CAD** | Mechanical parts, brackets, enclosures, wheels | Planes, holes, cylinders, cones, fillets (tori) and spheres as exact CAD faces you can select, measure and edit. Anything else becomes fitted NURBS. |
 | **Smooth** | Sculpts, figurines, organic shapes, scans | Large smooth NURBS surfaces fitted to the mesh. |
-| **Precise** | When accuracy matters most | Like Auto, but with a tighter tolerance and more detail. |
 
 ### 3MF projects (Bambu Studio, OrcaSlicer, Snapmaker Orca, PrusaSlicer)
 
