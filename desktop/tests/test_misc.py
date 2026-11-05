@@ -292,11 +292,23 @@ def test_fine_detail_mac_app_matches():
     assert const("warnRatio") == detail.WARN_RATIO
 
 
+def test_a_saved_precise_setting_becomes_auto(qapp, tmp_path):
+    # (Precise is retired: someone who had it chosen must get Auto, not an error)
+    from PySide6.QtCore import QSettings
+
+    from mmm_app.settings import Settings, preset_title
+
+    store = QSettings(str(tmp_path / "old.ini"), QSettings.Format.IniFormat)
+    store.setValue("preset", "precise")
+    assert Settings(store).preset == "auto"
+    assert preset_title("precise") == "Precise"     # (a result an older engine reported still reads rightly)
+
+
 def test_fine_detail_estimate():
     from mmm_app import detail
 
-    assert detail.estimate(2_060_000, 0.7, "precise") is None  # default quality: no fine detail
-    patches, mb = detail.estimate(2_060_000, 1.0, "precise")
+    assert detail.estimate(2_060_000, 0.7, "smooth") is None  # default quality: no fine detail
+    patches, mb = detail.estimate(2_060_000, 1.0, "smooth")
     assert patches > 150_000 and 80 < mb < 200
     assert detail.estimate(2_060_000, 1.0, "cad") is None
     assert detail.estimate(2_060_000, 1.0, "smooth", max_faces=4000) is None
@@ -306,7 +318,7 @@ def test_fine_detail_estimate():
 
 def test_fine_detail_warning_in_panel(window, meshes):
     m, s, panel = window.model, window.settings, window.settings_panel
-    s.preset = "precise"
+    s.preset = "smooth"
     s.quality = 1.0
     m.add([meshes["one.stl"]])
     assert wait_until(lambda: all(j.status == JobStatus.READY for j in m.jobs))
