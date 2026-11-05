@@ -136,6 +136,10 @@ Higher quality tightens the fitting tolerance and adds surface detail, but takes
 
 **Best quality keeps fine detail.** In the *Best quality* part of the slider (85% and up), organic shapes get more surfaces the denser the mesh is, so sculpted texture like cracks, scales and tool marks survives. At the far right the surfaces stay within a few hundredths of a millimeter of a typical sculpt. Dense meshes then make much bigger STEP files and take a lot longer: a 2-million-triangle bust took about 20 minutes and made a 130 MB file, instead of about 8 minutes and 25 MB. When that's about to happen, a warning under the slider gives the expected file size. It needs a few GB of memory. A **Smooth surface limit** (Advanced) turns it off.
 
+### Themes
+
+The gear button at the top of the file list opens Settings, where you can pick Dark (the default), Light, Original (1.6.0's look) or Match system, and an accent colour.
+
 ## Building from source
 
 **Getting the code:** download only the latest version, not the whole history:
@@ -144,7 +148,7 @@ Higher quality tightens the fitting tolerance and adds surface detail, but takes
 git clone --depth 1 https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C
 ```
 
-The current files are under 4 MB. The full history is about 120 MB, because it still contains large test files that were removed later, so a plain `git clone` downloads far more than you need. If you only want to use the app, download it from the [Releases page](https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C/releases/latest) instead; no cloning needed.
+The current files are about 6 MB. The full history is about 120 MB, because it still contains large test files that were removed later, so a plain `git clone` downloads far more than you need. If you only want to use the app, download it from the [Releases page](https://github.com/STL2CURVES-MMM/Mesh-Mix-S2C/releases/latest) instead; no cloning needed.
 
 All three versions share the conversion engine in `engine/`. The version number lives in `VERSION`.
 
@@ -170,7 +174,7 @@ python3.14 -m venv .venv                       # Windows: py -3.14 -m venv .venv
 .venv/bin/python desktop/build.py               # Windows: .venv\Scripts\python desktop\build.py
 ```
 
-This builds `dist-desktop/ManifoldMeshMix/` (the app with its engine) and the installer (Windows) or AppImage (Linux). To run the app straight from the source code: `.venv/bin/python -m mmm_app` inside `desktop/`.
+This builds `dist-desktop/ManifoldMeshMix/` (the app with its engine; hidden names like this one stay as they were so settings and updates carry over) and the installer (Windows) or AppImage (Linux). To run the app straight from the source code: `.venv/bin/python -m mmm_app` inside `desktop/`.
 
 ### Releases
 
@@ -178,13 +182,15 @@ Pushing a tag such as `v2.0.1` (matching `VERSION`), or running the workflow wit
 
 ### Where things are
 
-- `engine/mmm/`: the Python conversion engine (OpenCASCADE via OCP). Run it directly with `.venv/bin/python engine/mmm_engine.py convert part.stl --preset auto`.
+- `engine/mmm/` and `engine/mms2c/`: the Python conversion engine (OpenCASCADE via OCP): Manifold Mesh Mix's, and what came from stl2curves together with the merged pipeline (`engine/mms2c/merged.py`). Run it directly with `.venv/bin/python engine/mmm_engine.py convert part.stl --preset auto`.
 - `app/Sources/`: the SwiftUI Mac app. `app/Tests/update_test.py` tests its self-update.
 - `desktop/mmm_app/`: the Windows/Linux app; `desktop/packaging/`: its installer and AppImage files; `desktop/tests/`: unit tests, the scripted self-test checker and update tests.
-- `tests/`: test-model generator (`make_models.py`, creates `tests/models/`), test suite (`run_suite.py`, with `render.py` for its pictures) and `measure_detail.py`, which measures how closely a STEP file follows its mesh.
+- `tests/`: test-model generator (`make_models.py`, creates `tests/models/`), test suite (`run_suite.py`, with `render.py` for its pictures), `measure_detail.py`, which measures how closely a STEP file follows its mesh, the engine's unit tests (`tests/engine/`) and a smoke test of the merged engine (`smoke_merged.py`).
+- `tools/`: the icon and logo makers, and `tools/diagnostics/`, one-off scripts kept from past investigations.
 
 ### How the engine works (short version)
 
+- **Merged engine** (`engine/mms2c/merged.py`), for Auto and CAD: stl2curves' front end mends the mesh and finds screw threads, fillets, radii at their design size, freeform patches and pipes along curved edges. Each of these becomes a region with a locked surface in the segmentation below, which covers what's left; then the steps below carry on. The descriptions below come from Manifold Mesh Mix's engine (`engine/mmm/`), which also does Smooth and Precise alone.
 - **Mesh check** (`engine/mmm/meshcheck.py`): runs on every part before converting. Each problem has its own detector (zero-volume pieces and coincident opposite sheets for internal walls, union-find over corner fans for pinched points, a uniform grid with exact triangle–triangle tests for self-intersections, Manifold booleans for overlapping pieces) and is fixed in an order where each fix makes the next one easier. MeshFix repairs crossing surfaces, but its result is compared with the original patch by patch, using winding numbers to tell inside from outside, and only kept where no material is added or removed. A second pass (`verify_bodies`) checks the fixed mesh again without fixing anything; the engine's `fix` command saves the fixed mesh.
 
 - **CAD:** the mesh is segmented by region growing with robust, area-weighted fits of planes, cylinders, cones, spheres and tori. Simpler surface types are preferred, and fits are checked between mesh vertices, not just at them, within the mesh's own faceting (measured from its curved areas; shallow creases don't count). Coarse cylinders made of a few long facets (typical of OpenSCAD) are recognised from the edges that run along them.
@@ -200,8 +206,6 @@ Pushing a tag such as `v2.0.1` (matching `VERSION`), or running the workflow wit
 Mesh Mix-S2C is free. If it saves you time, you can [buy us a coffee](https://buymeacoffee.com/tunathefirst): it helps pay for the AI credits that go into building and improving it. **Help → Support the Project** in the app opens the same page.
 
 Supporters are thanked on the app's **Credits** page (the Credits button in the Software Update window). If you'd like your name there, write the name you want shown in your donation message; otherwise you're listed as an anonymous supporter.
-
-**Themes:** the gear button at the top of the file list opens Settings, where you can pick Dark (the default), Light, Original (1.6.0's look) or Match system, and an accent colour.
 
 ## License
 
