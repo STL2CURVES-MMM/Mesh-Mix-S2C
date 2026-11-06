@@ -1,4 +1,4 @@
-# PyInstaller spec for the Manifold Mesh Mix conversion engine (onedir).
+# PyInstaller spec for the Mesh Mix-S2C conversion engine (onedir).
 import os
 import sys
 

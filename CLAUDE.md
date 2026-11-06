@@ -1,4 +1,4 @@
-# Working on Manifold Mesh Mix
+# Working on Mesh Mix-S2C
 
 Instructions for every coding session on this project, from its owner.
 
@@ -64,6 +64,7 @@ Instructions for every coding session on this project, from its owner.
 ## Checks
 
 - Unit tests: `.venv/bin/python -m pytest -q desktop/tests`
+- Engine tests: `.venv/bin/python -E -s -m pytest -q tests/engine`
 - Lint: `.venv/bin/python -m pyflakes desktop`
 - CI (`.github/workflows/build.yml`) builds and tests Linux, Windows and
   macOS on every push.

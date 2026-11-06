@@ -1,4 +1,4 @@
-"""Draw the Manifold Mesh Mix app icon and build AppIcon.icns.
+"""Draw the Mesh Mix-S2C app icon and build AppIcon.icns.
 
 A dark squircle with a sphere that is a low-poly triangle mesh on the left
 half and a smooth, glossy surface on the right half, joined by a glowing

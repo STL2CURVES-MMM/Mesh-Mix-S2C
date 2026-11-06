@@ -1,6 +1,6 @@
 # Third-party software
 
-Manifold Mesh Mix is licensed under the GNU Affero General Public License v3.0 (see `LICENSE`).
+Mesh Mix-S2C is licensed under the GNU Affero General Public License v3.0 (see `LICENSE`).
 The app bundles the following open-source software, each under its own license:
 
 | Software | Used for | License |
