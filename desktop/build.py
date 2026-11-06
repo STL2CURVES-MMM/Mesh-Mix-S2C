@@ -42,13 +42,14 @@ def run(cmd, **kw):
 
 
 def make_icons():
-    """app.ico (Windows) and PNGs (Linux) from the Mac app's icon."""
+    """app.ico (Windows: the Windows icon, tools/logo/make_win_icon.py, which fills its square)
+    and PNGs (Linux) from the Mac app's icon."""
     from PIL import Image
 
     src = Image.open(os.path.join(ROOT, "app", "Resources", "AppIcon-1024.png")).convert("RGBA")
     os.makedirs(BUILD, exist_ok=True)
     ico = os.path.join(BUILD, "app.ico")
-    src.save(ico, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    shutil.copyfile(os.path.join(ROOT, "desktop", "mmm_app", "resources", "app-win.ico"), ico)
     pngs = {}
     for size in (64, 128, 256, 512):
         p = os.path.join(BUILD, f"icon-{size}.png")

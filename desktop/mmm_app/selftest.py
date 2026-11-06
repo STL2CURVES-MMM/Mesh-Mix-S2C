@@ -208,12 +208,12 @@ class SelfTest(QObject):
             s.outputMode = "subfolder"
             yield 0.3
             self.shot("quality-auto")
-            s.autoQuality = False
+            s.preset = "smooth"          # (the slider is only shown with Smooth)
             s.quality = 0.15
             yield 0.3
             self.shot("quality-fast")
             s.quality = 0.7
-            s.autoQuality = True
+            s.preset = "auto"
 
         m.convert_all()
         self.note("convert-all")

@@ -80,7 +80,7 @@ Every version can update itself. Click the **⬇ button** next to the app name (
 
 1. Open **Mesh Mix-S2C** (Applications on the Mac, the Start menu on Windows, the AppImage on Linux).
 2. Drop files or whole folders onto the window, or click the drop area to browse. You can also right-click a file and choose **Open With → Mesh Mix-S2C** (Finder on the Mac, Explorer on Windows).
-3. Pick a **preset** (Auto is fine for almost everything) and set the **Speed ↔ Quality** slider.
+3. Pick a **preset** (Auto is fine for almost everything). With **Smooth**, also set how much surface detail to keep with the **Speed ↔ Quality** slider.
 4. Press **Convert** (⌘↩ on the Mac, Ctrl+Enter on Windows/Linux). The STEP files stay inside the app until you export them; nothing is saved into your folders yet.
 5. Click a file in the queue to compare the **Mesh** and **STEP** views. The STEP view shows the body the way a CAD program does; the palette button gives every face its own color, so you can see how the surfaces were split up.
 6. Press **Export…** (⌘E / Ctrl+E, or **Export All** ⇧⌘E / Ctrl+Shift+E). The export window shows the file names, where they go (by default a **STEP Files** folder next to each original) and whether existing files are replaced. If replace is off and a file with the same name is already there, the app asks whether to replace it or save under a new name.
@@ -130,9 +130,9 @@ The app reads the actual parts from slicer project files:
 
 ### Speed ↔ Quality
 
-Higher quality tightens the fitting tolerance and adds surface detail, but takes longer.
+Higher quality gives smooth surfaces more detail, but takes longer.
 
-**Auto quality** (with the Auto preset, on by default): each file gets its own quality from its size, because small meshes are quick even near the top of the slider while very big ones would take hours. Under 50,000 triangles 90%, up to 300,000 80%, up to 1 million 70%, up to 3 million 60%, and 50% above that. The slider shows the quality picked for the selected file. Moving the slider switches to one quality for every file; the **Auto** button next to it switches back.
+**Only with Smooth.** CAD, Auto and Precise take the quality from each file's size, and the slider is hidden for them: for those it only loosened how far the CAD faces may stray from the mesh, and results depended on exactly where it sat. The quality by size: under 50,000 triangles 90%, up to 300,000 80%, up to 1 million 70%, up to 3 million 60%, and 50% above that, because small meshes are quick while very big ones would take hours.
 
 **Best quality keeps fine detail.** In the *Best quality* part of the slider (85% and up), organic shapes get more surfaces the denser the mesh is, so sculpted texture like cracks, scales and tool marks survives. At the far right the surfaces stay within a few hundredths of a millimeter of a typical sculpt. Dense meshes then make much bigger STEP files and take a lot longer: a 2-million-triangle bust took about 20 minutes and made a 130 MB file, instead of about 8 minutes and 25 MB. When that's about to happen, a warning under the slider gives the expected file size. It needs a few GB of memory. A **Smooth surface limit** (Advanced) turns it off.
 

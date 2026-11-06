@@ -561,7 +561,8 @@ WIN_OUT_OF_MEMORY = {0xC0000017, 0xC000012D}  # STATUS_NO_MEMORY, STATUS_COMMITM
 
 def _memory_stop_message():
     return (f"{system.OS_NAME} stopped the conversion, most likely because the computer ran low on memory. "
-            "Move the slider toward Faster, or convert one file at a time (Advanced → Files at once).")
+            "Convert one file at a time (Advanced → Files at once), or with Smooth move the detail slider "
+            "toward Faster.")
 
 
 def crash_message(code):

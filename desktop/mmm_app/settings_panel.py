@@ -141,7 +141,7 @@ class SettingsPanel(QWidget):
         ends = hbox(IconLabel("fast", theme.TEXT_FAINT, 11), Label("Faster", 10, color=theme.TEXT_FAINT), None,
                     IconLabel("sparkles", theme.TEXT_FAINT, 11), Label("Better", 10, color=theme.TEXT_FAINT), spacing=4)
         self.quality_hint = Label("", 10.5, color=theme.TEXT_DIM, wrap=True)
-        quality = Card()
+        quality = self.quality_card = Card()
         quality.lay.addLayout(hbox(SectionLabel("Speed ↔ Quality"), None, self.quality_word, self.auto_q, spacing=6))
         quality.lay.addWidget(self.slider)
         quality.lay.addLayout(ends)
@@ -206,7 +206,7 @@ class SettingsPanel(QWidget):
         body.addWidget(self.debris)
         self.custom_tol = QCheckBox("Custom fit tolerance")
         self.custom_tol.setToolTip("How far the CAD surfaces may deviate from the mesh. Normally chosen automatically "
-                                   "from the part size and the quality slider.")
+                                   "from the part size.")
         self.custom_tol.toggled.connect(lambda on: setattr(s, "useCustomTolerance", on))
         body.addWidget(self.custom_tol)
         self.tol = QDoubleSpinBox()
@@ -306,34 +306,23 @@ class SettingsPanel(QWidget):
         self.refresh()
 
     def _slider_moved(self, v):
-        s = self.settings
-        if s.auto_quality_on:
-            s.autoQuality = False  # the user chose a quality for every file
-        s.quality = v / 1000
+        self.settings.quality = v / 1000
 
     def refresh_quality(self):
-        """The slider and its words. With Auto quality the slider shows the
-        quality picked for the selected file."""
+        """The slider and its words, shown only with Smooth: for every other preset the
+        quality comes from each file's size (see Settings.auto_quality_on)."""
         s = self.settings
-        j = self.model.selected_job
-        tris = j.triangles if j is not None else None
-        auto = s.auto_quality_on
-        q = s.quality_for(tris) if auto else s.quality
-        if self.slider.value() != round(q * 1000):
+        self.quality_card.setVisible(not s.auto_quality_on)
+        self.auto_q.setVisible(False)
+        if s.auto_quality_on:
+            return
+        if self.slider.value() != round(s.quality * 1000):
             self.slider.blockSignals(True)
-            self.slider.setValue(round(q * 1000))
+            self.slider.setValue(round(s.quality * 1000))
             self.slider.blockSignals(False)
-        self.auto_q.setVisible(s.preset == "auto" and not s.autoQuality)
-        if auto:
-            self.quality_word.setText(f"Auto · {round(q * 100)}%" if tris else "Auto")
-            hint = ("Auto picks the quality for each file from its size: up to 90% for small meshes, down to 50% "
-                    "for very big ones, so they don't take hours.")
-            if tris:
-                hint += f" “{j.file_name}” gets {round(q * 100)}%."
-            self.quality_hint.setText(hint + " Move the slider to use one setting for every file.")
-        else:
-            self.quality_word.setText(quality_word(s.quality))
-            self.quality_hint.setText(choice(PRESETS, s.preset).hint)
+        self.quality_word.setText(quality_word(s.quality))
+        self.quality_hint.setText("How much surface detail the smooth surfaces keep: more detail follows the "
+                                  "mesh more closely, with more surfaces and a bigger file.")
         self.quality_word.set_color(theme.accent())
 
     def refresh_auto_pick(self):

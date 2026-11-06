@@ -143,7 +143,7 @@ enum BugReport {
         add("Settings" + (job.runSettings != nil ? " (of the last conversion)" : " (current)"))
         add("  Preset:        \(run.preset.title)")
         let percent = Int((run.quality * 100).rounded())
-        add("  Quality:       \(run.preset == .auto && run.autoQuality ? "Auto, " : "")\(percent)%")
+        add("  Quality:       \(run.preset != .smooth ? "Auto, " : "")\(percent)%")
         add("  Mesh repair:   \(run.repair.title)")
         add("  Units:         \(run.unit.title)")
         add("  3MF projects:  \(run.plateLayout.title)")

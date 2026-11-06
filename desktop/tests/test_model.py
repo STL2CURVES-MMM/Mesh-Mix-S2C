@@ -466,14 +466,16 @@ def test_auto_quality_steps(settings):
 
     assert [auto_quality(n) for n in (1, 49_999, 50_000, 299_999, 300_000, 999_999, 1_000_000, 2_999_999,
                                       3_000_000, 50_000_000)] == [0.9, 0.9, 0.8, 0.8, 0.7, 0.7, 0.6, 0.6, 0.5, 0.5]
-    settings.preset = "auto"
     settings.quality = 0.3
-    assert settings.auto_quality_on and settings.quality_for(2_000_000) == 0.6
-    assert settings.quality_for(None) == 0.3  # not read yet: the slider's quality
-    settings.autoQuality = False
-    assert settings.quality_for(2_000_000) == 0.3
-    settings.autoQuality = True
-    settings.preset = "smooth"
+    # every preset but Smooth takes the quality from the file's size, whatever the slider says
+    for preset in ("auto", "cad", "precise"):
+        settings.preset = preset
+        assert settings.auto_quality_on and settings.quality_for(2_000_000) == 0.6
+        assert settings.quality_for(None) == 0.9      # not read yet: as a small file
+    settings.autoQuality = False                      # (an old setting: no longer matters)
+    settings.preset = "auto"
+    assert settings.quality_for(2_000_000) == 0.6
+    settings.preset = "smooth"                        # Smooth keeps the slider
     assert not settings.auto_quality_on and settings.quality_for(2_000_000) == 0.3
 
 

@@ -191,11 +191,14 @@ final class Settings: ObservableObject {
         return autoQualityBiggest
     }
 
-    var autoQualityOn: Bool { preset == .auto && autoQuality }
+    /// Whether the quality comes from each file's size rather than the slider: always, except
+    /// with Smooth. For CAD, Auto and Precise the slider only loosened the fit tolerance; the
+    /// owners took it away there (2026-11-01). Smooth keeps it for its surface detail.
+    var autoQualityOn: Bool { preset != .smooth }
 
     /// The quality a file with this many triangles is converted at.
     func quality(for triangles: Int?) -> Double {
-        if autoQualityOn, let t = triangles, t > 0 { return Settings.pickedQuality(triangles: t) }
+        if autoQualityOn { return Settings.pickedQuality(triangles: max(triangles ?? 1, 1)) }
         return quality
     }
 }
@@ -1350,7 +1353,7 @@ final class AppModel: ObservableObject {
         if signaled {
             switch status {
             case SIGKILL:
-                return "macOS stopped the conversion, most likely because the Mac ran low on memory. Move the slider toward Faster, or convert one file at a time (Advanced → Files at once)."
+                return "macOS stopped the conversion, most likely because the Mac ran low on memory. Convert one file at a time (Advanced → Files at once), or with Smooth move the detail slider toward Faster."
             case SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE:
                 return "The converter crashed on this file. Try another preset, or set Mesh repair to Thorough under Advanced."
             default:
