@@ -15,7 +15,7 @@ PATCHES_PER_CAGE_VERT = 4
 KB_PER_PATCH = 0.65        # STEP file size per fitted surface patch (measured)
 NORMAL_PATCHES = 16000     # about the most one piece gets without fine detail
 WARN_RATIO = 3             # warn when a file gets this much bigger than usual
-PRESETS = ("auto", "smooth", "precise")  # the presets that make smooth surfaces
+PRESETS = ("auto", "smooth")  # the presets that make smooth surfaces
 
 
 def fine_patches(triangles, quality):

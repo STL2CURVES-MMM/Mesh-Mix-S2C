@@ -207,7 +207,7 @@ def result_unit(job, settings):
 @dataclass
 class ConversionResult:
     preset: str = ""
-    # the methods behind "mixed" (cad, smooth, precise, faceted), when the
+    # the methods behind "mixed" (cad, smooth, faceted), when the
     # engine names them
     presets: list = field(default_factory=list)
     valid: object = None  # True / False / None (not reported)

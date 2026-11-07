@@ -23,9 +23,6 @@ PRESETS = [
            "cube-transparent"),
     Choice("smooth", "Smooth", "For organic shapes, sculpts and scans: smooth surfaces that follow the shape",
            "Higher quality uses more surfaces, so finer details are kept, but takes longer and makes bigger files.", "drop"),
-    Choice("precise", "Precise",
-           "Follows the mesh most closely: tighter CAD faces for mechanical parts, more detailed smooth surfaces for organic ones (slower)",
-           "Higher quality makes the fit even tighter, but takes longer.", "scope"),
 ]
 
 OUTPUT_MODES = [
@@ -105,7 +102,7 @@ def preset_title(value, kinds=()):
     """Display name of a preset the engine reports ("mixed" when the parts of
     a file used different methods; `kinds` names them when known)."""
     if value == "mixed":
-        names = [preset_title(k) for k in ("cad", "smooth", "precise", "faceted") if k in used_kinds(value, kinds)]
+        names = [preset_title(k) for k in ("cad", "smooth", "faceted") if k in used_kinds(value, kinds)]
         return " + ".join(names) or "Mixed"
     if value == "faceted":
         return FACETED_TITLE
