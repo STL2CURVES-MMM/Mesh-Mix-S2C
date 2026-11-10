@@ -26,6 +26,8 @@ The report is a list of Issue dicts (see _issue) for the apps. Nothing here
 changes the file on disk; "Save fixed mesh" writes a copy.
 """
 import numpy as np
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 from scipy import sparse
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
@@ -424,7 +426,8 @@ def _hole_fills(V, loop):
     Q = np.c_[(P - o) @ vt[0], (P - o) @ vt[1]]
     try:
         t = np.asarray(manifold3d.triangulate([Q]), np.int64).reshape(-1, 3)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return
     if len(t) != len(loop) - 2:
         return  # the outline overlaps itself in that plane
@@ -512,7 +515,8 @@ def overlapping_bodies(bodies, exclude=None):
             try:
                 inter = (ma ^ mb).volume()
                 va, vb = ma.volume(), mb.volume()
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 continue
             small = min(va, vb)
             if small <= 0:
@@ -567,7 +571,8 @@ def touching_parts(parts, frames):
             try:
                 # touching solids join into one piece in an exact union
                 joined = len((mi + mj).decompose()) < len(mi.decompose()) + len(mj.decompose())
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 continue
             if joined:
                 edges.append((i, j))
@@ -642,7 +647,8 @@ def _to_manifold(body):
         if man.status() != m3d.Error.NoError or man.is_empty():
             return None
         return man
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
 
 
@@ -931,7 +937,8 @@ def fix_self_intersections(shell, report=NULL):
         return None
     try:
         fixed = repair_shell_meshfix(shell, report)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
     if fixed is shell or not fixed.closed:
         return None
@@ -1208,6 +1215,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
             try:
                 s2 = repair_shell_light(s2, report)
             except Exception as e:  # pragma: no cover
+                faults.caught(e)
                 report.log(f"Quick mesh repair didn't work ({e})")
         if not s2.closed and not _thin_sheet(s, diag) and (repair == "aggressive" or s2.topo.n_nonmanifold_edges
                                                          or s2.topo.n_boundary_edges):
@@ -1215,6 +1223,7 @@ def prepare_part(tris, repair="auto", remove_debris=True, report=NULL, merge=Fal
             try:
                 s2 = repair_shell_meshfix(s2, report)
             except Exception as e:  # pragma: no cover
+                faults.caught(e)
                 report.warn(f"Full mesh repair failed ({e}); the mesh was converted as it is.")
         if s2.closed and _thin(s2.V, s2.F, diag):
             s2 = s

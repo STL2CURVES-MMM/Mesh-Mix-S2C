@@ -13,6 +13,9 @@ the cell and is trimmed by the cell's boundary edges, exactly like a
 reverse-engineered CAD surface.
 """
 import heapq
+# Modified 2026-11-04: a cell is held along long triangles (fit_cell, stl2curves freeform._long_samples).
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 
 import numpy as np
 from scipy import sparse
@@ -24,6 +27,7 @@ from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
 from OCP.gp import gp_Pnt
 from OCP.collections import Array1_double, Array1_int, Array2_gp_Pnt
 
+from mms2c.freeform import _long_samples
 from .fitting import perp_basis
 
 
@@ -402,9 +406,22 @@ def fit_cell(V, F, faces, n, tol, detail=0.6, max_ctrl=40):
         else:
             break
     best = None
+    S0, u0, v0 = S, u, v
+    longest = np.linalg.norm(tri - tri[:, [1, 2, 0]], axis=2).max(axis=1)
     for attempt in range(4):
         tu = _knots(nu, ulo, uhi)
         tv = _knots(nv, vlo, vhi)
+        # (a triangle longer than the control points' spacing leaves them free to wander between its corners: see
+        # mms2c/freeform.py _long_samples. A pipe's cell of 20 mm triangles stood 0.2 mm off them, and went to flat faces.)
+        step = min(du / max(nu - 3, 1), dv / max(nv - 3, 1))
+        far = longest > 2.0 * step
+        if far.any():
+            more = np.vstack([_long_samples(t, step) for t in tri[far]])
+            S = np.vstack([S0, more])
+            Q = more - origin
+            u, v = np.r_[u0, Q @ e1], np.r_[v0, Q @ e2]
+        else:
+            S, u, v = S0, u0, v0
         Bu = _design(u, tu)
         Bv = _design(v, tv)
         # tensor product rows (sparse): row p = kron(Bu[p], Bv[p])
@@ -422,7 +439,8 @@ def fit_cell(V, F, faces, n, tol, detail=0.6, max_ctrl=40):
         rhs = A.T @ S
         try:
             C = np.column_stack([spsolve(M, rhs[:, k]) for k in range(3)])
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             C = np.column_stack([lsqr(M, rhs[:, k])[0] for k in range(3)])
         if not np.isfinite(C).all():
             break

@@ -1,5 +1,51 @@
 """CAD preset: recognise analytic surfaces and build an editable B-rep."""
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-08: _cusp_crossing looks only at a border holding two circular arcs, all it looks for (_circular_edges),
+# and a crossing elsewhere no longer stops it (helical thread borders read back from a file cross themselves, f_long_d8_l12).
+# Modified 2026-11-07 (loose edges, step 2): a pooled surface merged with another by _merge_equal keeps its lineage (pooled, the union of the members' pieces), so a face that doesn't build goes back to the pieces instead of freeform cells.
+# Modified 2026-11-06 (loose edges, step 2, tc's tori): a pooling join lands only on a kind a member has or a generalisation every member shares, never on a spindle torus (POOL_SPINDLE), cylinders whose axes are within POOL_BEND degrees never on a torus, and a torus or cone of cylinder tiles keeps each tile's radius within its own uncertainty (POOL_SIGMA, _radius_sigma).
+# Modified 2026-11-06 (loose edges, step 2): in the pooling's freeform stage, a cell takes a member only when it holds the member's own vertices as closely as the member's surface did (POOL_LEAVE), and never a piece holding a drawn flat; a drawn flat inside a piece is designed_flats' verdict with no floor of the pool's own (_drawn_flats_in).
+# Modified 2026-11-05 (loose edges, step 2a): neighbouring pieces that fit one simple surface together are pooled into it
+# (_pool_pieces, from _merge_equal): the tiles a smooth area was broken into met along borders with no exact curve.
+# Modified 2026-11-08: OCC's wire check (SelfIntersect) runs in meshguard's watched child (self_crossings), so a crash in it
+# fails only that face, not the conversion (_self_crossing_regions, _small_neighbours_crossing, _cusp_crossing).
+# Modified 2026-11-07: a face read back bigger than written is that face's, and broken, not a stop that leaves every later face
+# without its piece (_read_back_pieces grown): allen-key's one bad torus made 33 sound faces count as broken.
+# Modified 2026-11-04 (threads): a long border's curve takes more of the chain's points wherever it strays, with no limit on how many, and is measured
+# both ways at a cost that grows with the chain, not its square (_fit_long_chain, _ChainRuler); what's left goes through every point (_through_every_point).
+# Modified 2026-11-04: a flat piece the mesh shows to be a designed plane stays one (fidelity.designed_flats, _make_freeform), and the flat faces of the last resort may take in a neighbour they break (LAST_ROUNDS).
+# Modified 2026-11-04: a big stray freeform surface is cut up and fitted again, not made flat (FLAT_FEW); a void read-back doesn't end the attempt.
+# Modified 2026-11-04: a chord's error isn't its face's, and surfaces left out of the fit check are left out on both sides (_chords_let_off).
+# Modified 2026-11-04: a seam keeps clear of the loops it joins, along its whole length (_seam_score), and so does one to a pole.
+# Modified 2026-11-04: a corner where two exact edges really cross goes to the crossing (_corners_where_edges_cross).
+# Modified 2026-11-04: a chord both too far off a round and turning too far along it isn't on that round (face_error, CHORD_TURN_K).
+# Modified 2026-11-04: the fit check measures every far point on the true face, both ways (_far_on_own_face).
+# Modified 2026-11-03 (planes): a sliver that is a chord cap of a round goes to the round whatever its direction (_chord_cap).
+# Modified 2026-11-03 (planes): edges_made takes only crossings the edges really make, and an edge follows the mesh only as far as the crossing.
+# Modified 2026-11-03 (planes): _join_level_planes takes the step between its levels.
+# Modified 2026-11-03 (planes): an arc must turn ARC_MIN_TURN to be one; a settled tolerance stated far beyond what's measured is measured (_overstated_tolerances).
+# Modified 2026-11-03 (planes): an edge on a plane takes its measured distance from it as its tolerance (_plane_edges_measured).
+# Modified 2026-11-02 (planes): a
+# fold of the mesh inside a plane's region joins it (_absorb_folded_islands).
+# Modified 2026-11-02 (planes): _broken_when_saved lines the faces read back up with those written
+# when the reader has cut some in pieces (_read_back_pieces), instead of giving up the whole check.
+# Modified 2026-11-02 (planes): a plane a designer drew keeps to the triangles on it (Plane.on_design,
+# Segmenter._process_seed, face_error), and a mesh mostly of exactly flat facets is not taken for a
+# scan (Segmenter.__init__, SCAN_COPLANAR).
+# Modified 2026-11-02 (edits): a triangle at a border whose corners lie on the surface next door, and not on its own, goes
+# there (Segmenter._triangles_to_their_surfaces), so a border runs where the surfaces really meet.
+# Modified 2026-11-02 (edits): before the faces are built, surfaces are settled with each other (regular.py), and borders
+# between surfaces touching smoothly are the exact line or circle of contact (_exact_chain_edge, _meet).
+# Modified 2026-11-02 (edits): flat strips whose corners lie on a curved surface beside them are that surface
+# (Segmenter._chords_to_surfaces), and a chamfer's narrow band takes the axis of the round it runs beside
+# (Segmenter._bands_on_axes): strips and tilted cylinders there meet their neighbours nearly tangent, and Fusion can't edit that.
+# Modified 2026-11-02 (edits): corners and edges come from the surfaces, not the mesh (solve_corners, _exact_chain_edge):
+# each corner is where its surfaces meet and each edge lies on both its faces, as in a designer's file. Fusion can only
+# edit a face when its corners and edges really lie on it.
+# Modified 2026-11-02: regions pinched only once the slivers have moved are split too (build() in build_cad_shell);
+# the cut between two pieces of a plane is a line only when it passes clear of the rest (_plane_cut_edges),
+# and a pinched plane is cut the shortest way from one outline to the other (_shortest_cut).
+# Modified 2026-11-02: freeform cells too thin for their surface to reach their outline join a neighbour (_slivers_to_neighbours).
 # Modified 2026-10-25 for the stl2curves merged engine (mms2c/merged.py): surfaces
 # stl2curves found come in "locked" (_locked): borders move, the surface is never refitted,
 # simplified, swallowed by a sweep or a fillet chain, and survives merges; faces still
@@ -40,6 +86,8 @@
 # Off where the merged engine seeds the segmenter with stl2curves' features (Segmenter.
 # known_axes): they hold those axes' surfaces already, and there it cost Solar Panel Bracket
 # Large its CAD faces (one smooth area 22 -> 24 regions tipped compete the wrong way).
+# Modified 2026-11-03 (demote): a tiny failed region's triangles join a neighbour only when its
+# surface holds them within the tolerance (_demote), not the nearest neighbour at any distance.
 # Modified 2026-10-29 (slivers): a triangle with no area to speak of goes to the region across
 # its longest edge before each build (Segmenter._flat_slivers_to_long_edge): held by a short
 # edge it made a zero-width spike in its face's outline, which OpenCASCADE finds crossing.
@@ -53,7 +101,33 @@
 # Modified 2026-10-31 (Tuna's side): _heal_faces no longer keeps a repair that turns a
 # neighbouring face inside out (HEAL_GROWTH): the edge it hands on can leave a periodic
 # neighbour with everything but its patch (a whole torus round Bravo's motor shaft joint).
+# Modified 2026-11-01 (Tuna's side): _fan_hypothesis gathers a coarse cone's fan of thin flat
+# strips and fits one cone (chamfers round rounded corners); an exactly flat seed that isn't a strip
+# keeps out of a curved surface its corners miss (SEED_ON_CURVE); a near tie goes to the simpler
+# surface only among those the mesh's corners lie about as close to (TIE_FIT); the saved-file check
+# also counts a face OpenCascade can't mesh at the preview's fineness, or a small one finer (_unmeshable,
+# MESH_FINE) and is rebuilt like one (never as flat facets: Tuna, 2026-11-01).
+# Modified 2026-11-01 (Tuna's side, later): _designed_run_hypothesis snaps a coarse export's strips
+# to the cylinder or cone their corners lie on, even where a strip's middle stands off it; where
+# such a designer's surface is found, surfaces that miss the corners don't compete, and
+# _inaccurate_regions leaves it alone (design intent over the triangles: Tuna and Duvdivan).
+# Modified 2026-11-01 (Tuna's side, chute): the border between two flat faces is one straight
+# edge only while it bends less than LINE_BEND of its length, not just within 5 tolerances: a
+# 0.83 mm L-shaped border 0.28 mm off its chord became a line, its corners took 0.62 mm
+# tolerances reaching past the wall's other edge 0.2 mm away, and neither side wall could be
+# meshed (both were refitted as freeform, 0.37 mm off: the P1S chute's failure).
+# Modified 2026-11-01 (Tuna's side, toolbox top): _make_freeform makes a freeform cell of loose flat
+# pieces only when they turn through FACET_TURNS directions; a wall and the pieces of its 30 deg
+# chamfer (two planes, one crease) had become one B-spline strip 0.35 mm off the mesh.
+# Modified 2026-11-02: broad handlers call faults.caught; _unmeshable meshes through meshguard, a face
+# the mesher can't finish at the fineness asked for counting as unmeshable.
+import collections
+import copy
+from types import SimpleNamespace
+
 import numpy as np
+from . import faults
+from . import meshguard
 
 from OCP.BRep import BRep_Tool
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
@@ -76,13 +150,83 @@ from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt2d
 from OCP.collections import Array1_gp_Pnt
 
 from .brep import MIN_TOL, BRepAssembler, _pnt, make_compound
-from .fitting import CURVED, Cone, Cylinder, Plane, Sphere, Torus, _OnAxis, on_axis, perp_basis, unit
+from .fitting import CURVED, fit_circle_2d, Cone, Cylinder, Plane, Sphere, Torus, _OnAxis, on_axis, perp_basis, unit
 from .meshio import face_normals_areas
 from .planar import planar_regions
+from .regular import contact, contact_rows, regularise
 from .report import NULL
 from .topology import RegionGraph
 
 # Surfaces on known axes (Segmenter._axis_hypotheses)
+BORDER_SURE = 0.75      # share of a plane's corners that must lie on it for it to give up triangles at its border
+SMALL_BESIDE = 0.1      # share of a surface's area: a neighbour this small gives way when their borders cross
+FACET_DWARFS = 4.0      # a flat piece this many times the typical one of its cluster isn't a coarse curve's facet
+STRAIGHT_DEG = (0.01, 10.0)     # degrees: a cylinder this far from square to a flat face beside it may be tilted by mistake
+STRAIGHT_BETTER = 3.0   # times closer a straight piece's corners must lie than the tilted cylinder's
+STRAIGHT_SHARE = 0.7    # share of a straight piece's corners that must lie on its circle, the rest within the tolerance
+LEVEL_STEP = 0.1        # tolerances: neighbouring parallel planes this close in level are one
+FOLD_DEG = 1.0          # degrees: a border turning back on itself within this has folded
+CHORD_KINDS = ("plane", "cylinder", "cone", "sphere", "torus")     # surfaces that can't bulge between a triangle's corners
+LAST_ROUNDS = 2         # times the last resort's flat faces may take in a neighbour they broke
+FLAT_FEW = 24           # triangles: a stray freeform surface of more than this is cut up and fitted again before any flat faces
+EVEN_STEPS = 0.5        # the narrowest of a round's strips, past the mesh's ordinary sag, at least this share of the widest
+CHORD_TURN_K = 2.0      # a chord past the mesh's ordinary sag must turn no more than this many times its ordinary chord
+TRUE_FACE_POINTS = 4000 # far points of a region measured against its true face in the fit check; past this, an even random share stands for the rest
+SEAM_SHALLOW = 0.03     # a loop near a seam must stand off it at least this share of how far along the seam it is (about 1.7 degrees)
+SEAM_LOOKS = 720        # meridians tried for a seam when no corner will do
+SEAM_END = 0.02         # share of a seam's length at each end where the loops it joins don't count against it
+CROSS_NEAR = 1e-3       # share of an edge's length from a corner where the look for a crossing starts
+CROSS_POINTS = 32       # points along each edge in that look, packed towards the corner
+CORNER_ROUNDS = 2       # times the corners are looked at again after some moved to where their edges cross
+TIP_HEIGHT = 0.5        # tolerances: a needle this low at the tip of a flat face beside a freeform one goes to it
+ON_DESIGN = 0.1         # tolerances: a mesh's corners this close to a surface lie on it (a CAD export's vertices sit on what was drawn)
+BAND_TRIS = 400         # triangles: most a narrow band of a chamfer can hold to be looked at for an axis
+EXACT_EDGES = True      # corners and edges are worked out from the surfaces (see solve_corners); False: from the mesh's points
+CORNER_REACH = 4.0      # tolerances: how far a corner or border point may move to reach its surfaces' meeting point
+MEET_RCOND = (0.02, 0.1, 0.35)  # directions the surfaces pin down less than this share of the best are left alone, tried in turn (about 1, 6, 20 degrees)
+MEET_CLEAR = np.cos(np.radians(10.0)) ** 2   # two surfaces whose normals' cosine squared is under this meet clearly
+EDGE_FIT = 1e-4         # mm: an edge's curve lies this close to both its surfaces, or is refined until it does
+POOL_DEG = 15.0         # degrees: two pieces of one surface meet under this at their border, and so do their facets; a drawn crossing
+                        # is steeper (71-88% of our edges at 0.5-15 degrees read back loose; the designers' files keep 0.3% there)
+POOL_EXACT = 0.001      # mm: a piece whose vertices all lie this close to its surface (or within POOL_NOISE times the mesh's own
+                        # scatter) is a drawn face, or one facet, and is never refitted into a neighbour (Tuna's side's rule, at the
+                        # judge's own measure of a drawn plane in a mesh; as a share of the tolerance, 1%, it missed allen's flats,
+                        # whose mesh is rounded to about 0.001, and 6 went to cylinders)
+POOL_NOISE = 4.0        # times the mesh's scatter (fidelity.mesh_noise): a drawn face's vertices lie on it to within that
+POOL_EXACT_SHARE = 90   # percentile of a piece's interior vertices that must lie that close: a drawn face's piece carries a ring
+                        # of its neighbours' triangles at its border (test13: a drawn cylinder's median 0.0003 mm, one in eight over 0.005)
+POOL_INTERIOR = 4       # interior vertices a piece needs for its exactness to be judged on them alone
+POOL_LEAVE = 3          # rounds in which the members a cell doesn't hold leave the cluster and the rest are fitted again
+POOL_SPINDLE = 1.0      # a joined torus with r at R or more is refused: a spindle can't be saved (stepio._readable_everywhere);
+                        # fat ones below that are the limit rule's to judge (designers draw blends up to r/R 0.92, the hopper's
+                        # funnel; at 0.9 the bound refused 366 joins on it and 212 on tc that the limit rule refuses anyway:
+                        # both files identical at 0.9 and 1.0, 2026-11-07)
+                        # and a true spindle can't be saved (stepio._readable_everywhere); tc: cylinder tiles with a few plane
+                        # triangles fitted as tori with r 2 to 11 times R
+POOL_BEND = 2.0         # degrees: cylinders whose axes are within this are one cylinder or a draft cone, never a bend (torus)
+POOL_SIGMA = 3.0        # a torus or cone joined from cylinder tiles keeps each tile's radius (as its tube, or its radius where the
+                        # tile is) within this many times the tile's own radius uncertainty (sigma_r of its least-squares fit: a
+                        # tile spanning a small arc knows its radius poorly, a wide one well), or within the tolerance
+POOL_LIMIT_HOLDS = True     # that rule refuses the join (measured on tc 2026-11-06: of seven cone and torus joins over cylinder
+                            # tiles that the other rules passed, every one missed a tile's radius by 3 to 40 times sigma_r, 0.03
+                            # to 3 mm, while a 1 mm fillet's bend and a draft's tiles keep theirs within sigma_r)
+POOL_FEWER = 3          # a cluster of tiles becomes freeform cells only as this many times fewer faces: two tiles as one cell
+                        # (fan-case: two cylinder tiles of 20 and 8 triangles) changed which segmentation won an unsure area
+POOL_WORSE = 1.5        # a joined surface may stand off a piece's vertices this many times further than the piece's own did, no
+                        # more: a join within the tolerance that is seven times worse than the pieces loses closeness (fan-case)
+POOL_PASSES = 4         # most rounds of pairwise joins in one rebuild: each joins what it can, then looks again
+POOL_SAMPLE = 7         # border points at which two surfaces' angle is measured
+POOL_CREASE = (1.5, 1.0)    # a border whose facets bend more than this share of the pieces' own facets' bending, plus this many
+                        # degrees, is a crease between two drawn faces, not a seam of tiles (the freeform union only; Tuna's side's
+                        # guard, as a relative test: facets of a coarse curve bend by 10 degrees inside a piece and at its borders alike)
+EDGE_TANGENT_DEG = 5.0  # degrees: two faces meeting closer to flat than this have no sharp meeting line to compute
+EDGE_LINE_AT = (0.5, 0.25, 0.75)    # shares along a chord where a border is tested for being that straight line
+EDGE_START = 12         # points of the mesh's a curved edge starts from; more are added where it needs them
+EDGE_POINTS = 200       # most points an edge's curve is laid through
+CHAIN_START = 400       # points of a longer border its curve starts from, more being added where it strays: this sets how long the fit takes, not whether it works
+FACET_TURNS = 3        # distinct directions a cluster of loose flat pieces must turn through to be a coarse curve's facets
+FACET_SAME_DEG = 1.0   # degrees: two flat pieces this close in direction are one plane's (for FACET_TURNS)
+LINE_BEND = 0.05       # share of its length a border between two flat faces may stand off its chord to become one line
 AXIS_AROUND_DEG = 90.0  # degrees: a fitted cylinder, cone or torus lends its axis once it reaches this far round
 AXIS_REACH = 0.05       # share of the model's diagonal, past twice the surface's radius, an axis reaches
 AXIS_NEAREST = 4        # the nearest so many axes in reach are tried for each seed
@@ -97,6 +241,24 @@ FACET_FLAT = 1e-3       # ... and only this close when that face broke (a second
 HEAL_GROWTH = 3.0       # a face this many times the area of its own triangles after a neighbour's repair ...
 HEAL_GROWTH_MM2 = 1.0   # ... and this much more (mm^2) was turned inside out by it
 HEAL_TRIES = 3          # times the repair is run again without the broken faces next to such a face
+MESH_FINE = (0.0015,)   # share of the part's diagonal every saved face must mesh at: the app's preview; see _unmeshable
+MESH_FINE_SMALL = 0.0003  # ... and a small face this finer one too: on a face of about 1 mm a failure there is
+                          # edges off its surface, shown crumpled (toolbox Body474); held to it, sound big faces
+                          # failed too (a P1S drawer's 987 mm2 cylinder: 56 -> 102 faces)
+SMALL_FACE = 0.001        # share of the part's diagonal squared below which a face is small
+SEED_ON_CURVE = 0.25    # share of the tolerance an exactly flat seed's corners may stand off a curved surface taking it
+CUSP_ROUNDS = 6         # cusps on a shell whose exact arcs may be fitted instead, by rebuilding
+CUSP_NEAR = 1e-3        # mm: an edge read back and a border are the same when their ends are this close
+ARC_MIN_TURN = 0.01     # radians: an arc must turn this far to be built as one
+OVERSTATED = 20.0       # tolerances: an edge stated beyond this after settling is measured again
+PLANE_EDGE_SAMPLES = 32 # points along an edge at which its distance from a plane it bounds is measured
+THIN_FACE = 1.0         # tolerances: a region narrower than this all along is a sliver, not a face
+FOLD_TRIS = 64          # triangles at most in a fold of the mesh taken back into the plane round it
+ON_PLANE = 0.002        # mm: a triangle whose corners are all this near a designed plane lies on it ...
+ON_PLANE_SIZE = 2e-5    # ... or this share of the mesh's size, for a big part's float32 noise
+PLANE_SEED_SHARE = 0.75 # an exactly flat seed holding this share of what its plane would grow over at the tolerance is that plane
+SCAN_COPLANAR = 0.25    # share of a mesh's area in exactly coplanar groups of triangles from which it can't be a scan
+TIE_FIT = 0.1           # share of the tolerance the mesh's corners may stand further off a simpler surface (on top of twice) for it to win a near tie
 
 
 # ----------------------------------------------------------------------------
@@ -110,7 +272,7 @@ def _locked(prim):
 
 
 class Region:
-    __slots__ = ("prim", "faces", "sense", "weak", "facet", "parts", "cut")
+    __slots__ = ("prim", "faces", "sense", "weak", "facet", "parts", "cut", "pooled")
 
     def __init__(self, prim, faces, sense, weak=False):
         self.prim = prim
@@ -118,8 +280,10 @@ class Region:
         self.sense = sense
         self.weak = weak
         self.facet = False
-        # a freeform cell made from weak flat faces: those regions (see _make_freeform)
+        # a freeform cell made from weak flat faces: those regions (see _make_freeform); a pooled surface: the
+        # pieces it was made from, which it goes back to if its face doesn't build (_pool_pieces, _unpool)
         self.parts = None
+        self.pooled = False
         # one turn of a surface winding several (split_turns): the direction from
         # its axis of the meridian it was cut at, where its seam goes
         self.cut = None
@@ -127,6 +291,20 @@ class Region:
     @property
     def kind(self):
         return self.prim.kind
+
+
+def _round_radius(prim, p):
+    """The tightest circle of a round through p: its turn about the axis or, on a torus, its own."""
+    if prim.kind in ("cylinder", "sphere"):
+        return float(prim.r)
+    if prim.kind == "cone":
+        rel = p - prim.apex
+    elif prim.kind == "torus":
+        rel = p - prim.c
+    else:
+        return None
+    rho = float(np.linalg.norm(rel - (rel @ prim.d) * prim.d))
+    return min(rho, float(prim.r)) if prim.kind == "torus" else rho
 
 
 class Segmenter:
@@ -150,10 +328,18 @@ class Segmenter:
         T = V[F]
         lmax = np.linalg.norm(T - np.roll(T, -1, axis=1), axis=2).max(1)
         self.needle = 2.0 * self.fa < 0.5 * tol * np.maximum(lmax, 1e-30)
-        self.deflection, defl_hi = self._estimate_deflection()
+        self.deflection, defl_hi, turn = self._estimate_deflection()
         # surfaces must also follow the mesh between its vertices, within the
         # mesh's own tessellation coarseness
         self.tol_mid = max(3.0 * tol, 5.0 * self.deflection, 2.0 * defl_hi)
+        # An exporter limits each chord by its sag, by how far the normal turns along it, or both, so a chord of a
+        # real round keeps one of them ordinary for the mesh: a big radius has a big sag and an ordinary turn, a tiny
+        # fillet a big turn and an ordinary sag. Past the ordinary sag, a chord must have an ordinary turn. The high
+        # sag above comes from very few edges where it stands far above the typical one (on 30 of 449 meshes, over 10
+        # times; often 8 to 16 chords turning 31 degrees on meshes whose chords turn 5 to 10), and on xlcd-cover it let
+        # a designed octagon pass for a cylinder, 0.45 mm off its sides, at 115 times the typical sag.
+        self.tol_sag = max(3.0 * tol, 5.0 * self.deflection)
+        self.cos_chord = np.cos(min(CHORD_TURN_K * turn, np.pi)) if turn > 0 else -1.0
         # A scan's noise tilts thin triangles: one 0.03 mm high on a mesh with
         # 0.01 mm of noise points anywhere within about 40 degrees, so judged
         # by its direction it fits no surface, and a scanned flat face fell
@@ -170,6 +356,15 @@ class Segmenter:
         h = 2.0 * self.fa / np.maximum(lmax, 1e-30)
         noisy = h < 3.4 * self.noise / np.tan(np.radians(normal_deg))
         self.scan = self.noise > 0.5 * tol or self.fa[noisy].sum() > 0.005 * max(self.fa.sum(), 1e-30)
+        # A scanner's noise leaves no two triangles exactly in one plane (4 scans: at most 7% of
+        # their area), and a CAD export's flat faces are nearly all of it (129 parts: at least 46%,
+        # most over 80%). Its thin triangles aren't noise: taken for a scan by its needles, Rak
+        # N-USB let a 2-triangle V-groove along a wall's foot, facing away from it, into the wall,
+        # and the wall's outline folded over itself along 32 mm (2026-11-02). Measured here, on the
+        # mesh, as CLAUDE.md asks of a mesh's kind.
+        if self.scan:
+            grp, _ = planar_regions(V, F, topo, self.fn, self.fa, max(min(tol * 0.05, 2e-6 * self.ext), 1e-9))
+            self.scan = float(self.fa[np.bincount(grp)[grp] >= 2].sum()) < SCAN_COPLANAR * float(self.fa.sum())
         # triangles whose direction says nothing: tiny ones, and on a scan
         # the ones thin enough for the noise to tilt
         self.unsure = self.tiny | noisy if self.scan else self.tiny
@@ -194,8 +389,8 @@ class Segmenter:
     # --- helpers --------------------------------------------------------
     def _estimate_deflection(self):
         """The chordal deflection the mesh was tessellated with (see
-        fidelity.chord_deflection): (typical, high)."""
-        from .fidelity import chord_deflection
+        fidelity.chord_stats): (typical, high, the turn of an ordinary chord)."""
+        from .fidelity import chord_stats
 
         twin = self.topo.twin
         h = np.nonzero(twin >= 0)[0]
@@ -203,7 +398,7 @@ class Segmenter:
         m = h < t
         h, t = h[m], t[m]
         L = np.linalg.norm(self.V[self.topo.he_to[h]] - self.V[self.topo.he_from[h]], axis=1)
-        return chord_deflection(self.fn, self.fa, h // 3, t // 3, L, tiny=self.tiny)
+        return chord_stats(self.fn, self.fa, h // 3, t // 3, L, tiny=self.tiny)
 
     def _new_stamp(self):
         self._stamp_id += 1
@@ -220,18 +415,23 @@ class Segmenter:
         P = self.V[self.F[faces]]
         flat = P.reshape(-1, 3)
         d = prim.distance(flat).reshape(-1, 3).max(1)
+        # (a designed plane takes only what lies on it: see _process_seed)
+        near = getattr(prim, "on_design", None)
+        if near is not None:
+            d = np.where(d <= near, d, np.inf)
         nrm = prim.normal(P.mean(1)) * sense
         cs = (self.fn[faces] * nrm).sum(1)
         if prim.kind != "plane":
             M = np.concatenate([(P[:, 0] + P[:, 1]) / 2, (P[:, 1] + P[:, 2]) / 2, (P[:, 2] + P[:, 0]) / 2])
-            dm = prim.distance(M).reshape(3, -1).max(0)
-            # a mid-edge miss beyond the tessellation coarseness disqualifies
-            d = np.where(dm <= self.tol_mid, d, np.inf)
-        if prim.kind != "plane":
+            dm = prim.distance(M).reshape(3, -1)
             nv = prim.normal(flat).reshape(-1, 3, 3)
             c01 = (nv[:, 0] * nv[:, 1]).sum(1)
             c12 = (nv[:, 1] * nv[:, 2]).sum(1)
             c20 = (nv[:, 2] * nv[:, 0]).sum(1)
+            # a mid-edge miss beyond the tessellation coarseness disqualifies, and so does one
+            # past the ordinary sag on a chord that also turns further than an ordinary one
+            odd = (dm > self.tol_sag) & (np.stack([c01, c12, c20]) < self.cos_chord)
+            d = np.where((dm.max(0) <= self.tol_mid) & ~odd.any(0), d, np.inf)
             span_ok = np.minimum(np.minimum(c01, c12), c20) >= self.cos_extent
             cs = np.where(span_ok, cs, -1.0)
         return d, cs
@@ -396,6 +596,10 @@ class Segmenter:
                 self._process_seed(faces, allow_defer=False)
         self._refine()
         self._absorb_slivers()
+        self._straight_pieces()
+        self._flats_not_curves()
+        self._chords_to_surfaces()
+        self._bands_on_axes()
         self._smooth_borders()
         if FIND_SWEEPS and self._find_sweeps() + self._find_fillets():
             # the pieces they leave between them and their neighbours (one
@@ -410,8 +614,14 @@ class Segmenter:
             # pieces sweeps and fillets leave)
             self._absorb_slivers()
             self._smooth_borders()
+        self._triangles_to_their_surfaces()
+        if POOLING and self._pool_pieces():
+            # (the joined surfaces settled with their neighbours, and equal ones merged, as after any change)
+            self._rebuild_regions()
         self._make_freeform()
         self._fix_apex_cones()
+        if getattr(self, "pooled", 0):
+            rep.log(f"{self.pooled} neighbouring piece(s) were found to lie on one surface and joined to it")
         if self.scan:
             # on a scan the later steps leave pieces that fit a neighbour
             # (a piece next to another piece had no big neighbour yet)
@@ -467,6 +677,20 @@ class Segmenter:
         pl = Plane.fit(P, (self.fn[faces] * fa[faces, None]), W=W)
         best = None
         reg_p, pl = self.grow(pl, 1.0, faces, refit=self.refit_planes)
+        # An exactly flat seed that is most of what its plane would grow over is a plane the
+        # designer drew: its triangles lie on it to the file's rounding, and the rest are others'
+        # that happen to lie within the tolerance. Those stay out. A wall on Rak Uni, 1,560 mm2,
+        # took in 14 mm2 of a 5 degree slope beside it, 0.025 mm off (fans of triangles 50 mm long,
+        # up to a fold-back on the slope's far side): the wall's outline then wound round the fold
+        # the wrong way, the face was invalid, and the wall became B-spline patches. SMA-USB's
+        # 2,221 mm2 wall took a shallow lune beside a hole and a corner triangle whose vertex
+        # doubled its outline back along a line. A seed of a curve's facets is a small share of
+        # what it grows over, and a scan's seeds a single triangle, so neither is affected.
+        grown_past = reg_p.size > faces.size
+        if (grown_past and not self.scan and len(faces) >= 2 and seed_area >= PLANE_SEED_SHARE * fa[reg_p].sum()
+                and float(pl.distance(self.V[np.unique(self.F[faces])]).max()) <= max(ON_PLANE, ON_PLANE_SIZE * self.ext)):
+            pl.on_design = max(ON_PLANE, ON_PLANE_SIZE * self.ext)
+            reg_p, pl = self.grow(pl, 1.0, faces, refit=False)
         area_p = fa[reg_p].sum()
         best = (area_p, 0, pl, 1.0, reg_p)
 
@@ -506,7 +730,25 @@ class Segmenter:
         ext_h = self._extrusion_hypothesis(faces)
         if ext_h is not None:
             hyps.append(ext_h)
+        fan_h = self._fan_hypothesis(faces)
+        if fan_h is not None:
+            hyps.append(fan_h)
+        run_h = self._designed_run_hypothesis(faces)
+        if run_h is not None:
+            hyps.append(run_h)
         hyps += self._axis_hypotheses(faces)
+        if hyps and len(faces) >= 2 and not self._strip_like(faces):
+            # an exactly flat facet of two or more triangles, not a thin strip,
+            # is a plane the designer drew unless its own corners lie on the
+            # curved surface: a short flat run of a chamfer between two rounded
+            # corners was taken into a tilted cylinder (r 13.7 mm, 0.06 mm off)
+            # that ate both corners' cone fans (Raspberry Pi case). Thin strips
+            # are left alone: they can be chords of a coarse round (a toolbox
+            # part's rounded edges, 0.04 mm off their best cylinder, went
+            # freeform when this applied to them), and a coarse cylinder's
+            # wider facets have their corners on it and pass.
+            corners = self.V[np.unique(self.F[faces])]
+            hyps = [h for h in hyps if float(h[2].distance(corners).max()) <= SEED_ON_CURVE * self.tol]
         if hyps:
             # Hypotheses that match the mesh much worse between vertices than
             # a competitor of similar size are dropped; then the largest area
@@ -515,12 +757,29 @@ class Segmenter:
             q = [self.midpoint_dev(h[2], h[4]) for h in hyps]
             big = [i for i, h in enumerate(hyps) if h[0] >= 0.6 * amax]
             qmin = min(q[i] for i in big)
-            hyps = [h for i, h in enumerate(hyps) if not (i in big and q[i] > max(2.5 * qmin, 0.5 * self.tol))]
+            keep = [i for i, h in enumerate(hyps) if getattr(h[2], "designed", False)
+                    or not (i in big and q[i] > max(2.5 * qmin, 0.5 * self.tol))]
+            hyps = [hyps[i] for i in keep]
+            # where a designer's surface was found (the mesh's corners on it), surfaces that
+            # miss the corners don't compete with it, however much more they cover: the
+            # part is what was designed (Tuna and Duvdivan, 2026-11-01)
+            if any(getattr(h[2], "designed", False) for h in hyps):
+                hyps = [h for h in hyps if getattr(h[2], "designed", False)
+                        or float(h[2].distance(self.V[np.unique(self.F[h[4]])]).max()) <= SEED_ON_CURVE * self.tol]
             hyps.sort(key=lambda h: -h[0])
-            cur = hyps[0]
-            for h in hyps[1:]:
-                if h[1] < cur[1] and h[0] >= 0.9 * cur[0]:
-                    cur = h
+
+            # the largest wins, with simpler surface types preferred within 10%
+            # of its area; but only among those the mesh's corners lie about as
+            # close to as the closest: a CAD export's vertices sit on the
+            # surface its designer drew, and a tilted cylinder (corners up to
+            # 0.02 mm off) beat the exact cone (0.0000 mm) of a chamfer's
+            # rounded corner on the same triangles (Raspberry Pi case's end-wall
+            # port frames). On coarse or noisy meshes they stand off alike, and
+            # the simpler one still wins.
+            tied = [h for h in hyps if h[0] >= 0.9 * hyps[0][0]]
+            off = [float(h[2].distance(self.V[np.unique(self.F[h[4]])]).max()) for h in tied]
+            close = [h for h, d in zip(tied, off) if d <= 2.0 * min(off) + TIE_FIT * self.tol]
+            cur = min(close, key=lambda h: (h[1], -h[0]))
             # a surface on a known axis wins a near tie: its axis is another
             # surface's, found on more of the mesh than a seed's neighbourhood
             known = [h for h in hyps if isinstance(h[2], _OnAxis)]
@@ -531,7 +790,8 @@ class Segmenter:
             if cur[0] > 1.10 * best[0]:
                 best = cur
         _, _, prim, sense, reg = best
-        weak = prim.kind == "plane" and reg.size == faces.size
+        # (a designed plane that kept to its seed isn't a lone facet)
+        weak = prim.kind == "plane" and reg.size == faces.size and getattr(prim, "on_design", None) is None
         if weak and allow_defer and nbh.size > faces.size:
             return False
         rid = len(self.regions)
@@ -684,7 +944,247 @@ class Segmenter:
         P, N, okn, W = self.region_points(strip, True)
         try:
             prim = Cylinder.fit(P[okn], N[okn], ext=self.ext, W=W[okn], d=d)
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
+            return None
+        if prim is None or prim.degenerate(self.ext):
+            return None
+        sense = self.sense_of(prim, strip)
+        if not self.accept(prim, sense, strip).all():
+            return None
+        reg, prim = self.grow(prim, sense, faces)
+        if reg.size <= faces.size:
+            return None
+        return (fa[reg].sum(), prim.rank, prim, sense, reg)
+
+    def _strip_like(self, faces, min_aspect=3.0):
+        """Whether a flat seed is a thin strip: its longest outline edge at least
+        min_aspect times its width (area over that length), as the strips of
+        _extrusion_hypothesis and _fan_hypothesis are."""
+        V, F, fa, topo = self.V, self.F, self.fa, self.topo
+        he = (3 * faces[:, None] + np.arange(3)[None]).reshape(-1)
+        tw = topo.twin[he]
+        inside = np.zeros(len(F), dtype=bool)
+        inside[faces] = True
+        outline = he[(tw < 0) | ~inside[np.maximum(tw, 0) // 3]]
+        if not outline.size:
+            return False
+        lmax = float(np.linalg.norm(V[topo.he_to[outline]] - V[topo.he_from[outline]], axis=1).max())
+        return lmax > 0 and lmax >= min_aspect * float(fa[faces].sum()) / lmax
+
+    def _designed_run_hypothesis(self, faces, max_turn=30.0, max_groups=64):
+        """The cylinder or cone a designer drew where a coarse export cut it into flat
+        strips: the strips are chained across their long edges both ways from the seed,
+        and a window of them grows one strip at a time for as long as every corner of
+        the window lies on one surface (within SEED_ON_CURVE of the tolerance). The
+        chain stops at a strip of another surface even when it's as thin (toolbox
+        Body474: two rounded edges of r 0.495 mm, corners on them within 0.00001 mm,
+        with a 0.29 mm flat between them, were gathered together, fitted nothing, and
+        went freeform; the freeform edge then crumpled the corner where three rounds
+        meet). The surface is kept although a coarse strip's middle stands off it by
+        more than the tolerance (a 45-degree facet on a 3 mm chamfer corner: 0.23 mm):
+        the designer's surface, not the triangles, is what the part is (Tuna and
+        Duvdivan, 2026-11-01). Returns a hypothesis tuple like _process_seed's, or None."""
+        sf = getattr(self, "sf_lab", None)
+        if sf is None:
+            return None
+        V, F, fa, fn, topo = self.V, self.F, self.fa, self.fn, self.topo
+        coplanar_cos = np.cos(np.radians(0.5))
+        turn_cos = np.cos(np.radians(max_turn))
+        thr = SEED_ON_CURVE * self.tol
+
+        def group_faces(g):
+            return np.nonzero(sf == g)[0]
+
+        def long_neighbours(g):
+            # groups across this group's longest outline edges (its rulings)
+            fs = group_faces(g)
+            if len(fs) > 200:
+                return []
+            he = (3 * fs[:, None] + np.arange(3)[None]).reshape(-1)
+            tw = topo.twin[he]
+            ok = tw >= 0
+            he, tw = he[ok], tw[ok]
+            other = sf[tw // 3] != g
+            he, tw = he[other], tw[other]
+            if not he.size:
+                return []
+            L = np.linalg.norm(V[topo.he_to[he]] - V[topo.he_from[he]], axis=1)
+            cs = (fn[he // 3] * fn[tw // 3]).sum(1)
+            keep = (L >= 0.8 * L.max()) & (cs >= turn_cos) & (cs < coplanar_cos) & (self.label[tw // 3] < 0)
+            return list(dict.fromkeys(int(x) for x in sf[tw[keep] // 3]))
+
+        g0 = int(sf[faces[0]])
+        nb0 = long_neighbours(g0)
+        if not 1 <= len(nb0) <= 2:
+            return None
+        # the chain both ways from the seed
+        chain = [g0]
+        for start in nb0:
+            prev, cur, side = g0, start, []
+            while cur is not None and cur not in chain and cur not in side and len(side) < max_groups:
+                side.append(cur)
+                nxt = [h for h in long_neighbours(cur) if h != prev and h not in chain and h not in side]
+                prev, cur = cur, (nxt[0] if len(nxt) == 1 else None)
+            chain = (side[::-1] + chain) if start == nb0[0] else (chain + side)
+        k = chain.index(g0)
+        if len(chain) < 3:
+            return None
+
+        def corners(gs):
+            fs = np.concatenate([group_faces(g) for g in gs])
+            return fs, V[np.unique(F[fs])]
+
+        def fit(gs):
+            fs, Q = corners(gs)
+            P, N, okn, W = self.region_points(fs, True)
+            best = None
+            for cls in (Cylinder, Cone):
+                try:
+                    prim = cls.fit(P[okn], N[okn], ext=self.ext, W=W[okn])
+                except Exception as fault:
+                    faults.caught(fault)
+                    continue
+                if prim is None or prim.degenerate(self.ext):
+                    continue
+                d = float(prim.distance(Q).max())
+                if d <= thr and (best is None or prim.rank < best[0].rank):
+                    best = (prim, fs)
+            return best
+
+        lo, hi = k, k
+        best = None
+        # the smallest window of three strips round the seed that fits, then wider
+        for a, b in ((k - 1, k + 1), (k, k + 2), (k - 2, k)):
+            if a >= 0 and b < len(chain):
+                got = fit(chain[a:b + 1])
+                if got is not None:
+                    lo, hi, best = a, b, got
+                    break
+        if best is None:
+            return None
+        grew = True
+        while grew:
+            grew = False
+            for a, b in ((lo - 1, hi), (lo, hi + 1)):
+                if a >= 0 and b < len(chain):
+                    got = fit(chain[a:b + 1])
+                    if got is not None:
+                        lo, hi, best, grew = a, b, got, True
+                        break
+        prim, reg = best
+        if len(np.unique(sf[reg])) < 3:
+            return None
+        if not self._even_strips(prim, [group_faces(g) for g in chain[lo:hi + 1]]):
+            return None
+        prim.designed = True
+        sense = self.sense_of(prim, reg)
+        return (fa[reg].sum(), prim.rank, prim, sense, reg)
+
+    def _even_strips(self, prim, strips):
+        """Whether flat strips side by side could be a tessellated round. An exporter steps round a surface evenly,
+        so strips well past the mesh's ordinary sag have to be about one width: obj_2_02's wall, flats 6.4 mm wide with
+        chamfers of 1.2 between them and every corner on one cylinder, is flats and chamfers as drawn, and as a
+        cylinder it stood 0.47 mm off them with the volume 2.7% over. (Its two end strips may be cut short by what they run
+        into.) A strip's width is its own, across its long direction: angles about the fitted axis say nothing, as a fit with
+        its axis in the wrong place can still pass through every corner. Below the ordinary sag it can't matter, and there
+        the strips aren't asked."""
+        at = prim.a if prim.kind == "cylinder" else prim.apex
+        width, sag = [], 0.0
+        for fs in strips:
+            P = self.V[np.unique(self.F[fs])]
+            C = P - P.mean(axis=0)
+            across = np.linalg.svd(C, full_matrices=False)[2][1]
+            width.append(float(np.ptp(C @ across)))
+            Q = P - at
+            Q = Q - np.outer(Q @ prim.d, prim.d)
+            rho = float(np.linalg.norm(Q, axis=1).max())
+            sag = max(sag, width[-1] ** 2 / (8.0 * max(rho, 1e-9)))
+        if sag <= self.tol_sag:
+            return True
+        inner = width[1:-1] if len(width) > 3 else width
+        return min(inner) >= EVEN_STEPS * max(inner)
+
+    def _fan_hypothesis(self, faces, min_aspect=3.0, min_facets=3, max_turn=30.0):
+        """A cone for coarse fan-like facets (a chamfer round a rounded corner,
+        a countersink): long, thin flat strips side by side, each meeting the
+        next along its long edge, the edges converging on the cone's apex. As
+        with _extrusion_hypothesis, the strips' few vertices sit only at their
+        ends, so each strip is exactly flat and wins as a plane of its own, and
+        the run of them became one freeform patch (a Raspberry Pi case's port
+        frames: 38-degree chamfers, their straight runs planes and their
+        rounded corners cone fans, all left as B-splines). Here the strips are
+        gathered across the edges that are the longest outline edge of both,
+        where the surface turns only a little, and only strips that are thin as
+        a whole flat facet (at least min_aspect times longer than wide) join: a
+        short flat run of the chamfer between two corners meets both fans along
+        its longest side, and let in, it spoiled the cone (0.13 mm off, 42% of
+        the triangles accepted; without it each corner fits exactly). A cone is
+        then fitted to the strips alone. Returns a hypothesis tuple like
+        _process_seed's, or None."""
+        sf = getattr(self, "sf_lab", None)
+        if sf is None:
+            return None
+        V, F, fa, fn = self.V, self.F, self.fa, self.fn
+        topo = self.topo
+        coplanar_cos = np.cos(np.radians(0.5))
+        turn_cos = np.cos(np.radians(max_turn))
+        garea = self._sf_area if getattr(self, "_sf_area", None) is not None else np.bincount(sf, weights=fa)
+        self._sf_area = garea
+
+        def ruling_len(tris):
+            # each triangle's longest edge to a neighbour that isn't coplanar
+            # with it (a quad's diagonal doesn't count)
+            he = (3 * tris[:, None] + np.arange(3)[None])
+            tw = topo.twin[he]
+            g = np.maximum(tw, 0) // 3
+            L = np.linalg.norm(V[topo.he_to[he]] - V[topo.he_from[he]], axis=2)
+            flat = (tw >= 0) & ((fn[tris][:, None, :] * fn[g]).sum(2) >= coplanar_cos)
+            return np.where(flat, 0.0, L).max(1)
+
+        def thin(tris):
+            # the triangle's whole flat facet is a strip along its ruling
+            r = ruling_len(tris)
+            return r * r >= min_aspect * garea[sf[tris]]
+
+        if not thin(faces[:1])[0]:
+            return None
+        stamp = self._new_stamp()
+        st = self._stamp
+        st[faces] = stamp
+        strip = [faces]
+        frontier = faces
+        total = len(faces)
+        while frontier.size and total < 4000:
+            he = (3 * frontier[:, None] + np.arange(3)[None]).reshape(-1)
+            tw = topo.twin[he]
+            ok = tw >= 0
+            he, tw = he[ok], tw[ok]
+            t, g = he // 3, tw // 3
+            free = (self.label[g] < 0) & (st[g] != stamp)
+            he, t, g = he[free], t[free], g[free]
+            if not he.size:
+                break
+            cs = (fn[t] * fn[g]).sum(1)
+            L = np.linalg.norm(V[topo.he_to[he]] - V[topo.he_from[he]], axis=1)
+            same = sf[t] == sf[g]
+            ruling = (cs >= turn_cos) & (L >= 0.8 * ruling_len(t)) & (L >= 0.8 * ruling_len(g)) & thin(g)
+            new = np.unique(g[same | ruling])
+            if not new.size:
+                break
+            st[new] = stamp
+            strip.append(new)
+            frontier = new
+            total += len(new)
+        strip = np.concatenate(strip)
+        # at least a few distinct facets
+        if len(np.unique(sf[strip])) < min_facets:
+            return None
+        P, N, okn, W = self.region_points(strip, True)
+        try:
+            prim = Cone.fit(P[okn], N[okn], ext=self.ext, W=W[okn])
+        except Exception as fault:
+            faults.caught(fault)
             return None
         if prim is None or prim.degenerate(self.ext):
             return None
@@ -743,7 +1243,8 @@ class Segmenter:
         skew the result."""
         try:
             prim = cls.fit(P, N, ext=self.ext, W=W)
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             return None
         if prim is None or prim.degenerate(self.ext):
             return None
@@ -756,7 +1257,8 @@ class Segmenter:
                 break
             try:
                 p2 = cls.fit(P[inl], N[inl], ext=self.ext, W=None if W is None else W[inl])
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 break
             if p2 is None or p2.degenerate(self.ext):
                 break
@@ -811,6 +1313,25 @@ class Segmenter:
                 break
         self._rebuild_regions()
 
+    def _chord_cap(self, f, prim):
+        """Whether a triangle is what a chord leaves on a round: its corners lie on the surface and it
+        stands no further from its longest edge than that edge's own sag on that surface. Such a
+        triangle says nothing about direction (it faces along the axis, its three corners on one rim
+        circle), and how far its middle is off the surface comes from the mesh's chords, not from any
+        surface of its own. A real small face stands further from its long edge than a chord can."""
+        P = self.V[self.F[f]]
+        if float(prim.distance(P).max()) > ON_DESIGN * self.tol:
+            return False
+        edges = np.linalg.norm(P - np.roll(P, 1, axis=0), axis=1)
+        k = int(np.argmax(edges))
+        L = float(edges[k])
+        if L <= 0.0:
+            return False
+        r = _round_radius(prim, (P[k] + P[k - 1]) / 2.0)
+        if r is None or r <= 0.5 * L:
+            return False
+        return 2.0 * float(self.fa[f]) / L <= r - np.sqrt(r * r - 0.25 * L * L)
+
     def _absorb_slivers(self, max_tris=3, tol_factor=3.0):
         """Tiny regions (slivers where three surfaces meet) join the
         neighbouring surface that fits them best. Genuine tiny faces, such
@@ -837,6 +1358,11 @@ class Segmenter:
         # cylinder beside it, whose outline then ran in and straight back
         # out, crossed itself, and the face was invalid
         tiny = areas <= 25.0 * self.tol ** 2
+        # (and any narrower than the tolerance all along: Rak N-USB's ring round a hole, 0.25 mm2,
+        # 26 mm round and 0.02 mm wide, exactly flat, was taken in only while the mesh passed for a
+        # scan. As a face of its own its two sides fit one curve, the file read back with 0.01 mm2,
+        # and Fusion failed every cut through it)
+        tiny |= np.array([len(r.faces) > 0 and _too_small_for_face(self, lab, r.faces, width_k=THIN_FACE) for r in regs], dtype=bool)
         few = np.array([len(r.faces) <= max_tris and (r.weak or areas[ri] <= small_area)
                         for ri, r in enumerate(regs)], dtype=bool)
         sliver = [ri for ri, r in enumerate(regs) if len(r.faces) and (few[ri] or tiny[ri])]
@@ -862,7 +1388,7 @@ class Segmenter:
                         d, cs = self.face_error(regs[rj].prim, regs[rj].sense, np.array([f]))
                         # (on a scan a piece this small that sits on a surface
                         # is noise, whichever way its triangles point)
-                        if cs[0] < cos_relaxed and not (self.unsure[f] or self.needle[f] or self.scan):
+                        if cs[0] < cos_relaxed and not (self.unsure[f] or self.needle[f] or self.scan or (few[ri] and self._chord_cap(f, regs[rj].prim))):
                             continue
                         if d[0] <= reach[ri] and d[0] < best_e:
                             best, best_e = rj, d[0]
@@ -874,6 +1400,306 @@ class Segmenter:
         if changed:
             self._rebuild_regions()
         return changed
+
+    def _neighbours(self, r):
+        """The regions next to region r, from the current labels."""
+        f = np.asarray(self.regions[r].faces, dtype=np.int64)
+        nb = self.nb[f].reshape(-1)
+        nb = self.label[nb[nb >= 0]]
+        return [int(q) for q in np.unique(nb) if q != r and q >= 0]
+
+    def _on_design(self, prim, faces):
+        """Whether triangles lie on a surface as a CAD export's do: every corner on it, the
+        triangles no further off than the tolerance between corners, and facing its way."""
+        faces = np.asarray(faces, dtype=np.int64)
+        lim = ON_DESIGN * self.tol
+        if float(prim.distance(self.V[np.unique(self.F[faces])]).max()) > lim:
+            return False
+        if float(self._gap(prim, faces).max()) > self.tol:
+            return False
+        s = self.sense_of(prim, faces)
+        return bool(self.accept(prim, s, faces).all())
+
+    def _triangles_to_their_surfaces(self, passes=8):
+        """A border belongs where its two surfaces meet. A plane running on into a chamfer's cone
+        also takes the cone's first strip, whose far corners stand off the plane by less than
+        the tolerance (main plate: 0.005 mm, the border 0.2 mm past the line of contact), and
+        the two then meet at 2 degrees at a place where they don't really meet, which no
+        program can work out again. So a triangle whose corners lie on the surface next door,
+        as a CAD export's lie on what was drawn, and don't on its own, goes next door."""
+        lim = ON_DESIGN * self.tol
+        changed = False
+        for _ in range(passes):
+            lab = self.label
+            nbl = np.where(self.nb >= 0, lab[np.maximum(self.nb, 0)], lab[:, None])
+            edge = np.nonzero((nbl != lab[:, None]).any(1) & (lab >= 0))[0]
+            moved = 0
+            sure = {}
+            for f in edge:
+                own = self.regions[lab[f]]
+                if own.kind != "plane" or own.facet:
+                    continue
+                P = self.V[self.F[f]]
+                if float(own.prim.distance(P).max()) <= lim:
+                    continue
+                # (only a plane most of whose own corners are on it knows what isn't its own:
+                # strips of a band each fitted loosely would be shredded, main plate's chamfer into
+                # 56 new pieces of 0.01 mm2)
+                r = int(lab[f])
+                if r not in sure:
+                    C = self.V[np.unique(self.F[np.asarray(own.faces, dtype=np.int64)])]
+                    sure[r] = float((own.prim.distance(C) <= lim).mean()) >= BORDER_SURE
+                if not sure[r]:
+                    continue
+                for q in np.unique(nbl[f]):
+                    if q == lab[f] or q < 0:
+                        continue
+                    o = self.regions[q]
+                    if o.kind not in CURVED_KINDS or o.facet:
+                        continue
+                    if float(o.prim.distance(P).max()) <= lim and self._on_design(o.prim, np.array([f])):
+                        lab[f] = q
+                        moved += 1
+                        break
+            if not moved:
+                break
+            changed = True
+            self._faces_from_labels()
+        if changed:
+            self._rebuild_regions()
+        return changed
+
+    def _faces_from_labels(self):
+        """Each region's triangles again, from the labels."""
+        order = np.argsort(self.label, kind="stable")
+        sl = self.label[order]
+        for r, reg in enumerate(self.regions):
+            a, b = np.searchsorted(sl, [r, r + 1])
+            reg.faces = order[a:b]
+        self._drop_empty()
+
+    def _straight_pieces(self):
+        """A cylinder a little tilted from the flat face beside it, with corners off it, is straight
+        cylinders standing on that face's levels: Rak Uni's standoffs, two of r 3 mm 0.07 mm apart with a
+        crescent step between, passed as one of r 3.005 mm, tilted, and the crescent came out
+        a face of no shape that OpenCascade's mesher drops. Taken only if each piece's corners lie on
+        its own straight cylinder STRAIGHT_BETTER times closer."""
+        lim = ON_DESIGN * self.tol
+        changed = False
+        for r in range(len(self.regions)):
+            reg = self.regions[r]
+            if reg.kind != "cylinder" or not len(reg.faces) or isinstance(reg.prim, _OnAxis):
+                continue
+            faces = np.asarray(reg.faces, dtype=np.int64)
+            off = float(reg.prim.distance(self.V[np.unique(self.F[faces])]).max())
+            if off <= lim:
+                continue
+            planes = [self.regions[q].prim for q in self._neighbours(r) if self.regions[q].kind == "plane"]
+            near = [p for p in planes if STRAIGHT_DEG[0] < np.degrees(np.arccos(min(1.0, abs(float(p.n @ reg.prim.d))))) <= STRAIGHT_DEG[1]]
+            if not near:
+                continue
+            d = near[0].n if float(near[0].n @ reg.prim.d) > 0 else -near[0].n
+            levels = sorted({round(float(p.origin @ d), 6) for p in near if abs(float(p.n @ d)) > 1.0 - 1e-6})
+            h = self.V[self.F[faces]].mean(1) @ d
+            side = np.searchsorted(np.array(levels), h)
+            pieces = []
+            for s in np.unique(side):
+                g = faces[side == s]
+                # (a circle through the corners seen along the axis: these corners are the accurate thing)
+                P = self.V[np.unique(self.F[g])]
+                u, v = perp_basis(d)
+                # (the rim where two such cylinders cross holds corners of the other's circle: left out)
+                Q = np.c_[P @ u, P @ v]
+                fc = None
+                for _ in range(4):
+                    if len(Q) < 5:
+                        fc = None
+                        break
+                    fc = fit_circle_2d(Q)
+                    if fc is None:
+                        break
+                    e = np.abs(np.linalg.norm(Q - fc[0], axis=1) - fc[1])
+                    keep = e <= max(3.0 * float(np.median(e)), lim)
+                    if keep.all():
+                        break
+                    Q = Q[keep]
+                cy = None if fc is None else Cylinder(fc[0][0] * u + fc[0][1] * v, d, fc[1])
+                if cy is None or cy.degenerate(self.ext) or len(Q) < STRAIGHT_SHARE * len(P) or float(cy.distance(P).max()) > self.tol:
+                    pieces = None
+                    break
+                if _locked(reg.prim):
+                    cy.locked = True
+                pieces.append((cy, g))
+            if not pieces:
+                continue
+            for cy, g in pieces:
+                rid = len(self.regions)
+                self.regions.append(Region(cy, g, self.sense_of(cy, g)))
+                self.label[g] = rid
+            reg.faces = np.zeros(0, dtype=np.int64)
+            changed = True
+        if changed:
+            self._drop_empty()
+            self._rebuild_regions()
+        return changed
+
+    def _flats_not_curves(self):
+        """A curved surface that took in a few exactly flat pieces, with corners off it, is those
+        flat pieces: filament guide's r 2.85 mm cylinders held most of a slanted wall and the plane
+        beside it, within a loose tolerance of 0.07 mm, 0.2 mm off at their edges. A round has to
+        turn through several directions (FACET_TURNS) to be one, so a coarse round's chords stay."""
+        changed = False
+        for r in range(len(self.regions)):
+            reg = self.regions[r]
+            if reg.kind not in CURVED_KINDS or _locked(reg.prim) or not len(reg.faces) or isinstance(reg.prim, _OnAxis):
+                continue
+            faces = np.asarray(reg.faces, dtype=np.int64)
+            if float(reg.prim.distance(self.V[np.unique(self.F[faces])]).max()) <= ON_DESIGN * self.tol:
+                continue
+            groups = {}
+            for f in faces:
+                groups.setdefault(int(self.sf_lab[f]), []).append(f)
+            if len(groups) >= BAND_TRIS:
+                continue
+            dirs = []
+            for g in groups.values():
+                n = (self.fn[g] * self.fa[g, None]).sum(0)
+                n /= max(float(np.linalg.norm(n)), 1e-30)
+                if not any(float(n @ m) >= np.cos(np.radians(FACET_SAME_DEG)) for m in dirs):
+                    dirs.append(n)
+            if len(dirs) >= FACET_TURNS:
+                continue
+            for g in groups.values():
+                g = np.asarray(g, dtype=np.int64)
+                P, _, _, W = self.region_points(g, True)
+                n = (self.fn[g] * self.fa[g, None]).sum(0)
+                pl = Plane.fit(P, n[None], W=W)
+                rid = len(self.regions)
+                self.regions.append(Region(pl, g, self.sense_of(pl, g)))
+                self.label[g] = rid
+            reg.faces = np.zeros(0, dtype=np.int64)
+            changed = True
+        if changed:
+            self._drop_empty()
+            self._rebuild_regions()
+        return changed
+
+    def _chords_to_surfaces(self):
+        """A flat region all of whose corners lie on a curved surface beside it is a chord of
+        that surface. Main plate's 12.6 mm wall had three strips, up to 17 mm2, left flat between
+        two cylinders: flat seeds are taken biggest first, before the wall is there to claim them,
+        and being more than slivers they were never asked again. Those strips met the wall at
+        2 to 6 degrees, where neither corners nor edges can be worked out exactly. A scan's
+        corners never lie this close, so it isn't touched."""
+        changed = False
+        for _ in range(16):
+            moved = False
+            for r, reg in enumerate(self.regions):
+                if reg.kind != "plane" or _locked(reg.prim) or reg.facet or not len(reg.faces):
+                    continue
+                for q in self._neighbours(r):
+                    o = self.regions[q]
+                    if o.kind not in CURVED_KINDS or not len(o.faces):
+                        continue
+                    if self._on_design(o.prim, reg.faces):
+                        self.label[np.asarray(reg.faces, dtype=np.int64)] = q
+                        o.faces = np.r_[np.asarray(o.faces, dtype=np.int64), np.asarray(reg.faces, dtype=np.int64)]
+                        reg.faces = np.zeros(0, dtype=np.int64)
+                        moved = changed = True
+                        break
+            if not moved:
+                break
+        if changed:
+            self._drop_empty()
+            self._rebuild_regions()
+        return changed
+
+    def _drop_empty(self):
+        """Removes regions left with no triangles, renumbering the labels."""
+        keep = [r for r, reg in enumerate(self.regions) if len(reg.faces)]
+        new = -np.ones(len(self.regions), dtype=np.int64)
+        new[keep] = np.arange(len(keep))
+        m = self.label >= 0
+        self.label[m] = new[self.label[m]]
+        self.regions = [self.regions[r] for r in keep]
+
+    def _bands_on_axes(self):
+        """A chamfer's narrow band round a rounded corner is a cone on the corner's axis, but
+        its few triangles fit other things as well: a tilted cylinder (filament guide: r 2.18 and
+        2.51 mm, axes 30 degrees off, where the designer has cones of 30 degrees on the fillets'
+        axes) or flat strips (main plate). Each small region beside a cylinder, cone or torus is
+        tried on that surface's axis, and taken when its corners lie on that surface and don't lie
+        on its own as well. Flat strips must turn through several directions to count, as one
+        strip can be a flat land."""
+        changed = False
+        for r in range(len(self.regions)):
+            reg = self.regions[r]
+            if _locked(reg.prim) or reg.facet or reg.kind not in ("plane", "cylinder", "cone") or not len(reg.faces):
+                continue
+            if len(reg.faces) > BAND_TRIS or isinstance(reg.prim, _OnAxis):
+                continue
+            for q in self._neighbours(r):
+                o = self.regions[q]
+                if o.kind not in ("cylinder", "cone", "torus") or not len(o.faces):
+                    continue
+                a, d = _axis_of(o.prim)
+                if reg.kind != "plane":
+                    e = _axis_of(reg.prim)[1]
+                    if abs(float(e @ d)) > np.cos(np.radians(AXIS_SAME_DEG)):
+                        continue        # (on that axis already)
+                if self._take_band(r, a, d):
+                    changed = True
+                    break
+        if changed:
+            self._drop_empty()
+            self._rebuild_regions()
+        return changed
+
+    def _take_band(self, r, a, d):
+        """Region r, with the flat strips running on from it, as a cylinder or cone on the axis
+        (a, d), if they lie on it. Returns whether it was taken."""
+        reg = self.regions[r]
+        faces = np.asarray(reg.faces, dtype=np.int64)
+        for kind in ("cone", "cylinder"):
+            members = [r]
+            cur = faces
+            p = None
+            grew = True
+            while grew:
+                grew = False
+                P, _, _, W = self.region_points(cur, True)
+                p = on_axis(kind, a, d, P, W)
+                if p is None or p.degenerate(self.ext) or not self._on_design(p, cur):
+                    p = None
+                    break
+                for m in list(members):
+                    for q in self._neighbours(m):
+                        if q in members:
+                            continue
+                        o = self.regions[q]
+                        if o.kind != "plane" or _locked(o.prim) or o.facet or len(o.faces) > BAND_TRIS or not len(o.faces):
+                            continue
+                        f2 = np.asarray(o.faces, dtype=np.int64)
+                        if self._on_design(p, f2):
+                            members.append(q)
+                            cur = np.r_[cur, f2]
+                            grew = True
+            if p is None:
+                continue
+            if kind == "cone" and abs(np.pi / 2 - p.alpha) < np.radians(1.0):
+                continue        # (a flat ring, nearly: a plane's)
+            if reg.kind == "plane":
+                dirs = np.round(np.degrees(np.arctan2(*(self.fn[cur] @ np.stack(perp_basis(d), 1)).T[::-1])) / FACET_SAME_DEG)
+                if len(np.unique(dirs)) < FACET_TURNS:
+                    continue
+            elif float(reg.prim.distance(self.V[np.unique(self.F[faces])]).max()) <= ON_DESIGN * self.tol and reg.prim.kind == p.kind:
+                continue        # (its own surface has them too: nothing says it's wrong)
+            for m in members[1:]:
+                self.regions[m].faces = np.zeros(0, dtype=np.int64)
+            self.label[cur] = r
+            reg.prim, reg.faces, reg.sense, reg.weak = p, cur, self.sense_of(p, cur), False
+            return True
+        return False
 
     def _gap(self, prim, faces):
         """How far triangles stray from a surface: the largest distance of
@@ -1171,7 +1997,18 @@ class Segmenter:
         changed = False
         # (a fan of them along one long edge passes the region on one by one)
         for _ in range(3):
-            move = np.nonzero((h < SLIVER_HEIGHT * self.tol) & (o >= 0) & (lab[np.maximum(o, 0)] != lab))[0]
+            low = h < SLIVER_HEIGHT * self.tol
+            # (a needle at the very tip of a flat face beside a freeform one goes at a greater height: it
+            # carries the flat face's corner past where its surfaces meet. Rak N: one 0.01 mm high and
+            # 0.96 long put a corner 0.5 mm along a cone's arc, the edges beside it crossed there, and
+            # the mesher dropped the face, leaving 815 of the part's 846 open edges)
+            nbl = np.where(nb >= 0, lab[np.maximum(nb, 0)], lab[:, None])
+            tip = (nbl != lab[:, None]).sum(1) == 2
+            for f in np.nonzero(tip & ~low & (h < TIP_HEIGHT * self.tol) & (o >= 0))[0]:
+                q = lab[o[f]]
+                if q != lab[f] and q >= 0 and self.regions[lab[f]].kind == "plane" and self.regions[q].kind == "freeform":
+                    low[f] = True
+            move = np.nonzero(low & (o >= 0) & (lab[np.maximum(o, 0)] != lab))[0]
             if not len(move):
                 break
             lab[move] = lab[o[move]]
@@ -1198,6 +2035,10 @@ class Segmenter:
         nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
         other = (nl >= 0) & (nl != lab[:, None])
         isolated = np.nonzero(other.all(1) & (nl >= 0).any(1))[0]
+        # (the one triangle a pinched plane's cut took off: see _shortest_cut)
+        cusps = getattr(self, "cusps", None)
+        if cusps:
+            isolated = isolated[~np.isin(isolated, list(cusps))]
         if not len(isolated):
             return False
         best_dst = np.full(len(isolated), -1, dtype=np.int64)
@@ -1209,6 +2050,11 @@ class Segmenter:
             for rj in np.unique(dst[valid]):
                 k = np.nonzero(valid & (dst == rj))[0]
                 g = self._gap(regs[rj].prim, isolated[k])
+                # (a designed plane takes only what lies on it: on SMA-USB a lone triangle
+                # 2 mm2, with a corner 0.013 mm off, joined a wall and doubled its outline back)
+                near = getattr(regs[rj].prim, "on_design", None)
+                if near is not None:
+                    g = np.where(g <= near, g, 1e30)
                 for ki, idx in enumerate(k):
                     better = g[ki] < gap_best[idx] - 1e-10
                     same_gap = abs(g[ki] - gap_best[idx]) < 1e-10
@@ -1229,6 +2075,37 @@ class Segmenter:
         # followed neither closely, between the build's rounds)
         self._rebuild_regions(refit=False, merge=False)
         return True
+
+    def _absorb_folded_islands(self):
+        """A small region wholly inside a plane's region, within the tolerance of that plane and
+        facing away from it, joins it. Such a fold of the mesh can't be a hole in a flat face:
+        seen along the plane the triangles round it lie over it, so the hole's outline winds the
+        wrong way, and the whole face is invalid for it (test14: one triangle of 0.5 mm2 cost
+        a 1,726 mm2 wall; before designed planes Rak's walls lost out to a 0.1 mm2 fold the same
+        way). Returns whether anything changed."""
+        regs, lab, nb = self.regions, self.label, self.nb
+        nl = np.where(nb >= 0, lab[np.maximum(nb, 0)], -1)
+        changed = False
+        for ri, reg in enumerate(regs):
+            faces = np.asarray(reg.faces)
+            if not len(faces) or len(faces) > FOLD_TRIS:
+                continue
+            round_it = nl[faces]
+            out = np.unique(round_it[(round_it != ri)])
+            if len(out) != 1 or out[0] < 0:
+                continue
+            host = regs[int(out[0])]
+            if host.kind != "plane" or host.facet or getattr(host.prim, "on_design", None) is not None:
+                continue
+            facing = host.prim.normal(np.zeros((1, 3)))[0] * host.sense
+            if float((self.fn[faces] * self.fa[faces, None] @ facing).sum()) > 0:
+                continue
+            if self._gap(host.prim, faces).max() <= self.tol:
+                lab[faces] = int(out[0])
+                changed = True
+        if changed:
+            self._rebuild_regions(refit=False, merge=False)
+        return changed
 
     def _absorb_self_crossing_strips(self, sources, passes=4):
         """Try to remove border triangles from faces whose *built* wire crosses.
@@ -1713,7 +2590,39 @@ class Segmenter:
         G = sparse.coo_matrix((np.ones(m.sum(), dtype=np.int8), (lr[m], lc[m])), shape=(nr, nr))
         ncomp, comp = connected_components(G, directed=False)
         sizes = np.bincount(comp, minlength=ncomp)
+        from .fidelity import designed_flats
+
         ff = weak & (sizes[comp] >= 2)
+        # (a piece the mesh itself shows to be a designed plane stays one: of the 112 big pieces made into cells on 33 parts
+        # with the designer's STEP, all 112 were planes; obj_2_02's flats and chamfers, 20% of the part, went this way)
+        ff &= ~designed_flats(self.V, self.F, self.fn, self.fa, lab, nr)
+        # a coarse curve's facets turn through three or more directions; flat pieces in only
+        # one or two (a wall and its chamfer, the chamfer cut into pieces) are a designed
+        # crease, which no smooth surface follows (see FACET_TURNS)
+        # (and a flat piece that dwarfs the rest, not a thin strip, is a face that was drawn: filament
+        # guide's top and bottom, 797 and 992 mm2, went to B-spline cells beside their small chamfer
+        # pieces, and with them nearly every edit of those faces)
+        area = np.array([float(self.fa[np.asarray(r.faces, dtype=np.int64)].sum()) for r in regs])
+        for c in np.unique(comp[ff]):
+            while True:
+                members = np.nonzero(ff & (comp == c))[0]
+                if len(members) < 2:
+                    break
+                typical = float(np.median(area[members]))
+                drawn = [i for i in members if area[i] >= FACET_DWARFS * typical
+                         and not self._strip_like(np.asarray(regs[i].faces, dtype=np.int64))]
+                if not drawn:
+                    break
+                ff[drawn] = False
+        for c in np.unique(comp[ff]):
+            members = np.nonzero(ff & (comp == c))[0]
+            dirs = []
+            for i in members:
+                nrm = np.asarray(regs[i].prim.n, dtype=float)
+                if not any(abs(float(nrm @ d)) >= np.cos(np.radians(FACET_SAME_DEG)) for d in dirs):
+                    dirs.append(nrm)
+            if len(dirs) < FACET_TURNS:
+                ff[members] = False
         if not ff.any():
             return
         ffaces = np.nonzero(ff[lab])[0]
@@ -1795,10 +2704,16 @@ class Segmenter:
                 P, N, ok, W = self.region_points(faces, True)
                 p2 = prim.refit(P, None, W)
                 if p2.distance(P).max() <= self.tol:
+                    if getattr(prim, "on_design", None) is not None:
+                        p2.on_design = prim.on_design
                     prim = p2
             weak = r.weak and prim.kind == "plane"
             new_label[faces] = len(new_regions)
-            new_regions.append(Region(prim, faces, sense, weak))
+            reg = Region(prim, faces, sense, weak)
+            if faces.size == len(r.faces):
+                # (whole, it keeps what it was made of: a pooled surface goes back to its pieces if its face fails)
+                reg.parts, reg.pooled = r.parts, r.pooled
+            new_regions.append(reg)
         self.regions = new_regions
         self.label = new_label
         if merge:
@@ -1830,12 +2745,19 @@ class Segmenter:
                 continue
             if rx.sense != ry.sense:
                 continue
+            # (a designed plane doesn't merge with a piece that isn't on it)
+            near = getattr(rx.prim, "on_design", None) or getattr(ry.prim, "on_design", None)
+            if near is not None and rx.kind == "plane" and (
+                    float(rx.prim.distance(self.V[np.unique(self.F[ry.faces])]).max()) > near
+                    or float(ry.prim.distance(self.V[np.unique(self.F[rx.faces])]).max()) > near):
+                continue
             if rx.prim.same_as(ry.prim, self.tol, self.ext):
                 fx, fy = find(x), find(y)
                 if fx != fy:
                     parent[fy] = fx
         roots = {}
         out = []
+        members = collections.defaultdict(list)
         for i, r in enumerate(regs):
             f = find(i)
             if f not in roots:
@@ -1845,13 +2767,496 @@ class Segmenter:
                 # (a surface stl2curves found, locked, outlives an equal fitted one)
                 out[roots[f]].prim, out[roots[f]].sense = r.prim, r.sense
             out[roots[f]].faces.append(r.faces)
+            members[roots[f]].append(r)
         newlab = np.empty_like(lab)
+        for f, k in roots.items():
+            r = out[k]
+            if len(r.faces) == 1:
+                # (unmerged, it keeps what it was made of: a pooled surface goes back to its pieces if its face fails)
+                r.parts, r.pooled = regs[f].parts, regs[f].pooled
+            elif any(m.pooled for m in members[k]):
+                # (merged with a pooled surface, the whole keeps its lineage: every pooled member's pieces and every other
+                # member as it was, so a face that doesn't build still goes back to them; without this test13's rim, two
+                # pooled tori the rebuild merged, had nothing to go back to and became freeform cells, and the drawn
+                # cylinder tiles between the torus pieces went with it, 2026-11-07)
+                r.pooled = True
+                r.parts = [p for m in members[k] for p in (m.parts if m.pooled and m.parts else [m])]
         for r in out:
             r.faces = np.concatenate(r.faces)
         for i, r in enumerate(out):
             newlab[r.faces] = i
         self.regions = out
         self.label = newlab
+
+    def _pool_pieces(self):
+        """Neighbouring pieces that are one surface join it (loose edges and tiny faces, 2026-11-05).
+        A smooth area the fits broke into tiles (allen's grip: two drawn B-spline faces became about
+        80 planes, cylinders and tori; knob's 8 drawn blends 28 tori and 11 planes) meets itself along
+        borders at 0.1-15 degrees where no exact curve exists, and every corner on them reads back
+        loose. _merge_equal joins pieces of one fit; this joins pieces that are one surface once
+        fitted together, in two stages. First by a simple surface of the members' own kinds or what
+        those generalise to (a draft cone broken into cylinder tiles, a bend into them; five kinds
+        per try cost knob 12 s on one core, and a simpler kind that fits is simplify()'s to find in
+        the rebuild after): a whole cluster of such neighbours, then pairs, smallest first, to a
+        fixpoint. Then, what no simple surface holds, as one freeform cell per cluster, when
+        that leaves fewer faces and follows the mesh (POOL_FREEFORM; the drawn blends and grips are
+        B-splines, and the first stage can only tidy their tiles). A piece whose vertices lie on its
+        own surface (POOL_EXACT_SHARE of them: a drawn face, or a piece of one) is joined only by a
+        surface that holds its vertices as closely (a cylinder holds a drawn flat within the tolerance, never that closely;
+        two pieces of one drawn cylinder it holds exactly), its own surface tried first; a cell takes
+        it, like any member, only when it holds it as closely as its own surface did (measured
+        2026-11-06: no drawn face the judge listed as lost had gone into a cell, while the exactness
+        rule kept 183 tiles of tc_greaser's blend out of cells that would have held 49 of 66 of
+        them), except a piece holding a drawn flat, which never goes into a cell: a plane the
+        designer drew must come out a plane face, whatever a cell would hold; a surface stl2curves
+        found is never refitted, though a neighbour that lies on it joins it; a border whose facets bend as a crease does (POOL_DEG,
+        and POOL_CREASE for the freeform stage); pieces in exact contact (a fillet on its cylinder)
+        are never made one cell, nor is a piece that dwarfs the tiles beside it (FACET_DWARFS: a drawn
+        face a blend runs into, like allen's shaft, which 30 cells took in with the grip's tiles), and
+        a cluster becomes cells only as POOL_FEWER times fewer faces. A join never holds a
+        piece much worse than its own surface did (POOL_WORSE): within the tolerance isn't enough. A pair or cluster that failed is
+        remembered by its faces. Runs once, when the surfaces have grown as far as they will (run):
+        during growth it swallowed a fillet's first pieces into the cylinder beside them, and cost
+        17 passes. Returns how many pieces fewer there are."""
+        classes = [Plane, Cylinder, Cone, Sphere, Torus]
+        kinds = {c.kind: c for c in classes}
+        # (a kind and what it generalises to: a draft cone broken into cylinder tiles is a cone only as a whole, a bend a
+        # torus; a plane generalises to nothing, since a cylinder member covers the plane-and-cylinder case)
+        wider = {"cylinder": (Cone, Torus), "sphere": (Torus,)}
+        tol = self.tol
+        failed = self.__dict__.setdefault("_pool_failed", set())
+        stats = self.__dict__.setdefault("pool_stats", collections.Counter())    # (what was tried and why not, for tracing)
+        V, F, nb = self.V, self.F, self.nb
+        before = getattr(self, "pooled", 0)
+        self.pooled = before
+
+        # (the drawn flats, by the mesh's own showing: the exact facet groups fidelity.designed_flats calls planes)
+        sf = getattr(self, "sf_lab", None)
+        drawn_flat = None
+        if sf is not None:
+            from .fidelity import designed_flats
+
+            n_groups = int(sf.max()) + 1
+            drawn_flat = (sf, designed_flats(V, F, self.fn, self.fa, sf, n_groups), np.bincount(sf, minlength=n_groups))
+
+        def borders(freeform):
+            """The candidate borders (x, y) between pieces that may be tiles of one surface, with
+            each piece's name, whether its surface is fixed, how far its own surface stands off it
+            and the vertices a join must hold; None when there are none."""
+            regs, lab = self.regions, self.label
+            nr = len(regs)
+            if nr < 2:
+                return None
+            nf = len(F)
+            rows = np.repeat(np.arange(nf), 3)
+            cols = nb.reshape(-1)
+            m = (cols >= 0) & (rows < cols)
+            rows, cols = rows[m], cols[m]
+            lr, lc = lab[rows], lab[cols]
+            bend = np.degrees(np.arccos(np.clip((self.fn[rows] * self.fn[cols]).sum(1), -1.0, 1.0)))
+            # (how much each piece's own facets bend, for the crease test)
+            inner = np.zeros(nr)
+            same = lr == lc
+            np.maximum.at(inner, lr[same], bend[same])
+            across = ~same
+            rows, cols, lr, lc, bend = rows[across], cols[across], lr[across], lc[across], bend[across]
+            if not len(rows):
+                return None
+            key = np.minimum(lr, lc) * nr + np.maximum(lr, lc)
+            order = np.argsort(key, kind="stable")
+            key, rows, cols, bend = key[order], rows[order], cols[order], bend[order]
+            starts = np.r_[0, np.nonzero(np.diff(key))[0] + 1, len(key)]
+            plain = np.array([r.kind in kinds and not r.weak and not getattr(r, "facet", False) for r in regs])
+            exact_at = max(POOL_EXACT, POOL_NOISE * float(getattr(self, "noise", 0.0)))
+            names, fixed, own, held, flat = [], [], [], [], []
+            for i, r in enumerate(regs):
+                names.append(hash(np.sort(np.asarray(r.faces, dtype=np.int64)).tobytes()))
+                if not plain[i]:
+                    fixed.append(2)
+                    own.append(np.inf)
+                    held.append(None)
+                    flat.append(False)
+                    continue
+                fc = np.asarray(r.faces, dtype=np.int64)
+                # (the vertices a join must hold exactly: those of a drawn flat inside the piece, else the piece's interior
+                # vertices, whose every triangle is the piece's: a ring of a neighbour's triangles at the border doesn't count)
+                vid = _held_vertices(self, fc, drawn_flat)
+                # (a piece holding a drawn flat never goes into a cell, however closely the cell would hold it: a plane the
+                # designer drew must come out a plane face, which can be picked, offset and sketched on; a B-spline can't)
+                flat.append(len(_drawn_flats_in(fc, drawn_flat)) > 0)
+                # (2: locked, its surface is the only one; 1: exact, a surface must hold it as closely; 0: a tile)
+                fixed.append(2 if _locked(r.prim) else int(_lies_on(r.prim, V[vid], exact_at)))
+                held.append(vid)
+                # (how far its own surface stands off it: a join may be little worse)
+                own.append(max(float(self.face_error(r.prim, r.sense, fc)[0].max()), exact_at))
+            cen = None
+            pairs = []
+            for k in range(len(starts) - 1):
+                a, b = starts[k], starts[k + 1]
+                x, y = int(key[a] // nr), int(key[a] % nr)
+                rx, ry = regs[x], regs[y]
+                stats["borders"] += 1
+                if not (plain[x] and plain[y]):
+                    stats["not plain"] += 1
+                    continue
+                if fixed[x] == 2 and fixed[y] == 2 or freeform and (fixed[x] == 2 or fixed[y] == 2):
+                    stats["fixed"] += 1
+                    continue
+                if freeform and (flat[x] or flat[y]):
+                    stats["drawn flat"] += 1
+                    continue
+                worst = float(bend[a:b].max())
+                if worst > POOL_DEG or freeform and worst > POOL_CREASE[0] * max(inner[x], inner[y]) + POOL_CREASE[1]:
+                    stats["facets bend more"] += 1
+                    continue
+                if freeform and contact(rx.prim, ry.prim) is not None:
+                    stats["in contact"] += 1
+                    continue
+                if cen is None:
+                    cen = V[F].mean(1)
+                pick = np.linspace(a, b - 1, min(b - a, POOL_SAMPLE)).astype(int)
+                P = 0.5 * (cen[rows[pick]] + cen[cols[pick]])
+                cs = np.abs((rx.prim.normal(P) * ry.prim.normal(P)).sum(1))
+                if float(np.degrees(np.arccos(np.clip(np.median(cs), -1.0, 1.0)))) > POOL_DEG:
+                    stats["surfaces meet steeply"] += 1
+                    continue
+                pairs.append((x, y))
+            return (pairs, names, fixed, own, held, exact_at) if pairs else None
+
+        def fit_union(regs, members, fixed, own, held, exact_at, try_kinds):
+            """The lowest-rank surface of try_kinds that holds every member within tolerance and
+            little worse than its own surface did (POOL_WORSE), and an exact member's held
+            vertices within exact_at, with its sense, or None. A locked member's own surface is
+            the only candidate; an exact member's is tried first."""
+            faces = np.concatenate([np.asarray(regs[i].faces, dtype=np.int64) for i in members])
+            locked = [i for i in members if fixed[i] == 2]
+            if len(locked) > 1:
+                return None
+            exact = [(i, held[i]) for i in members if fixed[i] == 1]
+
+            def holds(p2, s2):
+                if not self.accept(p2, s2, faces).all() or not all(_lies_on(p2, V[vid], exact_at) for _, vid in exact):
+                    return False
+                return all(float(self.face_error(p2, s2, np.asarray(regs[i].faces, dtype=np.int64))[0].max()) <= POOL_WORSE * own[i]
+                           for i in members)
+
+            for i in locked + [i for i, _ in exact]:
+                r = regs[i]
+                if holds(r.prim, r.sense):
+                    return r.prim, r.sense
+            if locked:
+                return None
+            P, N, ok, W = self.region_points(faces, True)
+            axes = [regs[i].prim for i in members if isinstance(regs[i].prim, _OnAxis)]
+            # (cylinders whose axes lie within POOL_BEND degrees of each other don't bend round a centre: no torus of
+            # them. A cone of them stays possible whatever their radii: a draft's tiles side by side round it are
+            # parallel cylinders of one radius, and the cone is what the designer drew)
+            cyl = [regs[i].prim for i in members if regs[i].kind == "cylinder"]
+            straight = len(cyl) == len(members) and len(cyl) > 1 and all(
+                abs(float(np.dot(a.d, b.d))) >= np.cos(np.radians(POOL_BEND)) for k, a in enumerate(cyl) for b in cyl[k + 1:])
+            for cls in sorted(try_kinds, key=lambda c: c.rank):
+                if straight and cls is Torus:
+                    stats["kind held back"] += 1
+                    continue
+                if cls is Plane:
+                    p2 = Plane.fit(P, (self.fn[faces] * self.fa[faces, None]), W=W)
+                    s2 = 1.0
+                elif axes:
+                    p2 = on_axis(cls.kind, axes[0].ka, axes[0].kd, P, W)
+                    if p2 is None or p2.degenerate(self.ext):
+                        continue
+                    s2 = self.sense_of(p2, faces)
+                else:
+                    p2 = self._robust_fit(cls, P[ok], N[ok], W[ok])
+                    if p2 is None:
+                        continue
+                    s2 = self.sense_of(p2, faces)
+                if p2.kind == "torus" and p2.r >= POOL_SPINDLE * p2.R:
+                    stats["spindle refused"] += 1
+                    continue
+                # (a generalisation holds its members' own surfaces as its limit: a torus of cylinder tiles has their
+                # radius as its tube, a cone of them their radius where they are; a fit that lands elsewhere found
+                # another surface through the cloud. Counted only, until measured (POOL_LIMIT_HOLDS))
+                if cyl and p2.kind in ("torus", "cone") and _off_its_limit(p2, cyl, [regs[i] for i in members if regs[i].kind == "cylinder"], V, F, tol):
+                    stats["generalisation off its limit"] += 1
+                    if POOL_LIMIT_HOLDS:
+                        continue
+                if holds(p2, s2):
+                    return p2, s2
+            return None
+
+        def try_for(members):
+            """The kinds a union of these pieces is tried as: their own, and what every member's kind generalises
+            to (two or three fits instead of five: a simpler kind that fits is simplify()'s to find in the rebuild
+            after). A generalisation one member doesn't share is out: a plane member keeps a cluster off Cone and
+            Torus (tc: a cylinder tile and a few plane triangles, exact by their size, fitted as spindle tori with
+            r 2 to 11 times R, and the drawn planes ended under tori)."""
+            own = {kinds[self.regions[i].kind] for i in members}
+            shared = None
+            for i in members:
+                k = self.regions[i].kind
+                reach = {kinds[k]} | set(wider.get(k, ()))
+                shared = reach if shared is None else shared & reach
+            return own | (shared or set())
+
+        def clusters_of(pairs, nr):
+            parent = list(range(nr))
+
+            def find(i):
+                while parent[i] != i:
+                    parent[i] = parent[parent[i]]
+                    i = parent[i]
+                return i
+
+            for x, y in pairs:
+                parent[find(y)] = find(x)
+            out = {}
+            for x, y in pairs:
+                out.setdefault(find(x), set()).update((x, y))
+            return [sorted(c) for c in out.values()]
+
+        def apply(groups):
+            """groups: (members, replacement regions): the members go, the replacements come and remember them."""
+            regs, lab = self.regions, self.label
+            gone = {i for members, _ in groups for i in members}
+            out = [r for i, r in enumerate(regs) if i not in gone]
+            for members, new in groups:
+                for r in new:
+                    r.parts, r.pooled = [regs[i] for i in members], True
+                out.extend(new)
+            newlab = np.empty_like(lab)
+            for i, r in enumerate(out):
+                r.faces = np.asarray(r.faces, dtype=np.int64)
+                newlab[r.faces] = i
+            self.pooled += len(regs) - len(out)
+            self.regions, self.label = out, newlab
+
+        # --- one simple surface, to a fixpoint ---
+        for _ in range(POOL_PASSES):
+            got = borders(freeform=False)
+            if got is None:
+                break
+            pairs, names, fixed, own, held, exact_at = got
+            regs = self.regions
+            taken = set()
+            groups = []
+            # (whole clusters first: tiles of one bend are a torus only together)
+            for members in clusters_of(pairs, len(regs)):
+                if len(members) < 3:
+                    continue
+                name = tuple(names[i] for i in members)
+                if name in failed:
+                    stats["clusters remembered"] += 1
+                    continue
+                stats["clusters tried"] += 1
+                fit = fit_union(regs, members, fixed, own, held, exact_at, try_for(members))
+                if fit is None:
+                    failed.add(name)
+                    continue
+                stats["clusters joined"] += 1
+                if fit[0].kind not in {regs[i].kind for i in members}:
+                    stats["joined as another kind"] += 1      # (a sphere tile and a plane piece as a cone, say)
+                faces = np.concatenate([np.asarray(regs[i].faces, dtype=np.int64) for i in members])
+                groups.append((members, [Region(fit[0], faces, fit[1], False)]))
+                taken.update(members)
+            # (then pairs, the smallest first: a small piece is likeliest a tile)
+            size = [len(r.faces) for r in regs]
+            for x, y in sorted(pairs, key=lambda q: size[q[0]] + size[q[1]]):
+                if x in taken or y in taken:
+                    continue
+                name = (min(names[x], names[y]), max(names[x], names[y]))
+                if name in failed:
+                    stats["pairs remembered"] += 1
+                    continue
+                stats["pairs tried"] += 1
+                fit = fit_union(regs, [x, y], fixed, own, held, exact_at, try_for((x, y)))
+                if fit is None:
+                    failed.add(name)
+                    continue
+                stats["pairs joined"] += 1
+                if fit[0].kind not in (regs[x].kind, regs[y].kind):
+                    stats["joined as another kind"] += 1
+                faces = np.concatenate([np.asarray(regs[i].faces, dtype=np.int64) for i in (x, y)])
+                groups.append(([x, y], [Region(fit[0], faces, fit[1], False)]))
+                taken.update((x, y))
+            if not groups:
+                break
+            apply(groups)
+        # --- what no simple surface holds: one freeform cell per cluster, when that is far fewer faces ---
+        if POOL_FREEFORM:
+            got = borders(freeform=True)
+            if got is not None:
+                pairs, names, fixed, own, held, exact_at = got
+                regs = self.regions
+                miss = max(tol, self.deflection)
+
+                def held_by(cells, i):
+                    """Whether the cells hold member i at its held vertices (its drawn flat's, its interior ones) within
+                    POOL_WORSE times what its own surface held them to, or exact_at: a corner of each of its triangles
+                    against the cell that triangle went to."""
+                    fc = np.asarray(regs[i].faces, dtype=np.int64)
+                    hv = held[i]
+                    bound = max(POOL_WORSE * float(np.percentile(regs[i].prim.distance(V[hv]), POOL_EXACT_SHARE)), exact_at)
+                    corners = F[fc]
+                    sel = np.isin(corners, hv)
+                    if not sel.any():
+                        return True
+                    cell_of = np.full(len(F), -1, dtype=np.int64)
+                    for k, c in enumerate(cells):
+                        cell_of[np.asarray(c.faces, dtype=np.int64)] = k
+                    k_tri = np.repeat(cell_of[fc], 3).reshape(-1, 3)[sel]
+                    P = V[corners[sel]]
+                    d = np.empty(len(P))
+                    for k in np.unique(k_tri):
+                        at = k_tri == k
+                        d[at] = cells[k].prim.distance(P[at]) if k >= 0 else np.inf
+                    return float(np.percentile(d, POOL_EXACT_SHARE)) <= bound
+                area = np.array([float(self.fa[np.asarray(r.faces, dtype=np.int64)].sum()) for r in regs])
+                # (a piece that dwarfs the tiles beside it is a drawn face they run into, not one of them: it stays out,
+                # and the tiles cluster without it)
+                drawn = set()
+                for members in clusters_of(pairs, len(regs)):
+                    typical = float(np.median(area[members]))
+                    drawn.update(i for i in members if area[i] >= FACET_DWARFS * typical
+                                 and not self._strip_like(np.asarray(regs[i].faces, dtype=np.int64)))
+                stats["dwarfs"] += len(drawn)
+                pairs = [(x, y) for x, y in pairs if x not in drawn and y not in drawn]
+                groups = []
+                for members in clusters_of(pairs, len(regs)):
+                    name = ("freeform",) + tuple(names[i] for i in members)
+                    if name in failed:
+                        stats["cells remembered"] += 1
+                        continue
+                    stats["cells tried"] += 1
+                    members = list(members)
+                    cells = None
+                    for _ in range(POOL_LEAVE):
+                        faces = np.concatenate([np.asarray(regs[i].faces, dtype=np.int64) for i in members])
+                        cells = fit_freeform_cells(self, faces)
+                        # (the cells follow the mesh at least as well as the tiles did, give or take)
+                        close = min(miss, POOL_WORSE * max(own[i] for i in members))
+                        if not cells or len(cells) > len(members) // POOL_FEWER or any(c.prim.dev > close for c in cells) \
+                                or sum(len(c.faces) for c in cells) != len(faces):
+                            cells = None
+                            break
+                        # (and every member as closely as its own surface held it, give or take, at the vertices its
+                        # exactness is judged on: a cell that follows a cluster on the whole can still stand 1.5 mm off
+                        # one tile (test13, tc_greaser: 17 of 66 tiles measured), and a drawn face among the tiles is
+                        # held exactly or stays out; the members a cell doesn't hold leave, and the rest are tried again)
+                        loose = {i for i in members if not held_by(cells, i)}
+                        if not loose:
+                            break
+                        stats["members left out"] += len(loose)
+                        members = [i for i in members if i not in loose]
+                        cells = None
+                        if len(members) < POOL_FEWER:
+                            break
+                    if cells is None:
+                        failed.add(name)
+                        continue
+                    stats["cells joined"] += 1
+                    groups.append((members, cells))
+                if groups:
+                    apply(groups)
+        return self.pooled - before
+
+
+def _radius_sigma(cyl, P):
+    """The uncertainty of a cylinder's radius from the points it was fitted to: sigma^2 (J^T J)^-1 for the five parameters
+    (two of the axis point across the axis, two of its direction, the radius), the Jacobian taken numerically on the
+    signed radial residual, sigma from the residual itself. A tile spanning a small arc of a big cylinder has a radius
+    that the points barely pin; a wide tile a well-known one. inf when the system is singular."""
+    P = np.asarray(P, float)
+    if len(P) < 7:
+        return np.inf
+    d = cyl.d / np.linalg.norm(cyl.d)
+    e1 = np.cross(d, [1.0, 0.0, 0.0])
+    if np.linalg.norm(e1) < 0.1:
+        e1 = np.cross(d, [0.0, 1.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(d, e1)
+
+    def residual(x):
+        a = cyl.a + x[0] * e1 + x[1] * e2
+        dd = d + x[2] * e1 + x[3] * e2
+        dd = dd / np.linalg.norm(dd)
+        v = P - a
+        radial = np.linalg.norm(v - np.outer(v @ dd, dd), axis=1)
+        return radial - (cyl.r + x[4])
+
+    scale = max(float(cyl.r), 1e-3)
+    h = np.array([1e-4 * scale, 1e-4 * scale, 1e-4, 1e-4, 1e-4 * scale])
+    r0 = residual(np.zeros(5))
+    J = np.empty((len(P), 5))
+    for k in range(5):
+        x = np.zeros(5)
+        x[k] = h[k]
+        J[:, k] = (residual(x) - r0) / h[k]
+    dof = max(len(P) - 5, 1)
+    sigma2 = float(r0 @ r0) / dof
+    try:
+        cov = np.linalg.inv(J.T @ J)
+    except np.linalg.LinAlgError:
+        return np.inf
+    var = sigma2 * cov[4, 4]
+    return float(np.sqrt(var)) if var > 0 else 0.0
+
+
+def _off_its_limit(prim, cyls, regs, V, F, tol, detail=None):
+    """Whether a torus or cone fitted over cylinder tiles stands off their geometry: the torus's tube radius, or the cone's
+    radius at each tile, differs from the tile's own radius by more than POOL_SIGMA times that radius's own uncertainty
+    (_radius_sigma), or the tolerance. detail, a list if given, gets (member r, radius there, sigma_r) per member."""
+    off = False
+    for c, r in zip(cyls, regs):
+        fc = np.asarray(r.faces, dtype=np.int64)
+        if prim.kind == "torus":
+            rho = float(prim.r)
+        else:
+            p = V[F[fc]].mean((0, 1))
+            rho = abs(float((p - prim.apex) @ prim.d)) * np.tan(prim.alpha)
+        sig = _radius_sigma(c, V[np.unique(F[fc])])
+        if detail is not None:
+            detail.append((round(float(c.r), 3), round(rho, 3), round(sig, 4)))
+        if abs(rho - c.r) > max(POOL_SIGMA * sig, tol):
+            off = True
+    return off
+
+
+def _drawn_flats_in(faces, drawn_flat):
+    """The drawn flats inside a piece: the exact facet groups fidelity.designed_flats calls planes (by its own floors in
+    triangles and area, none of ours on top) that lie mostly in the piece. drawn_flat: (group of each triangle, which
+    groups are planes, each group's size), the size optional."""
+    if drawn_flat is None:
+        return np.zeros(0, dtype=np.int64)
+    sf, flat = drawn_flat[0], drawn_flat[1]
+    total = drawn_flat[2] if len(drawn_flat) > 2 else np.bincount(sf, minlength=len(flat))
+    here = np.bincount(sf[faces], minlength=len(flat))
+    return np.nonzero(flat & (here > 0) & (2 * here >= total))[0]
+
+
+def _held_vertices(seg, faces, drawn_flat):
+    """The vertices of a piece that a surface must hold for the piece to be exact: those of a drawn flat inside it (an
+    exact facet group fidelity.designed_flats calls a plane, by its own floors in triangles and area and none of ours on
+    top, most of it in the piece), else its interior vertices (every triangle at the vertex is the piece's), else, when
+    there are fewer than POOL_INTERIOR of those, all of them. drawn_flat: (group of each triangle, which groups are
+    planes, each group's size), the size optional."""
+    F = seg.F
+    if drawn_flat is not None:
+        drawn = _drawn_flats_in(faces, drawn_flat)
+        if len(drawn):
+            return np.unique(F[faces[np.isin(drawn_flat[0][faces], drawn)]])
+    vid, counts = np.unique(F[faces], return_counts=True)
+    deg = seg.__dict__.get("_vertex_degree")
+    if deg is None:
+        deg = seg._vertex_degree = np.bincount(F.ravel(), minlength=len(seg.V))
+    inside = vid[counts == deg[vid]]
+    return inside if len(inside) >= POOL_INTERIOR else vid
+
+
+def _lies_on(prim, P, within):
+    """Whether the points P lie on the surface to within `within`, POOL_EXACT_SHARE of them: a drawn face's piece
+    carries a few stray vertices of its neighbours along its border."""
+    return float(np.percentile(prim.distance(P), POOL_EXACT_SHARE)) <= within
 
 
 def _cluster_components(faces, nb):
@@ -1914,12 +3319,16 @@ class CADAssembler(BRepAssembler):
         self.pole_caps = {}
         self.tube_seams = {}
         self.ext = float(np.linalg.norm(V.max(0) - V.min(0)))
+        self.worked_out = {}
+        self.fit_instead = set()
 
     # --- edges ----------------------------------------------------------
     def build_chain_edges(self, chain):
         L = self.regions[chain.left]
         R = self.regions[chain.right] if chain.right >= 0 else None
         both_planar = L.kind == "plane" and (R is None or R.kind == "plane")
+        if EXACT_EDGES and not both_planar and self._exact_chain_edge(chain):
+            return
         if len(chain.verts) == 2:
             return super().build_chain_edges(chain)
         if R is not None and (L.prim is R.prim or getattr(L.prim, "twin", None) is R.prim) and not chain.closed:
@@ -1929,6 +3338,9 @@ class CADAssembler(BRepAssembler):
             # can be any curve on it, so it runs smoothly from corner to
             # corner instead of zigzagging along the mesh's triangles (a
             # zigzag edge folds over itself and makes both faces invalid)
+            if L.kind == "plane":
+                if self._plane_cut_edges(chain, L.prim):
+                    return
             e = self._on_surface_edge(chain, L.prim)
             if e is not None:
                 chain.edges = [e]
@@ -1943,7 +3355,9 @@ class CADAssembler(BRepAssembler):
                     d = d / L
                     Q = P - a
                     off = np.linalg.norm(Q - np.outer(Q @ d, d), axis=1).max()
-                    if off <= 5 * self.tol:
+                    # (mesh noise along a long straight border, not a corner in a short one:
+                    # a straight edge's corner tolerances grow with off, see LINE_BEND)
+                    if off <= 5 * self.tol and off <= LINE_BEND * L:
                         e = self._line_edge(chain.verts[0], chain.verts[-1])
                         self._set_edge_tol(e, chain, off)
                         chain.edges = [e]
@@ -1966,6 +3380,306 @@ class CADAssembler(BRepAssembler):
             chain.edges = [e]
             return
         chain.edges = self._polyline_edges(chain.verts)
+
+    def _chain_prims(self, chain):
+        """The distinct surfaces either side of a border (one, when one surface was cut in two)."""
+        out = []
+        for rid in (chain.left, chain.right):
+            if rid >= 0:
+                prim = self.regions[rid].prim
+                if not any(prim is q or getattr(q, "twin", None) is prim for q in out):
+                    out.append(prim)
+        return out
+
+    def solve_corners(self):
+        """Puts each corner where its surfaces meet, before any edge is made from it (the points
+        between corners are looked for only when an edge is laid: _exact_chain_edge). The mesh's
+        points only come near the surfaces, and a file whose corners stand off their faces by hundredths of a millimetre
+        reads as valid but can't be edited: Fusion finds its faces' meeting points anew for any
+        change. A designer's file has them within a millionth of a millimetre."""
+        rg = self.rg
+        at = {}
+        for c in rg.chains:
+            for vi in (c.verts[0], c.verts[-1]):
+                at.setdefault(vi, []).extend(self._chain_prims(c))
+        reach = CORNER_REACH * self.tol
+        moved = {}
+        for vi, prims in at.items():
+            seen = []
+            for q in prims:
+                if not any(q is s or getattr(s, "twin", None) is q for s in seen):
+                    seen.append(q)
+            x = _meet(self.V[vi], seen, reach)
+            if x is not None:
+                moved[vi] = x
+        for c in rg.chains:
+            # (a corner pair that would come together makes no edge: both stay as they were)
+            if c.closed:
+                continue
+            a, b = c.verts[0], c.verts[-1]
+            pa, pb = moved.get(a, self.V[a]), moved.get(b, self.V[b])
+            if np.linalg.norm(pa - pb) <= 10 * MIN_TOL:
+                moved.pop(a, None)
+                moved.pop(b, None)
+        for vi, x in moved.items():
+            self.V[vi] = x
+
+    def _exact_chain_edge(self, chain):
+        """The edge between two surfaces as the line, circle or smooth curve where they meet,
+        worked out from the surfaces between the solved corners (points are added where the mesh
+        has too few to show the curve). False when there is no such sharp meeting line: faces
+        joining smoothly, one surface cut in two, or an open border; those are left to the rest
+        of build_chain_edges."""
+        prims = self._chain_prims(chain)
+        if chain.left < 0 or chain.right < 0 or len(prims) != 2:
+            return False
+        # (exact, it crossed its neighbour at a cusp: see _cusp_crossing)
+        if (chain.verts[0], chain.verts[-1]) in self.fit_instead:
+            return False
+        # (a freeform surface is only fitted to within the tolerance, and a designer's own edges stand
+        # off theirs too: working these out gains nothing, cost 300 of test14's 520 s in this pass, and a
+        # narrow band laid this way broke on read-back and went to 44 flat pieces on main plate)
+        if any(hasattr(q, "geom") for q in prims):
+            return False
+        P = self.V[chain.verts]
+        P = P[np.r_[True, np.linalg.norm(np.diff(P, axis=0), axis=1) > MIN_TOL]]
+        if chain.closed and len(P) < 4:
+            return False
+        if not chain.closed and len(P) < 2:
+            return False
+        # (the rounds build most borders again unchanged: each round took as long as the last)
+        key = (tuple(chain.verts[:1]), tuple(chain.verts[-1:]), len(chain.verts), P[0].tobytes(), P[-1].tobytes(),
+               _prim_key(prims[0]), _prim_key(prims[1]))
+        was = self.worked_out.get(key)
+        if was is not None:
+            if was[0] == "none":
+                return False
+            if was[0] == "line":
+                e = self._line_edge(chain.verts[0], chain.verts[-1])
+                self._set_edge_tol(e, chain, EDGE_FIT)
+                chain.edges = [e]
+                return True
+            if was[0] == "circle":
+                e = self._circle_edge(chain, was[1], was[2], was[3], exact=True)
+                if e is not None:
+                    chain.edges = [e]
+                    return True
+            if was[0] == "curve":
+                e = self._curve_edge(chain, was[1])
+                if e is not None:
+                    chain.edges = [e]
+                    return True
+            if was[0] == "ellipse":
+                e = self._ellipse_edge(chain, was)
+                if e is not None:
+                    chain.edges = [e]
+                    return True
+        got = self._work_out_chain(chain, P, prims)
+        self.worked_out[key] = got
+        if got[0] == "none":
+            return False
+        if got[0] == "line":
+            e = self._line_edge(chain.verts[0], chain.verts[-1])
+            self._set_edge_tol(e, chain, EDGE_FIT)
+        elif got[0] == "circle":
+            e = self._circle_edge(chain, got[1], got[2], got[3], exact=True)
+        elif got[0] == "ellipse":
+            e = self._ellipse_edge(chain, got)
+        else:
+            e = self._curve_edge(chain, got[1])
+        if e is None:
+            self.worked_out[key] = ("none",)
+            return False
+        chain.edges = [e]
+        return True
+
+    def _ellipse_edge(self, chain, known):
+        """The arc of a plane's ellipse across a cylinder, between the chain's corners."""
+        from OCP.Geom import Geom_Ellipse
+        from OCP.gp import gp_Elips
+
+        _, c, n, x, major, minor = known
+        P = self.V[chain.verts]
+        y = np.cross(n, x)
+        ang = np.unwrap(np.arctan2((P - c) @ y / minor, (P - c) @ x / major))
+        if ang[-1] < ang[0]:
+            n, y, ang = -n, -y, -ang
+        gc = Geom_Ellipse(gp_Elips(gp_Ax2(_pnt(c), _dir(n), _dir(x)), float(major), float(minor)))
+        v0, v1 = self.vertex(chain.verts[0]), self.vertex(chain.verts[-1])
+        if chain.closed:
+            mk = BRepBuilderAPI_MakeEdge(gc, v0, v0, 0.0, 2 * np.pi)
+        else:
+            if ang[-1] - ang[0] >= 2 * np.pi - 1e-6:
+                return None
+            mk = BRepBuilderAPI_MakeEdge(gc, v0, v1, float(ang[0]), float(ang[-1]))
+        if not mk.IsDone():
+            return None
+        e = mk.Edge()
+        self._set_edge_tol(e, chain, EDGE_FIT)
+        return e
+
+    def _curve_edge(self, chain, curve):
+        v0, v1 = self.vertex(chain.verts[0]), self.vertex(chain.verts[-1])
+        mk = BRepBuilderAPI_MakeEdge(curve, v0, v1, curve.FirstParameter(), curve.LastParameter())
+        if not mk.IsDone():
+            return None
+        e = mk.Edge()
+        self._set_edge_tol(e, chain, EDGE_FIT)
+        return e
+
+    def _work_out_chain(self, chain, P, prims):
+        """What the border between two surfaces is: ("line",), ("circle", c, n, r), ("curve", curve)
+        or ("none",) when it isn't a sharp meeting line (see _exact_chain_edge)."""
+        reach = CORNER_REACH * self.tol
+        touch = contact(prims[0], prims[1])
+        if touch is not None:
+            if touch[0] == "line" and not chain.closed:
+                return ("line",)
+            if touch[0] == "circle":
+                return ("circle", touch[1], touch[2], touch[3])
+            return ("none",)
+        if _meeting_angle(P, prims) < EDGE_TANGENT_DEG:
+            return ("none",)
+        # (a plane through a cylinder, cone or sphere, or two surfaces on one axis, meet in a known
+        # curve: a fitted one misses the corners by enough to read back as crossing its neighbour)
+        known = _known_curve(prims, P)
+        if known is not None and float(_curve_gap(known, P)) <= reach:
+            return known
+        if not chain.closed:
+            # (most are straight: the middle of the chord settles that, at no cost)
+            a, b = P[0], P[-1]
+            if np.linalg.norm(b - a) <= MIN_TOL:
+                return ("none",)
+            ok = True
+            for s in EDGE_LINE_AT:
+                m = a + s * (b - a)
+                x = _meet(m, prims, reach)
+                if x is None or float(np.linalg.norm(x - m)) > EDGE_FIT:
+                    ok = False
+                    break
+            if ok:
+                return ("line",)
+        # (the corners stay as solved; the points between them are searched for afresh)
+        if len(P) > EDGE_START:
+            P = P[np.unique(np.r_[np.linspace(0, len(P) - 1, EDGE_START).astype(int), len(P) - 1])]
+        Q = _densify(P, prims, reach)
+        if Q is None:
+            return ("none",)
+        circ = _fit_circle_3d(Q[:-1] if chain.closed else Q)
+        if circ is not None and circ[3] <= EDGE_FIT:
+            return ("circle", circ[0], circ[1], circ[2])
+        curve = self._meeting_curve(chain, Q, prims, reach)
+        return ("none",) if curve is None else ("curve", curve)
+
+    def _meeting_curve(self, chain, Q, prims, reach):
+        """A smooth curve through points on both surfaces, with more points where it strays
+        between them. None when it can't be laid (the points double back)."""
+        from OCP.GeomAPI import GeomAPI_Interpolate
+        from OCP.collections import HArray1_gp_Pnt
+
+        curve = None
+        for _ in range(5):
+            if len(Q) > EDGE_POINTS:
+                break
+            turn = np.diff(Q, axis=0)
+            turn = turn / np.maximum(np.linalg.norm(turn, axis=1), 1e-30)[:, None]
+            if len(turn) > 1 and float((turn[:-1] * turn[1:]).sum(axis=1).min()) < 0.3:
+                return None     # (doubles back: no smooth curve goes through these)
+            pts = Q[:-1] if chain.closed else Q
+            h = HArray1_gp_Pnt(1, len(pts))
+            for i, p in enumerate(pts):
+                h.SetValue(i + 1, _pnt(p))
+            try:
+                it = GeomAPI_Interpolate(h, bool(chain.closed), 1e-9)
+                it.Perform()
+            except Exception as fault:
+                faults.caught(fault)
+                return None
+            if not it.IsDone():
+                return None
+            curve = it.Curve()
+            n = len(Q) - 1
+            t0, t1 = curve.FirstParameter(), curve.LastParameter()
+            # (between points the curve's parameter runs by chord length, near enough)
+            chord = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(Q, axis=0), axis=1))]
+            ts = t0 + (t1 - t0) * (chord[:-1] + chord[1:]) / (2 * chord[-1])
+            M = np.array([[curve.Value(float(t)).X(), curve.Value(float(t)).Y(), curve.Value(float(t)).Z()] for t in ts])
+            Mx = [_meet(m, prims, reach) for m in M]
+            off = np.array([np.linalg.norm(m - x) if x is not None else 0.0 for m, x in zip(M, Mx)])
+            if off.max() <= EDGE_FIT:
+                break
+            out = [Q[0]]
+            for i in range(n):
+                if off[i] > EDGE_FIT:
+                    out.append(Mx[i])
+                out.append(Q[i + 1])
+            Q = np.array(out)
+        return curve
+
+    def _plane_cut_edges(self, chain, plane):
+        """The cut between two pieces of one plane: a straight line from corner to corner when
+        that passes clear of everything else on the two pieces, or else the mesh's own path,
+        which can't cross anything. The line, taken blindly, ran through a standoff on Rak Uni's
+        floor and past others, leaving them on the wrong piece: the pieces were invalid and
+        became freeform patches. Returns False when neither will do (the path folds over itself)."""
+        n = plane.n
+        u = np.cross(n, [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0])
+        u /= np.linalg.norm(u)
+        v = np.cross(n, u)
+
+        def flat(P):
+            return np.c_[P @ u, P @ v]
+
+        path = flat(self.V[chain.verts])
+        a, b = path[0], path[-1]
+        d = b - a
+        length = float(np.linalg.norm(d))
+        if length <= MIN_TOL:
+            return False
+        ends = {chain.verts[0], chain.verts[-1]}
+        others = []
+        for r in {chain.left, chain.right}:
+            for loop in self.rg.region_loops[r]:
+                for cid, _ in loop:
+                    if cid != chain.id:
+                        others.append(self.rg.chains[cid].verts)
+        clear = True
+        margin = CUT_CLEARANCE * self.tol
+        for verts in others:
+            Q = flat(self.V[verts])
+            # (a corner of something else within reach of the line)
+            t = np.clip((Q - a) @ d / (length * length), 0.0, 1.0)
+            near = np.linalg.norm(Q - (a + t[:, None] * d), axis=1) <= margin
+            if any(k and verts[i] not in ends for i, k in enumerate(near)):
+                clear = False
+                break
+            # (an edge of it across the line)
+            s1 = (Q[:-1] - a) @ np.array([-d[1], d[0]])
+            s2 = (Q[1:] - a) @ np.array([-d[1], d[0]])
+            cross = np.nonzero(s1 * s2 < 0)[0]
+            if len(cross):
+                at = Q[cross] + (Q[cross + 1] - Q[cross]) * (s1[cross] / (s1[cross] - s2[cross]))[:, None]
+                t = (at - a) @ d / (length * length)
+                if ((t > 1e-9) & (t < 1.0 - 1e-9)).any():
+                    clear = False
+                    break
+            # (something else between the line and the path: it would change pieces)
+            if len(path) > 2 and _inside_polygon(Q, path).any():
+                clear = False
+                break
+        if clear:
+            e = self._line_edge(chain.verts[0], chain.verts[-1])
+            Q = path - a
+            off = float(np.abs(Q @ np.array([-d[1], d[0]])).max()) / length
+            # (the chord only has to lie on the plane; how far it strays from the mesh's path
+            # doesn't matter, both pieces being one surface)
+            self._set_edge_tol(e, chain, min(off, self.tol))
+            chain.edges = [e]
+            return True
+        if _polyline_folds(path):
+            return False
+        chain.edges = self._polyline_edges(chain.verts)
+        return True
 
     def _on_surface_edge(self, chain, prim, n=24):
         """The straight line between a chain's end corners, laid onto the
@@ -2037,7 +3751,7 @@ class CADAssembler(BRepAssembler):
             return c2, (d if float(n @ d) > 0 else -d), float(r2)
         return c, n, r
 
-    def _circle_edge(self, chain, c, n, r):
+    def _circle_edge(self, chain, c, n, r, exact=False):
         P = self.V[chain.verts]
         # orient circle normal so that the chain runs counter-clockwise
         u = unit(P[0] - c - ((P[0] - c) @ n) * n)
@@ -2068,6 +3782,12 @@ class CADAssembler(BRepAssembler):
             a0, a1 = float(ang[0]), float(ang[-1])
             if a1 - a0 > 2 * np.pi - 1e-6:
                 return None
+            # (an arc turning next to nothing is a line taken for a circle: three points of a plane's
+            # meeting with a cylinder, 5 mm long, gave radius 43 m on Rak N. Its parameter range is too
+            # small for OpenCascade to place on the cylinder, and settling then measured 5.6 m of
+            # tolerance, which wrecked the floor it bounds. What can't be an arc falls to a line or a curve)
+            if a1 - a0 < ARC_MIN_TURN:
+                return None
             for vi in (chain.verts[0], chain.verts[-1]):
                 self.vtol[vi] = max(self.vtol[vi], dev)
                 self.B.UpdateVertex(self.vertex(vi), max(MIN_TOL, 1.5 * self.vtol[vi] + 1e-9))
@@ -2079,7 +3799,13 @@ class CADAssembler(BRepAssembler):
         a0 = 0.0 if chain.closed else float(ang[0])
         ts = np.linspace(a0, a0 + span, max(24, 3 * len(P)))
         S = c + r * (np.outer(np.cos(ts), u) + np.outer(np.sin(ts), vv))
-        if _polyline_distance(S, P) > self.tol:
+        # (an arc worked out from the surfaces may stand off the mesh's coarse chords, but not as far as
+        # the fit check calls a face stray: xLCD cover's octagonal pocket passed for a cylinder, whose
+        # arc stood 0.45 mm off a flat side; the flat base it bounds then went to B-spline cells)
+        from .fidelity import Verdict
+
+        room = (Verdict.P999_K if exact else 1.0) * self.tol
+        if _polyline_distance(S, P) > room:
             return None
         e = mk.Edge()
         self._set_edge_tol(e, chain, dev)
@@ -2113,8 +3839,164 @@ class CADAssembler(BRepAssembler):
     # reversed]. Seams are planned before any edge is built so that the seam
     # end points can become real vertices on the (shared) boundary chains.
 
+    def edges_made(self):
+        """Fitted curves leaving a corner at a shallow angle can cross their neighbour before any face is
+        made: such a curve follows the mesh, whose own edges cross nothing, as far as the crossing.
+        Done here, the faces are built once, from edges that don't cross. (Rak Uni's 3.8 mm2 flat
+        face: a spline 0.02 mm off the mesh crossed the arc beside it 0.49 mm along, and
+        OpenCascade's mesher dropped the face, though it reads valid.)
+        The look is in the surface's tangent plane at the corner, which is true only near it: far
+        round a curved surface two edges cross there that never meet. So a crossing counts when the
+        two are within the tolerance of each other at it (on 341board 338 of 349 looked crossed
+        from 0.33 mm or more away, none between, and 334 of its 1,012 borders became 24,361 lines:
+        each build took 11 minutes in place of one). The rest of the edge stays a fitted curve."""
+        for _ in range(CORNER_ROUNDS):
+            if not self._corners_where_edges_cross():
+                break
+        done = {}
+        for vi, rid, lines in self._edges_at_corners():
+            for i in range(len(lines)):
+                for j in range(i + 1, len(lines)):
+                    A, B = lines[i], lines[j]
+                    if A[0] is B[0] or not (A[3] or B[3]):
+                        continue
+                    for i_a, i_b, t, w in _line_crossings(A[2], B[2]):
+                        pa = A[4][i_a] + t * (A[4][i_a + 1] - A[4][i_a])
+                        pb = B[4][i_b] + w * (B[4][i_b + 1] - B[4][i_b])
+                        if np.linalg.norm(pa - pb) > self.tol:
+                            continue
+                        for line, i_x, f_x in ((A, i_a, t), (B, i_b, w)):
+                            if line[3]:
+                                reach = line[5][i_x] + f_x * (line[5][i_x + 1] - line[5][i_x])
+                                done.setdefault(id(line[0]), [line[0], 0.0, 0.0])
+                                k = 1 if line[1] == 0 else 2
+                                done[id(line[0])][k] = max(done[id(line[0])][k], float(reach))
+        for c, from_start, from_end in done.values():
+            c.edges = self._follows_mesh_near_ends(c, from_start, from_end)
+
+    def _edges_at_corners(self):
+        """Each corner of each region, with the edges of that region leaving it, as lines of points packed towards the corner
+        in the surface's tangent plane there: (corner, region, [(border, its end, points in the plane, fitted curve?,
+        points from the corner, length along them)])."""
+        from OCP.BRepAdaptor import BRepAdaptor_Curve
+        from OCP.GeomAbs import GeomAbs_BSplineCurve
+
+        at = {}
+        for c in self.rg.chains:
+            if c.closed or not c.edges:
+                continue
+            for end in (0, -1):
+                for rid in (c.left, c.right):
+                    if rid >= 0:
+                        at.setdefault((c.verts[end], rid), []).append((c, end))
+        s = np.geomspace(CROSS_NEAR, 1.0, CROSS_POINTS)
+        for (vi, rid), here in at.items():
+            if len(here) < 2:
+                continue
+            f = _foot(self.regions[rid].prim, self.V[vi])
+            if f is None:
+                continue
+            u, v = perp_basis(f[1])
+            lines = []
+            for c, end in here:
+                ca = BRepAdaptor_Curve(c.edges[end])
+                a, b = ca.FirstParameter(), ca.LastParameter()
+                ts = a + (b - a) * s if end == 0 else b - (b - a) * s
+                Q = np.array([[p.X(), p.Y(), p.Z()] for p in (ca.Value(float(w)) for w in ts)]) - self.V[vi]
+                along = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(Q, axis=0), axis=1))]
+                lines.append((c, end, np.c_[Q @ u, Q @ v], ca.GetType() == GeomAbs_BSplineCurve, Q, along))
+            yield vi, rid, lines
+
+    def _corners_where_edges_cross(self):
+        """Two exact edges leaving a corner nearly tangent can really cross just beside it: the corner is
+        solved only along the directions its surfaces pin down (_meet), which leaves it short of where its
+        edges meet, and a surface fitted a hair into its neighbour cuts it twice, either side of the tangent point.
+        xlcd-cover's floor: a straight edge and an ellipse crossed 0.088 mm from their corner, 0.0004 mm apart. The
+        crossing is where the corner is: it goes there when the two run within the tolerance of each other all
+        the way to it, so nothing moves across them, and it is on all the corner's surfaces within the
+        tolerance. Every edge at the corner is laid again from it. A large tolerance hides such a crossing
+        in memory, but a STEP file keeps no tolerances, so it comes back when the file is read. (A corner
+        between two such meetings, one on each side of a pinch, can't go to both: it stays, as it would
+        only put one of them further off. Returns whether any corner moved.)"""
+        moves = {}
+        torn = set()
+        for vi, rid, lines in self._edges_at_corners():
+            for i in range(len(lines)):
+                for j in range(i + 1, len(lines)):
+                    A, B = lines[i], lines[j]
+                    if A[0] is B[0] or A[3] or B[3]:
+                        continue
+                    for off in _crossings_beside(A[2], A[4], B[2], B[4], self.tol):
+                        x = self.V[vi] + off
+                        reach = float(np.linalg.norm(off))
+                        if vi in moves and float(off @ (moves[vi][1] - self.V[vi])) < 0.0:
+                            torn.add(vi)
+                        if vi not in moves or reach < moves[vi][0]:
+                            moves[vi] = (reach, x)
+        moved = {}
+        for vi, (reach, x) in moves.items():
+            if vi in torn:
+                continue
+            prims = []
+            for c in self.rg.chains:
+                if vi in (c.verts[0], c.verts[-1]):
+                    prims += self._chain_prims(c)
+            feet = [_foot(q, x) for q in prims]
+            if all(f is None or np.linalg.norm(f[0] - x) <= self.tol for f in feet):
+                moved[vi] = x
+        if not moved:
+            return False
+        for vi, x in moved.items():
+            self.V[vi] = x
+            self._verts.pop(vi, None)
+        for c in self.rg.chains:
+            if c.verts[0] in moved or c.verts[-1] in moved:
+                self.chain_edges_or_fail(c)
+        return True
+
+    def _follows_mesh_near_ends(self, chain, from_start, from_end):
+        """A border's edges following the mesh for these lengths from its two ends (up to the first of
+        its points past them), and a fitted curve between."""
+        P = self.V[chain.verts]
+        run = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+        i = int(np.searchsorted(run, from_start)) if from_start > 0.0 else 0
+        j = int(np.searchsorted(run, run[-1] - from_end, side="right")) - 1 if from_end > 0.0 else len(P) - 1
+        if j - i < 2:
+            return self._polyline_edges(chain.verts)
+        middle = SimpleNamespace(verts=chain.verts[i:j + 1])
+        e = self._bspline_edge(middle, P[i:j + 1])
+        if e is None:
+            return self._polyline_edges(chain.verts)
+        edges = self._polyline_edges(chain.verts[:i + 1]) if i > 0 else []
+        edges.append(e)
+        if j < len(P) - 1:
+            edges += self._polyline_edges(chain.verts[j:])
+        return edges
+
+    def _unfold_chains(self):
+        """A border that runs out and straight back along itself, round an arm of a region with no
+        width, encloses nothing, and leaves it out. Left in, OpenCascade's mesher leaves out whatever
+        lies behind the fold and says nothing: on Rak Uni a 3.6 mm fold in the floor's outline cost
+        183 mm2 of its triangles, though the face reads valid and no crossing shows."""
+        cos_fold = np.cos(np.radians(180.0 - FOLD_DEG))
+        for c in self.rg.chains:
+            v = list(c.verts)
+            k = 1
+            while 0 < k < len(v) - 1:
+                a, b = self.V[v[k]] - self.V[v[k - 1]], self.V[v[k + 1]] - self.V[v[k]]
+                la, lb = np.linalg.norm(a), np.linalg.norm(b)
+                if la > MIN_TOL and lb > MIN_TOL and float(a @ b) <= cos_fold * la * lb:
+                    del v[k]
+                    k = max(1, k - 1)
+                else:
+                    k += 1
+            c.verts = v
+
     def build(self, progress=None):
+        self._unfold_chains()
         self.split_thin_loops()
+        if EXACT_EDGES:
+            self.solve_corners()
         self.plan_seams()
         if TURN_SNAP:
             self.snap_turn_cuts()
@@ -2254,6 +4136,7 @@ class CADAssembler(BRepAssembler):
 
             A, Bl = wrap[0][0], wrap[1][0]
             anchors = {A: self.loop_anchors(loops[A]), Bl: self.loop_anchors(loops[Bl])}
+            lines = self._seam_lines(r, [rg.loop_vertices(loops[A]), rg.loop_vertices(loops[Bl])], [wrap[0][2], wrap[1][2]])
             cand = []
             for L in (A, Bl):
                 other = Bl if L == A else A
@@ -2263,17 +4146,22 @@ class CADAssembler(BRepAssembler):
                     if not allowed(a):
                         continue
                     comp = (not anchors[other]) or any(abs(_wrap(b - a)) < 1e-9 for b in oang)
-                    cand.append((comp, clearance(a), a))
+                    cand.append((comp, clearance(a), a, _seam_score(lines, a)))
             if cand:
-                cand.sort(key=lambda t: (not t[0], -t[1]))
+                cand.sort(key=lambda t: (t[3] < SEAM_SHALLOW, not t[0], -t[1]))
                 u0 = cand[0][2]
             else:
                 vs = rg.loop_vertices(loops[A])
                 a = fr.angle(self.V[vs[:1]])[0]
                 u0 = a if allowed(a) else _best_gap(forb)
+            if _seam_score(lines, u0) < SEAM_SHALLOW:
+                # (no corner will do: a clear meridian takes a new corner on each loop)
+                scored = [(_seam_score(lines, a), a) for a in np.linspace(-np.pi, np.pi, SEAM_LOOKS, endpoint=False) if allowed(a)]
+                if scored and max(scored)[0] >= SEAM_SHALLOW:
+                    u0 = float(max(scored)[1])
             sv = []
-            for L in (A, Bl):
-                v = self.ensure_seam_vertex(r, loops[L], u0, fr)
+            for L, other in ((A, Bl), (Bl, A)):
+                v = self.ensure_seam_vertex(r, loops[L], u0, fr, self.V[rg.loop_vertices(loops[other])].mean(axis=0))
                 if v is None:
                     break
                 sv.append(v)
@@ -2283,27 +4171,73 @@ class CADAssembler(BRepAssembler):
             self.frames[r] = fr.rotated(u0)
             self.seams[r] = (A, Bl, sv[0], sv[1])
 
+    def _seam_lines(self, r, loops, angles):
+        """For _seam_score, each loop round the axis as (angle round the axis, height along it, and radius from it, at each
+        of its points, in the loop's order and closed), the height in millimetres."""
+        prim = self.regions[r].prim
+        d = self.region_frame(r).d
+        at = {"cylinder": "a", "cone": "apex", "torus": "c", "sphere": "c"}[prim.kind]
+        out = []
+        for vs, ang in zip(loops, angles):
+            P = self.V[vs + vs[:1]]
+            rel = P - getattr(prim, at)
+            h = rel @ d
+            rho = np.linalg.norm(rel - np.outer(h, d), axis=1)
+            if prim.kind == "torus":
+                h = prim.r * np.unwrap(np.arctan2(h, rho - prim.R))
+            out.append((ang, h, rho))
+        if prim.kind == "torus":
+            # (the two loops on one branch of the tube's angle)
+            turn = 2 * np.pi * prim.r
+            a, b = out
+            out[1] = (b[0], b[1] - turn * np.round((b[1].mean() - a[1].mean()) / turn), b[2])
+        return out
+
+    def _seam_lines_to_pole(self, r, vs, ang, fr):
+        """For _seam_score, a loop round a cone's apex or a sphere's pole, and the pole as the seam's other end: a line
+        with no radius that every meridian crosses once. Also returns the pole's position."""
+        prim = self.regions[r].prim
+        d = fr.d
+        at = prim.apex if prim.kind == "cone" else prim.c
+        pole = at if prim.kind == "cone" else prim.c + prim.r * d
+        P = self.V[vs + vs[:1]]
+        rel = P - at
+        h = rel @ d
+        rho = np.linalg.norm(rel - np.outer(h, d), axis=1)
+        # (the pole on the side of the loop the face covers: a cone's apex is at height 0, a sphere's at its radius)
+        high = float((pole - at) @ d)
+        start = float(ang[0])
+        return [(ang, h, rho), (np.array([start, start + 2 * np.pi]), np.array([high, high]), np.zeros(2))], pole
+
     def _plan_pole_cap(self, r, loops, info, A, fr):
         forb = [(a.min() - 0.03, a.max() + 0.03) for (_, w, a) in info if w == 0]
         anchors = self.loop_anchors(loops[A])
-        u0 = None
-        for v in anchors:
-            a = fr.angle(self.V[v][None])[0]
-            ok = True
+        vs = self.rg.loop_vertices(loops[A])
+        lines, pole = self._seam_lines_to_pole(r, vs, np.unwrap(fr.angle(self.V[vs + vs[:1]])), fr)
+
+        def allowed(a):
             for lo, hi in forb:
                 k = np.floor((a - lo) / (2 * np.pi))
                 if lo <= a - k * 2 * np.pi <= hi:
-                    ok = False
-            if ok:
-                u0 = a
-                break
+                    return False
+            return True
+
+        u0 = None
+        fits = [fr.angle(self.V[v][None])[0] for v in anchors]
+        fits = [a for a in fits if allowed(a)]
+        clear = [a for a in fits if _seam_score(lines, a) >= SEAM_SHALLOW]
+        if clear or fits:
+            u0 = (clear or fits)[0]
         if u0 is None:
             if anchors and forb:
                 self.unseamed.add(r)
                 return
-            vs = self.rg.loop_vertices(loops[A])
             u0 = fr.angle(self.V[vs[:1]])[0] if not forb else _best_gap(forb)
-        sv = self.ensure_seam_vertex(r, loops[A], u0, fr)
+        if _seam_score(lines, u0) < SEAM_SHALLOW:
+            scored = [(_seam_score(lines, a), a) for a in np.linspace(-np.pi, np.pi, SEAM_LOOKS, endpoint=False) if allowed(a)]
+            if scored and max(scored)[0] >= SEAM_SHALLOW:
+                u0 = float(max(scored)[1])
+        sv = self.ensure_seam_vertex(r, loops[A], u0, fr, pole)
         if sv is None:
             self.unseamed.add(r)
             return
@@ -2360,32 +4294,58 @@ class CADAssembler(BRepAssembler):
         def allowed(a):
             return all(not (lo <= lo + np.mod(a - lo, 2 * np.pi) <= hi) for lo, hi in forb)
 
+        lines = self._tube_seam_lines(r, fr, [loops[A], loops[Bl]])
         cand = [float(self._tube_angle(r, self.V[v])[0]) for v in self.loop_anchors(loops[A])]
         cand = [a for a in cand if allowed(a)]
-        if cand:
-            v0 = cand[0]
+        clear = [a for a in cand if _seam_score(lines, a) >= SEAM_SHALLOW]
+        if clear or cand:
+            v0 = (clear or cand)[0]
         elif forb:
             v0 = float(_best_gap(forb))
         else:
             v0 = float(self._tube_angle(r, self.V[self.rg.loop_vertices(loops[A])[:1]])[0])
-        sA = self._ensure_tube_seam_vertex(r, loops[A], v0)
-        sB = self._ensure_tube_seam_vertex(r, loops[Bl], v0) if sA is not None else None
+        if _seam_score(lines, v0) < SEAM_SHALLOW:
+            # (no corner will do: a clear parallel takes a new corner on each loop)
+            scored = [(_seam_score(lines, a), a) for a in np.linspace(-np.pi, np.pi, SEAM_LOOKS, endpoint=False) if allowed(a)]
+            if scored and max(scored)[0] >= SEAM_SHALLOW:
+                v0 = float(max(scored)[1])
+        mid = [self.V[self.rg.loop_vertices(loops[i])].mean(axis=0) for i in (Bl, A)]
+        sA = self._ensure_tube_seam_vertex(r, loops[A], v0, mid[0])
+        sB = self._ensure_tube_seam_vertex(r, loops[Bl], v0, mid[1]) if sA is not None else None
         if sA is None or sB is None or sA == sB:
             self.unseamed.add(r)
             return
         self.tube_seams[r] = (A, Bl, sA, sB, v0)
 
-    def _ensure_tube_seam_vertex(self, r, loop, v0):
-        """A corner on the loop at tube angle v0: an existing one, or a new one
-        where the loop crosses that angle (as ensure_seam_vertex round the axis)."""
+    def _tube_seam_lines(self, r, fr, loops):
+        """For _seam_score, each loop round the tube as (angle round the tube, length along the axis's turn, and the tube's
+        radius, at each of its points, in the loop's order and closed)."""
+        prim = self.regions[r].prim
+        out = []
+        for loop in loops:
+            vs = self.rg.loop_vertices(loop)
+            P = self.V[vs + vs[:1]]
+            out.append((np.unwrap(self._tube_angle(r, P)), prim.R * np.unwrap(fr.angle(P)), np.full(len(P), prim.r)))
+        # (the two loops on one branch of the turn round the axis)
+        turn = 2 * np.pi * prim.R
+        a, b = out
+        out[1] = (b[0], b[1] - turn * np.round((b[1].mean() - a[1].mean()) / turn), b[2])
+        return out
+
+    def _ensure_tube_seam_vertex(self, r, loop, v0, toward):
+        """A corner on the loop at tube angle v0: an existing one, the nearest of them to ``toward`` (see ensure_seam_vertex), or
+        a new one where the loop crosses that angle (as ensure_seam_vertex round the axis)."""
         rg = self.rg
+        on = []
         for cid, fwd in loop:
             c = rg.chains[cid]
             if c.closed and cid not in self.fixed_closed:
                 continue
             for v in (c.verts[0], c.verts[-1]):
                 if abs(_wrap(self._tube_angle(r, self.V[v])[0] - v0)) < 1e-9:
-                    return v
+                    on.append(v)
+        if on:
+            return min(on, key=lambda v: float(np.linalg.norm(self.V[v] - toward)))
         for cid, fwd in loop:
             c = rg.chains[cid]
             P = self.V[c.verts]
@@ -2397,7 +4357,11 @@ class CADAssembler(BRepAssembler):
                 t = a0 / (a0 - a1) if a0 != a1 else 0.0
                 q = self.add_point(self._on_parallel(r, P[i] + t * (P[i + 1] - P[i]), v0))
                 rg.insert_vertex(cid, i + 1, q)
-                if c.closed:
+                if c.closed and cid in self.fixed_closed:
+                    # (the circle's corner belongs to the face on its other side: see ensure_seam_vertex)
+                    rg.split_chain(cid, i + 1)
+                    self.fixed_closed.discard(cid)
+                elif c.closed:
                     rg.rotate_closed_chain(cid, i + 1)
                     self.fixed_closed.add(cid)
                 else:
@@ -2452,15 +4416,23 @@ class CADAssembler(BRepAssembler):
         w.Closed(True)
         return w
 
-    def ensure_seam_vertex(self, r, loop, u0, fr):
+    def ensure_seam_vertex(self, r, loop, u0, fr, toward=None):
+        """The corner of a loop the seam at angle u0 starts from, made if there is none. (toward: a point
+        on the other side, the other loop's middle. An edge can lie on the seam's meridian, with a corner on it at each end:
+        the seam starts from the nearer, or it runs along that edge the whole way, which crosses it.)"""
         rg = self.rg
+        on = []
         for cid, fwd in loop:
             c = rg.chains[cid]
             if c.closed and cid not in self.fixed_closed:
                 continue
             for v in (c.verts[0], c.verts[-1]):
                 if abs(_wrap(fr.angle(self.V[v][None])[0] - u0)) < 1e-9:
-                    return v
+                    on.append(v)
+        if on:
+            if toward is None:
+                return on[0]
+            return min(on, key=lambda v: float(np.linalg.norm(self.V[v] - toward)))
         ext = self.ext
         for cid, fwd in loop:
             c = rg.chains[cid]
@@ -2490,7 +4462,13 @@ class CADAssembler(BRepAssembler):
                         q = self.add_point(p)
                         rg.insert_vertex(cid, i + 1, q)
                         k = i + 1
-                if c.closed:
+                if c.closed and cid in self.fixed_closed:
+                    # (the circle holds a seam's corner already, its first point, for the face on its other side:
+                    # turned to start here, that face's corner would be lost, and the face with it (test2's 30 mm2
+                    # cylinder: "seam vertex not on loop"). Split, each face keeps a corner of its own.)
+                    rg.split_chain(cid, k)
+                    self.fixed_closed.discard(cid)
+                elif c.closed:
                     rg.rotate_closed_chain(cid, k)
                     self.fixed_closed.add(cid)
                 elif 0 < k < len(c.verts) - 1:
@@ -2912,6 +4890,8 @@ PERIODIC = ("cylinder", "cone", "torus")
 import os as _os
 
 FIND_SWEEPS = _os.environ.get("MMM_SWEEPS") != "0"
+POOLING = _os.environ.get("MMM_POOL") != "0"     # pieces of one surface are pooled (_pool_pieces)
+POOL_FREEFORM = _os.environ.get("MMM_POOL_FREEFORM") != "0"   # tiles no simple surface holds become one freeform cell
 # Saw-tooth borders straightened (Segmenter._straighten_borders); on by
 # default, MMM_STRAIGHTEN=0 turns it off. Owner's rim, mount and tire:
 # 154 -> 48, 164 -> 66 and 200 -> 24 saw-tooth edges. The small pieces a cut
@@ -2969,6 +4949,227 @@ def _project(prim, P):
     return None
 
 
+_FOOTERS = {}           # a freeform surface's point finder, by the surface, see _foot
+FOOTERS_KEPT = 500      # surfaces whose finders are kept
+
+
+def _known_curve(prims, P):
+    """The curve two surfaces meet in where that is a circle or an ellipse with known axes:
+    ("circle", centre, normal, radius) or ("ellipse", centre, normal, major direction, major, minor);
+    None for any other pair. P: points of the border, for choosing between a torus's two circles."""
+    a, b = prims
+    if a.kind != "plane" and b.kind == "plane":
+        a, b = b, a
+    square = 1.0 - 1e-12
+    if a.kind == "plane":
+        n = a.n
+        if b.kind == "cylinder":
+            c = float(n @ b.d)
+            if abs(c) < 1e-3:
+                return None     # (lines, which a chord tests for)
+            h = float((a.origin - b.a) @ n) / c
+            centre = b.a + h * b.d
+            if abs(c) >= square:
+                return "circle", centre, b.d, float(b.r)
+            x = b.d - c * n
+            x = x / np.linalg.norm(x)
+            return "ellipse", centre, n, x, float(b.r) / abs(c), float(b.r)
+        if b.kind == "cone" and abs(float(n @ b.d)) >= square:
+            h = float((a.origin - b.apex) @ n) / float(n @ b.d)
+            if h <= 0:
+                return None
+            return "circle", b.apex + h * b.d, b.d, float(h * np.tan(b.alpha))
+        if b.kind == "sphere":
+            s = float((a.origin - b.c) @ n)
+            if abs(s) >= b.r:
+                return None
+            return "circle", b.c + s * n, n, float(np.sqrt(b.r * b.r - s * s))
+        if b.kind == "torus" and abs(float(n @ b.d)) >= square:
+            s = float((a.origin - b.c) @ b.d)
+            if abs(s) >= b.r:
+                return None
+            rel = P[0] - b.c
+            rho = float(np.linalg.norm(rel - (rel @ b.d) * b.d))
+            w = float(np.sqrt(b.r * b.r - s * s))
+            return "circle", b.c + s * b.d, b.d, float(min((b.R + w, b.R - w), key=lambda v: abs(v - rho)))
+        return None
+    if {a.kind, b.kind} == {"cylinder", "cone"}:
+        cy, co = (a, b) if a.kind == "cylinder" else (b, a)
+        if abs(float(cy.d @ co.d)) < square:
+            return None
+        off = co.apex - cy.a
+        off = off - float(off @ cy.d) * cy.d
+        if float(np.linalg.norm(off)) > 1e-9:
+            return None
+        h = cy.r / np.tan(co.alpha)
+        return "circle", co.apex + h * co.d, cy.d, float(cy.r)
+    return None
+
+
+def _curve_gap(known, P):
+    """How far the points of a border are from a known curve, at most."""
+    if known[0] == "circle":
+        _, c, n, r = known
+        rel = P - c
+        h = rel @ n
+        rho = np.linalg.norm(rel - np.outer(h, n), axis=1)
+        return float(np.hypot(rho - r, h).max())
+    _, c, n, x, major, minor = known
+    rel = P - c
+    y = np.cross(n, x)
+    u, v, h = rel @ x, rel @ y, rel @ n
+    ang = np.arctan2(v / minor, u / major)
+    return float(np.sqrt((u - major * np.cos(ang)) ** 2 + (v - minor * np.sin(ang)) ** 2 + h * h).max())
+
+
+def _crossings_beside(A, QA, B, QB, tol):
+    """Where two edges leaving a corner cross having run within tol of each other all the way there, from the corner:
+    A, B their points in the surface's tangent plane, QA, QB the same points in space from the corner."""
+    out = []
+    for i_a, i_b, t, w in _line_crossings(A, B):
+        pa = QA[i_a] + t * (QA[i_a + 1] - QA[i_a])
+        pb = QB[i_b] + w * (QB[i_b + 1] - QB[i_b])
+        if np.linalg.norm(pa - pb) > tol:
+            continue
+        before = np.vstack([QA[:i_a + 1], pa[None]])
+        beside = np.vstack([QB[:i_b + 1], pb[None]])
+        if np.linalg.norm(before[:, None] - beside[None], axis=2).min(axis=1).max() <= tol:
+            out.append(0.5 * (pa + pb))
+    return out
+
+
+def _line_crossings(A, B):
+    """Where two lines of points in a plane cross: (segment of A, segment of B, share along each). Each starts
+    near a shared corner: touching at their ends doesn't count."""
+    a, r = A[:-1], np.diff(A, axis=0)
+    b, s = B[:-1], np.diff(B, axis=0)
+    d = r[:, None, 0] * s[None, :, 1] - r[:, None, 1] * s[None, :, 0]
+    gap = b[None] - a[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (gap[..., 0] * s[None, :, 1] - gap[..., 1] * s[None, :, 0]) / d
+        w = (gap[..., 0] * r[:, None, 1] - gap[..., 1] * r[:, None, 0]) / d
+    hit = (d != 0) & (t > 1e-9) & (t < 1 - 1e-9) & (w > 1e-9) & (w < 1 - 1e-9)
+    return [(int(i), int(j), float(t[i, j]), float(w[i, j])) for i, j in np.argwhere(hit)]
+
+
+def _prim_key(p):
+    """What says two surfaces are the same, for keeping what was worked out from them."""
+    if p.kind == "plane":
+        return ("plane", p.origin.tobytes(), p.n.tobytes())
+    if p.kind == "cylinder":
+        return ("cylinder", p.a.tobytes(), p.d.tobytes(), p.r)
+    if p.kind == "cone":
+        return ("cone", p.apex.tobytes(), p.d.tobytes(), p.alpha)
+    if p.kind == "sphere":
+        return ("sphere", p.c.tobytes(), p.r)
+    if p.kind == "torus":
+        return ("torus", p.c.tobytes(), p.d.tobytes(), p.R, p.r)
+    return ("other", id(p))
+
+
+def _foot(prim, x):
+    """The point of a surface nearest x and its unit normal there, or None when the surface can't
+    tell: the point on its axis, say."""
+    k = prim.kind
+    if k in ("plane", "cylinder", "sphere", "torus", "cone"):
+        Q = _project(prim, x[None])
+        if Q is None:
+            return None
+        n = prim.normal(Q)[0]
+        return Q[0], n
+    if not hasattr(prim, "geom"):
+        return None
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    g = prim.geom()
+    # (one finder kept per surface: making a projector for each point took nearly all of
+    # this pass's time, 113 of 199 s on main plate)
+    sa = _FOOTERS.get(id(g))
+    if sa is None or sa[1] is not g:
+        if len(_FOOTERS) > FOOTERS_KEPT:
+            _FOOTERS.clear()
+        sa = _FOOTERS[id(g)] = (ShapeAnalysis_Surface(g), g)
+    uv = sa[0].ValueOfUV(_pnt(x), 1e-7)
+    u, v = uv.X(), uv.Y()
+    P, A, B = gp_Pnt(), gp_Vec(), gp_Vec()
+    g.D1(u, v, P, A, B)
+    n = np.cross([A.X(), A.Y(), A.Z()], [B.X(), B.Y(), B.Z()])
+    L = float(np.linalg.norm(n))
+    if L < 1e-12:
+        return None
+    return np.array([P.X(), P.Y(), P.Z()]), n / L
+
+
+def _meet(x0, prims, reach, iters=6):
+    """The point nearest x0 that lies on all the surfaces, by least-norm Gauss-Newton steps: only
+    the directions the surfaces pin down are moved along, so nearly tangent surfaces don't throw
+    the point far along their meeting line. None when it's more than reach away, however little
+    is asked of it, or a surface can't tell."""
+    x0 = np.asarray(x0, dtype=np.float64)
+    for rcond in MEET_RCOND:
+        x = x0.copy()
+        for _ in range(iters):
+            A, b = [], []
+            for q in prims:
+                f = _foot(q, x)
+                if f is None:
+                    return None
+                A.append(f[1])
+                b.append(float(f[1] @ (f[0] - x)))
+            # (two surfaces meeting clearly, nearly every point asked for, need no more than this)
+            if len(A) == 2:
+                c = float(A[0] @ A[1])
+                if c * c < MEET_CLEAR:
+                    # the least step onto both: along the two normals
+                    k = 1.0 / (1.0 - c * c)
+                    u0, u1 = k * (b[0] - c * b[1]), k * (b[1] - c * b[0])
+                    dx = u0 * A[0] + u1 * A[1]
+                    x = x + dx
+                    if float(dx @ dx) < 1e-20:
+                        break
+                    continue
+            # (surfaces touching smoothly say nothing across their line of contact: the line does)
+            for t, s in contact_rows(prims, x):
+                A.append(t)
+                b.append(s)
+            A, b = np.array(A), np.array(b)
+            U, W, Vt = np.linalg.svd(A, full_matrices=False)
+            keep = W > rcond * W[0]
+            dx = Vt[keep].T @ ((U[:, keep].T @ b) / W[keep])
+            x = x + dx
+            if float(np.linalg.norm(dx)) < 1e-10:
+                break
+        if np.isfinite(x).all() and float(np.linalg.norm(x - x0)) <= reach:
+            return x
+    return None
+
+
+def _densify(P, prims, reach):
+    """The points of a border, with one more on both surfaces between each two, so a border the
+    mesh crosses in one or two steps still shows whether it's straight. Ends stay."""
+    out = [P[0]]
+    for a, b in zip(P[:-1], P[1:]):
+        m = _meet((a + b) / 2, prims, reach)
+        if m is not None:
+            out.append(m)
+        out.append(b)
+    return np.array(out)
+
+
+def _meeting_angle(Q, prims):
+    """Degrees between two surfaces along a border, at its most nearly tangent (0 to 90), from
+    a few of its points."""
+    worst = 90.0
+    for p in Q[np.unique(np.linspace(0, len(Q) - 1, 5).astype(int))]:
+        a, b = _foot(prims[0], p), _foot(prims[1], p)
+        if a is None or b is None:
+            return 0.0
+        c = min(1.0, abs(float(a[1] @ b[1])))
+        worst = min(worst, float(np.degrees(np.arccos(c))))
+    return worst
+
+
 def _face_area(face):
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
@@ -2977,13 +5178,54 @@ def _face_area(face):
         g = GProp_GProps()
         BRepGProp.SurfaceProperties_s(face, g, 1e-4)
         return abs(float(g.Mass()))
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return 0.0
 
 
 def _wrap(a):
     """Wrap angle(s) to (-pi, pi]."""
     return (np.asarray(a) + np.pi) % (2 * np.pi) - np.pi
+
+
+def _seam_score(lines, a):
+    """How well a seam along the meridian at angle a keeps clear of the two loops it joins (see _seam_lines): the
+    least, over the loops' points within its span, of how far the point stands off it for how far along it the point
+    is from where it meets a loop. A loop that merely crosses it scores by its slope. A stretch running beside it scores
+    next to nothing, and -1 means a loop crosses that meridian more than once, as where a border runs backward.
+    motorfeste: a 4,206 mm2 wall with a 58.8 mm slit in it, and its seam 0.01 mm from the slit's edge: their pcurves
+    crossed and the wall, 8% of the part, went to B-spline cells. test13: a seam at the tip of a backward run (helper
+    planes, 2026-11-03)."""
+    met = []
+    for ang, h, _ in lines:
+        here = []
+        # (either side of the meridian: an edge lying on it has a corner on it at each end)
+        for side in (-1e-9, 1e-9):
+            k = np.floor((ang - a - side) / (2 * np.pi))
+            if int((k[1:] != k[:-1]).sum()) != 1:
+                return -1.0
+            i = int(np.nonzero(k[1:] != k[:-1])[0][0])
+            step = ang[i + 1] - ang[i]
+            target = a + side + 2 * np.pi * max(k[i], k[i + 1])
+            here.append(h[i] + (target - ang[i]) / step * (h[i + 1] - h[i]) if step != 0.0 else h[i])
+        met.append(here)
+    mid = [float(np.mean(x[1])) for x in lines]
+    # (the seam starts from whichever is nearer the other loop: see ensure_seam_vertex)
+    first = min(met[0], key=lambda x: abs(x - mid[1]))
+    second = min(met[1], key=lambda x: abs(x - mid[0]))
+    lo, hi = min(first, second), max(first, second)
+    if hi - lo <= 0.0:
+        return float(np.pi)
+    best = float(np.pi)
+    # (a loop's own points where the seam meets it, a hair inside the span, say nothing)
+    margin = max(SEAM_END * (hi - lo), 1e-6)
+    for ang, h, rho in lines:
+        inside = (h > lo + margin) & (h < hi - margin)
+        if inside.any():
+            off = np.abs(_wrap(ang[inside] - a)) * rho[inside]
+            along = np.minimum(h[inside] - lo, hi - h[inside])
+            best = min(best, float((off / along).min()))
+    return best
 
 
 def _best_gap(forb):
@@ -3093,6 +5335,164 @@ def _sample_curve(curve, n):
     return out
 
 
+def _inside_polygon(Q, poly):
+    """Which of the 2D points Q lie inside the closed polygon poly (crossing number)."""
+    A, B = poly, np.roll(poly, -1, axis=0)
+    y = Q[:, 1][:, None]
+    between = (A[:, 1] > y) != (B[:, 1] > y)
+    dy = B[:, 1] - A[:, 1]
+    dy = np.where(np.abs(dy) < 1e-300, 1e-300, dy)
+    at = A[:, 0] + (y - A[:, 1]) / dy * (B[:, 0] - A[:, 0])
+    return ((Q[:, 0][:, None] < at) & between).sum(1) % 2 == 1
+
+
+def _polyline_folds(P):
+    """Whether a 2D path crosses or doubles back over itself (all pairs: such paths are short)."""
+    def side(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    n = len(P) - 1
+    for i in range(n):
+        a, b = P[i], P[i + 1]
+        # (back along the segment before)
+        if i and np.dot(a - P[i - 1], b - a) < 0 and abs(side(P[i - 1], a, b)) <= 1e-9 * max(np.dot(b - a, b - a), 1e-30):
+            return True
+        for j in range(i + 2, n):
+            c, d = P[j], P[j + 1]
+            if side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0:
+                return True
+    return False
+
+
+class _ChainRuler:
+    """How far points are from a long chain, and how far along it, at a cost that grows with the chain and not with its
+    square: the nearest of a set of markers along the chain, then the segments round that marker. A long segment gets more
+    markers, as many as its length needs at the chain's own average spacing, so a point near it finds it and not a closer corner
+    of the next turn of a helix."""
+
+    def __init__(self, P):
+        from scipy.spatial import cKDTree
+
+        self.P = P
+        self.AB = np.diff(P, axis=0)
+        length = np.linalg.norm(self.AB, axis=1)
+        self.L2 = np.maximum(length * length, 1e-30)
+        self.cum = np.r_[0.0, np.cumsum(length)]
+        step = self.cum[-1] / (4.0 * len(length))
+        per = np.maximum(1, np.ceil(length / max(step, 1e-30)).astype(np.int64))
+        self.owner = np.repeat(np.arange(len(length)), per)
+        at = (np.arange(len(self.owner)) - np.repeat(np.r_[0, np.cumsum(per)[:-1]], per) + 0.5) / np.repeat(per, per)
+        self.tree = cKDTree(P[self.owner] + at[:, None] * self.AB[self.owner])
+
+    def place(self, Q):
+        """(distance to the chain, position along it) of each point."""
+        _, near = self.tree.query(Q, workers=-1)
+        near = self.owner[near]
+        best, where = None, None
+        for shift in (-1, 0, 1):
+            i = np.clip(near + shift, 0, len(self.AB) - 1)
+            t = np.clip(((Q - self.P[i]) * self.AB[i]).sum(axis=1) / self.L2[i], 0.0, 1.0)
+            d = np.linalg.norm(Q - (self.P[i] + t[:, None] * self.AB[i]), axis=1)
+            pos = self.cum[i] + t * (self.cum[i + 1] - self.cum[i])
+            if best is None:
+                best, where = d, pos
+            else:
+                closer = d < best
+                best, where = np.where(closer, d, best), np.where(closer, pos, where)
+        return best, where
+
+
+def _interpolated(Q, closed):
+    """A cubic through these points (periodic for a closed chain), or None."""
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    from OCP.collections import HArray1_gp_Pnt
+
+    pts = Q[:-1] if closed else Q
+    h = HArray1_gp_Pnt(1, len(pts))
+    for i, p in enumerate(pts):
+        h.SetValue(i + 1, _pnt(p))
+    try:
+        it = GeomAPI_Interpolate(h, bool(closed), 1e-9)
+        it.Perform()
+        return it.Curve() if it.IsDone() else None
+    except Exception as fault:
+        faults.caught(fault)
+        return None
+
+
+def _fit_long_chain(P, tol, closed):
+    """A smooth curve for a chain too long to start from every point: the points it starts from, and more of the chain's own
+    wherever the curve strays from the chain by more than ``tol``, either way (a curve near the chain can still skip a notch of
+    it), or doubles back along it. So its length never decides: only how far the curve is from the mesh's path does, and a border
+    takes as many points as its shape needs. Returns (curve, deviation), or (None, 0.0) if even every point won't do."""
+    from OCP.Approx import Approx_ChordLength
+
+    idx = np.unique(np.r_[np.linspace(0, len(P) - 1, CHAIN_START).astype(int), len(P) - 1])
+    ruler = _ChainRuler(P)
+    slack = 0.25 * tol
+
+    def measure(curve, points):
+        S = _sample_curve(curve, max(4 * points, 3 * len(P)))
+        ds, pos = ruler.place(S)
+        dp, _ = _ChainRuler(S).place(P)
+        back = np.nonzero(np.diff(pos[1:-1]) < -slack)[0] + 1
+        return ds, pos, dp, back
+
+    if not closed:
+        # (the approximation, which takes the fewest poles, while the first points will do)
+        Q = P[idx]
+        arr = Array1_gp_Pnt(1, len(Q))
+        for i, p in enumerate(Q):
+            arr.SetValue(i + 1, _pnt(p))
+        try:
+            ap = GeomAPI_PointsToBSpline(arr, Approx_ChordLength, 3, 3, GeomAbs_C2, max(tol * 0.25, 1e-7))
+            if ap.IsDone():
+                curve = ap.Curve()
+                ds, _, dp, back = measure(curve, len(Q))
+                if max(ds.max(), dp.max()) <= tol and not len(back):
+                    return curve, float(max(ds.max(), dp.max()))
+        except Exception as fault:
+            faults.caught(fault)
+    # (each round halves the spans that stray, so the rounds grow with the log of the chain's length)
+    for _ in range(int(np.ceil(np.log2(len(P)))) + 2):
+        curve = _interpolated(P[idx], closed)
+        if curve is None:
+            return None, 0.0
+        ds, pos, dp, back = measure(curve, len(idx))
+        gap = float(max(ds.max(), dp.max()))
+        if gap <= tol and not len(back):
+            return curve, gap
+        corners = ruler.cum[idx]
+        spans = np.r_[np.searchsorted(corners, pos[ds > tol]) - 1, np.searchsorted(corners, pos[back]) - 1,
+                      np.searchsorted(idx, np.nonzero(dp > tol)[0]) - 1]
+        spans = np.unique(np.clip(spans, 0, len(idx) - 2))
+        wide = spans[idx[spans + 1] - idx[spans] >= 2]
+        if not len(wide):
+            return None, 0.0
+        idx = np.union1d(idx, (idx[wide] + idx[wide + 1]) // 2)
+    return None, 0.0
+
+
+def _through_every_point(P):
+    """One edge of straight pieces along the chain, every point of it. It can't stray: it is the mesh's path."""
+    from OCP.Geom import Geom_BSplineCurve
+    from OCP.collections import Array1_double, Array1_int
+
+    n = len(P)
+    poles = Array1_gp_Pnt(1, n)
+    knots = Array1_double(1, n)
+    mults = Array1_int(1, n)
+    tpar = np.r_[0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+    for i in range(n):
+        poles.SetValue(i + 1, _pnt(P[i]))
+        knots.SetValue(i + 1, float(tpar[i]))
+        mults.SetValue(i + 1, 2 if i in (0, n - 1) else 1)
+    try:
+        return Geom_BSplineCurve(poles, knots, mults, 1), 0.0
+    except Exception as fault:
+        faults.caught(fault)
+        return None, 0.0
+
+
 def fit_chain_curve(P, tol):
     """Best smooth curve through a chain of points: chord-length cubic
     approximation, then cubic interpolation (periodic for closed chains),
@@ -3100,8 +5500,6 @@ def fit_chain_curve(P, tol):
     the polyline and advance monotonically along it.
     Returns (curve, deviation)."""
     from OCP.Approx import Approx_ChordLength
-    from OCP.GeomAPI import GeomAPI_Interpolate
-    from OCP.collections import HArray1_gp_Pnt
 
     P = np.asarray(P, dtype=np.float64)
     keep = np.r_[True, np.linalg.norm(np.diff(P, axis=0), axis=1) > 1e-9]
@@ -3109,10 +5507,10 @@ def fit_chain_curve(P, tol):
     if len(P) < 2:
         return None, 0.0
     closed = len(P) > 3 and np.linalg.norm(P[0] - P[-1]) < 1e-9
+    if len(P) > CHAIN_START:
+        curve, dev = _fit_long_chain(P, tol, closed)
+        return (curve, dev) if curve is not None else _through_every_point(P)
     Q = P
-    if len(Q) > 400:
-        idx = np.unique(np.r_[np.linspace(0, len(Q) - 1, 400).astype(int), len(Q) - 1])
-        Q = Q[idx]
     nsamp = max(40, 4 * len(Q))
     slack = 0.25 * tol
     cands = []
@@ -3120,55 +5518,25 @@ def fit_chain_curve(P, tol):
     for i, p in enumerate(Q):
         arr.SetValue(i + 1, _pnt(p))
     if closed and len(Q) >= 4:
-        try:
-            pts = Q[:-1]
-            h = HArray1_gp_Pnt(1, len(pts))
-            for i, p in enumerate(pts):
-                h.SetValue(i + 1, _pnt(p))
-            it = GeomAPI_Interpolate(h, True, 1e-9)
-            it.Perform()
-            if it.IsDone():
-                cands.append(it.Curve())
-        except Exception:
-            pass
+        curve = _interpolated(Q, True)
+        if curve is not None:
+            cands.append(curve)
     if len(Q) >= 3 and not closed:
         try:
             ap = GeomAPI_PointsToBSpline(arr, Approx_ChordLength, 3, 3, GeomAbs_C2, max(tol * 0.25, 1e-7))
             if ap.IsDone():
                 cands.append(ap.Curve())
-        except Exception:
-            pass
-        try:
-            h = HArray1_gp_Pnt(1, len(Q))
-            for i, p in enumerate(Q):
-                h.SetValue(i + 1, _pnt(p))
-            it = GeomAPI_Interpolate(h, False, 1e-9)
-            it.Perform()
-            if it.IsDone():
-                cands.append(it.Curve())
-        except Exception:
-            pass
+        except Exception as fault:
+            faults.caught(fault)
+        curve = _interpolated(Q, False)
+        if curve is not None:
+            cands.append(curve)
     for c in cands:
         S = _sample_curve(c, nsamp)
         dev = _polyline_distance(S, P)
         if dev <= tol and _monotonic_along(S, P, slack):
             return c, dev
-    # exact fallback: one linear B-spline edge through every point
-    from OCP.Geom import Geom_BSplineCurve
-    from OCP.collections import Array1_double, Array1_int
-
-    n = len(Q)
-    knots = Array1_double(1, n)
-    mults = Array1_int(1, n)
-    tpar = np.r_[0, np.cumsum(np.linalg.norm(np.diff(Q, axis=0), axis=1))]
-    for i in range(n):
-        knots.SetValue(i + 1, float(tpar[i]))
-        mults.SetValue(i + 1, 2 if i in (0, n - 1) else 1)
-    try:
-        c = Geom_BSplineCurve(arr, knots, mults, 1)
-    except Exception:
-        return None, 0.0
-    return c, (_polyline_distance(Q, P) if len(Q) != len(P) else 0.0)
+    return _through_every_point(P)
 
 
 def _fit_circle_3d(P):
@@ -3204,25 +5572,132 @@ def segment_shell(shell, tol, report=NULL):
 
 
 def _self_crossing_regions(asm):
-    """Region numbers whose constructed face contains a crossing wire."""
-    from OCP.BRepCheck import BRepCheck_Status, BRepCheck_Wire
-    from OCP.TopAbs import TopAbs_WIRE
-    from OCP.TopExp import TopExp_Explorer
+    """Region numbers whose constructed face contains a crossing wire (or whose check crashed:
+    meshguard.self_crossings, so that a crash fails only that face)."""
+    from . import meshguard
 
-    out = set()
-    for r, face in asm.region_faces.items():
-        exp = TopExp_Explorer(face, TopAbs_WIRE)
-        while exp.More():
-            wire = TopoDS.Wire(exp.Current())
-            e1, e2 = TopoDS_Edge(), TopoDS_Edge()
-            if BRepCheck_Wire(wire).SelfIntersect(face, e1, e2) != BRepCheck_Status.BRepCheck_NoError:
-                out.add(r)
+    rs = list(asm.region_faces)
+    found = meshguard.self_crossings([asm.region_faces[r] for r in rs])
+    return {r for r, hits in zip(rs, found) if hits}
+
+
+def _join_level_planes(seg, labels, regions):
+    """Neighbouring planes facing one way and a hair apart in level are one plane, drawn once: Rak Uni's
+    floor came as planes at 4.398 and 4.400 mm. Two parallel planes have no line to meet in, so the
+    border between them was a path along the mesh, which crossed the outline, and the crossing
+    turned the 1,746 mm2 floor into B-spline cells. (Regions built as flat faces of their own
+    triangles stay as they are.)"""
+    parent = list(range(len(regions)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    nb = seg.nb.reshape(-1)
+    a = np.repeat(labels, 3)
+    b = np.where(nb >= 0, labels[np.maximum(nb, 0)], -1)
+    m = (a != b) & (a >= 0) & (b >= 0)
+    pairs = np.unique(np.sort(np.stack([a[m], b[m]], 1), axis=1), axis=0)
+    step = LEVEL_STEP * seg.tol
+    joined = False
+    for x, y in pairs:
+        x, y = int(x), int(y)
+        rx, ry = regions[x], regions[y]
+        if rx.kind != "plane" or ry.kind != "plane" or rx.facet or ry.facet or rx.cut is not None or ry.cut is not None:
+            continue
+        c = float(rx.prim.n @ ry.prim.n)
+        if abs(c) < 1.0 - 1e-9 or c * rx.sense * ry.sense < 0:
+            continue
+        if abs(float((ry.prim.origin - rx.prim.origin) @ rx.prim.n)) <= step:
+            fx, fy = find(x), find(y)
+            if fx != fy:
+                parent[fy] = fx
+                joined = True
+    if not joined:
+        return labels, regions
+    # (on copies: build_cad_shell keeps the labels and regions it passed in, to go back to when a
+    # later try is refused. Altered in place, they no longer agreed, and the next demotion left 185
+    # triangles of a Raspberry Pi case with no region, which ended CAD faces for the whole part)
+    labels = labels.copy()
+    regions = [copy.copy(r) for r in regions]
+    area = [float(seg.fa[np.asarray(r.faces, dtype=np.int64)].sum()) if len(r.faces) else 0.0 for r in regions]
+    groups = {}
+    for r in range(len(regions)):
+        groups.setdefault(find(r), []).append(r)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        # (the biggest keeps its plane: the most of the mesh lies on it)
+        keep = max(members, key=lambda r: area[r])
+        for r in members:
+            if r != keep and len(regions[r].faces):
+                faces = np.asarray(regions[r].faces, dtype=np.int64)
+                labels[faces] = keep
+                regions[keep].faces = np.r_[np.asarray(regions[keep].faces, dtype=np.int64), faces]
+                regions[r].faces = np.zeros(0, dtype=np.int64)
+        # (the step between the levels is its own row of slivers, walls 0.002 mm high, facing sideways:
+        # they are the plane too, or it has its own border along both sides of them)
+        # (between the levels themselves, as well as near the plane kept: on Rak N the floor kept 4.400,
+        # a step down to 4.395 stood past the limit from it, stayed out, and with the floor on both its
+        # sides, the outline ran 2.6 mm out along it and straight back, which crosses itself)
+        prim = regions[keep].prim
+        levels = [float((regions[r].prim.origin - prim.origin) @ prim.n) for r in members]
+        low, high = min(levels) - step, max(levels) + step
+        for _ in range(4):
+            own = np.asarray(regions[keep].faces, dtype=np.int64)
+            cand = seg.nb[own].reshape(-1)
+            cand = np.unique(cand[cand >= 0])
+            cand = cand[labels[cand] != keep]
+            if not len(cand):
                 break
-            exp.Next()
+            T = seg.V[seg.F[cand]].reshape(-1, 3)
+            level = ((T - prim.origin) @ prim.n).reshape(-1, 3)
+            on = (level.min(1) >= low) & (level.max(1) <= high)
+            take = cand[on]
+            if not len(take):
+                break
+            for f in take:
+                q = labels[f]
+                regions[q].faces = np.asarray(regions[q].faces, dtype=np.int64)
+                regions[q].faces = regions[q].faces[regions[q].faces != f]
+            labels[take] = keep
+            regions[keep].faces = np.r_[np.asarray(regions[keep].faces, dtype=np.int64), take]
+    seg.label, seg.regions = labels, regions
+    seg._drop_empty()
+    # (taking a row of slivers can leave a neighbour in two pieces)
+    seg._rebuild_regions(refit=False, merge=False)
+    return seg.label, seg.regions
+
+
+def _small_neighbours_crossing(seg, asm, r):
+    """The small regions beside a border of region r that crosses another, which go to freeform in
+    its place. Main plate's whole wall of 358 mm2 (the designer's one cylinder) was cut into
+    B-spline cells, which no CAD program edits as a wall, for a crossing at one corner beside a
+    face of 1.6 mm2 fitted a little wrong; those cells' edges were the worst of the file."""
+    from . import meshguard
+
+    face = asm.region_faces[r]
+    area = float(seg.fa[np.asarray(asm.regions[r].faces, dtype=np.int64)].sum())
+    out = set()
+    for hit in meshguard.self_crossings([face])[0]:
+        # (a check that died names no edges: nothing to hand on)
+        named = [e for e in (hit.e1, hit.e2) if e is not None]
+        for c in asm.rg.chains:
+            if not c.edges or r not in (c.left, c.right):
+                continue
+            if any(x.IsSame(e) for x in c.edges for e in named):
+                q = c.right if c.left == r else c.left
+                if q < 0 or q == r:
+                    continue
+                o = asm.regions[q]
+                if o.kind != "freeform" and float(seg.fa[np.asarray(o.faces, dtype=np.int64)].sum()) <= SMALL_BESIDE * area:
+                    out.add(q)
     return out
 
 
-def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=0.6, seg=None):
+def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=0.6, seg=None, tidy=True, tidied=None):
     """Segment + build. Analytic faces that cannot be built validly, or that
     don't follow the mesh (checked in the first ``fit_rounds`` rounds), are
     replaced by fitted freeform (B-spline) faces and the shell is rebuilt;
@@ -3243,8 +5718,19 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     replaced = 0
     inaccurate = 0
     crossed_this_round = False
+    fit_instead = set()  # borders (first and last vertex) fitted to the mesh, as exact arcs they crossed at a cusp
+    worked_out = {}     # what each border between two surfaces came to, for the later rounds (_exact_chain_edge)
 
     def build(labels, regions):
+        # (first, so a plane joined here is cut where it pinches, and the pieces of one cut keep one surface)
+        if EXACT_EDGES:
+            # (tidied, if given, is told when this changed a surface; tidy=False: see pipeline, _attempt_untidied)
+            if tidy:
+                before = [r.prim for r in regions]
+                regularise(seg, labels, regions)
+                if tidied is not None and any(a is not r.prim for a, r in zip(before, regions)):
+                    tidied.append(True)
+            labels, regions = _join_level_planes(seg, labels, regions)
         labels, regions = split_pinched_regions(seg, labels, regions)
         if TURN_SPLIT:
             labels, regions = split_turns(seg, labels, regions)
@@ -3255,9 +5741,25 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         seg.label, seg.regions = labels, regions
         seg._flat_slivers_to_long_edge()
         seg._absorb_isolated_fragments()
+        seg._absorb_folded_islands()
         labels, regions = seg.label, seg.regions
+        # those slivers can have been all that joined a region's two fans round a vertex, so
+        # the pinch only shows now (Rak Uni: a hole tangent to the wall, whose 0.002 mm step
+        # of slivers belonged to the floor; given to the wall, they left the floor's outline
+        # and the hole's meeting at one vertex, and the file read back with crossing wires)
+        for _ in range(PINCH_AGAIN):
+            labels2, regions2 = split_pinched_regions(seg, labels, regions)
+            if len(regions2) == len(regions):
+                break
+            seg.label, seg.regions = labels2, regions2
+            seg._flat_slivers_to_long_edge()
+            seg._absorb_isolated_fragments()
+            seg._absorb_folded_islands()
+            labels, regions = seg.label, seg.regions
         rg = RegionGraph(shell.V, shell.F, labels, shell.topo)
         asm = CADAssembler(shell.V, rg, regions, tol, report)
+        asm.worked_out = worked_out
+        asm.fit_instead = fit_instead
         faces = asm.build(lambda f: report.progress(0.6 + 0.35 * f))
         _settle_tolerances(asm.shell_from_faces(faces), tol)
         bad = set(r for r, _ in asm.failed_regions)
@@ -3277,6 +5779,12 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # (a straightened border left one on the owner's mount, and the
         # whole mount fell back to smooth surfaces)
         broken = _broken_when_saved(asm) - bad
+        # (once for each such cusp, up to CUSP_ROUNDS, before the face is given up)
+        fresh = {c for r in broken for c in _cusp_crossing(asm, r)} - fit_instead
+        if fresh and len(fit_instead) < 2 * CUSP_ROUNDS:
+            fit_instead.update(fresh)
+            report.log(f"{len(fresh)} exact edges crossing at a cusp are fitted to the mesh instead")
+            return build(labels, regions)
         if broken:
             report.log(f"{len(broken)} face(s) that would be broken in the saved file are built again")
             bad |= broken
@@ -3309,11 +5817,20 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
             else:
                 seg.label, seg.regions = old_label, old_regions
         crossed_this_round = False  # reset for next round
+        # (a big surface isn't to pay for a small neighbour's corner: see _small_neighbours_crossing)
+        spared = set()
+        for r in _self_crossing_regions(asm) & bad:
+            small = _small_neighbours_crossing(seg, asm, r)
+            if small:
+                bad.discard(r)
+                bad |= small
+                spared.add(r)
         if rnd < min(fit_rounds, max_rounds - 1):
             # valid faces that still don't follow their part of the mesh (a
             # surface that bulges between the mesh's vertices, a face whose
             # edges tear it away from the mesh) are replaced the same way
-            off = _inaccurate_regions(seg, labels, asm, tol, skip=bad) - bad
+            # (a face that crosses itself can't be meshed to compare: it gets its chance next round)
+            off = _inaccurate_regions(seg, labels, asm, tol, skip=bad | spared) - bad - spared
             if off:
                 report.log(f"{len(off)} surface(s) don't follow the mesh closely enough and are fitted again")
                 inaccurate += len(off)
@@ -3327,8 +5844,19 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # (when its triangles are few, and big enough to be faces of their own)
         # (a swept surface that strays becomes freeform patches like any
         # other surface, not flat facets)
+        # (a bigger one is cut up and fitted again: flat faces are the last resort, and mount_PETG got 1,159 of them from one surface)
         flat = {r for r in off if r < len(regions) and regions[r].kind == "freeform"
-                and not hasattr(regions[r].prim, "motion") and _facets_ok(seg, regions[r].faces)}
+                and not hasattr(regions[r].prim, "motion") and len(regions[r].faces) <= FLAT_FEW
+                and _facets_ok(seg, regions[r].faces)}
+        # (a pooled surface whose face didn't build, or strayed from the mesh, goes back to the pieces it was made
+        # of, which get their own chance: the join was wrong there, however well the surface held the triangles.
+        # (2026-11-06: test12's 29 mm torus was a fillet strip of the segmentation's own, not a pooled surface; this rule
+        # stands on its own: a join that doesn't build was wrong, and the pieces get their chance)
+        back = {r for r in bad - flat if r < len(regions) and regions[r].pooled and _parts_cover(regions[r])}
+        if back:
+            report.log(f"{len(back)} pooled surface(s) didn't build and went back to their pieces")
+            labels, regions = _unpool(labels, regions, back)
+            bad, flat = _renumbered(bad, back), _renumbered(flat, back)
         labels, regions = _demote(seg, labels, regions, bad - flat, split_more=rnd > 0, facet=flat)
     # Splitting freeform faces can leave slivers too small to be valid faces;
     # those still broken at the end go to a neighbouring face (no new faces
@@ -3347,6 +5875,15 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     if last:
         labels2, regions2 = _demote(seg, labels, regions, set(), facet=last)
         labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
+        # (the new flat faces can break the neighbour they now meet at a corner: on mount_PETG a strip's flat faces left its 9-triangle
+        # cylinder invalid instead, one for one, and the whole part stayed invalid)
+        for _ in range(LAST_ROUNDS):
+            more = {r for r in bad2 if r < len(regions2) and not getattr(regions2[r].prim, "facet", False)
+                    and _facets_ok(seg, regions2[r].faces)}
+            if not bad2 or len(bad2) < len(bad) or not more:
+                break
+            labels2, regions2 = _demote(seg, labels2, regions2, set(), facet=more)
+            labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
         if len(bad2) < len(bad):
             report.log(f"{len(last)} face(s) that still wouldn't build became flat faces of their own triangles")
             labels, regions, asm, faces, bad = labels2, regions2, asm2, faces2, bad2
@@ -3358,9 +5895,12 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     # faces became 225), so it is done once, here: faces still broken that way become
     # flat faces of their own triangles, which follow the mesh exactly (Rak Uni-USB: two
     # freeform faces broke on read-back and the whole merged result was lost).
-    saved = {r for r in _broken_when_saved(asm, shell=True) if r < len(regions)}
+    only_unmeshable = set()
+    saved = {r for r in _broken_when_saved(asm, shell=True, unmeshable=only_unmeshable) if r < len(regions)}
     if saved:
-        flat = {r for r in saved if _facets_ok(seg, regions[r].faces)}
+        # (a face that is valid but can't be meshed is rebuilt as a surface, never as flat facets:
+        # Tuna, 2026-11-01, "no facets, ever"; only invalid faces keep that older last resort)
+        flat = {r for r in saved - only_unmeshable if _facets_ok(seg, regions[r].faces)}
         labels2, regions2 = _demote(seg, labels, regions, saved - flat, facet=flat)
         labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
         if len(_broken_when_saved(asm2, shell=True)) < len(saved) and len(bad2) <= len(bad):
@@ -3392,6 +5932,87 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     return asm, faces, regions
 
 
+def _far_on_own_face(faces, reg_of, d, near, rng):
+    """Each region's face with the points past ``near`` and those of them to measure: all of them, or past
+    TRUE_FACE_POINTS an even random share, so a count of far points stays a fair count. (A point takes under a
+    millisecond. Measuring a few of them and letting their worst stand for the rest hid a real dent among the
+    mesher's far points: 3 far points among 1,000, in 5 of 5 synthetic trials.)"""
+    far = np.nonzero(d > near)[0]
+    for r in np.unique(reg_of[far]):
+        face = faces.get(int(r))
+        if r < 0 or face is None:
+            continue
+        mine = far[reg_of[far] == r]
+        yield face, mine, mine if len(mine) <= TRUE_FACE_POINTS else rng.choice(mine, TRUE_FACE_POINTS, replace=False)
+
+
+def _stand_for_rest(d, mine, asked, rng):
+    if len(asked) < len(mine):
+        rest = np.setdiff1d(mine, asked, assume_unique=True)
+        d[rest] = rng.choice(d[asked], len(rest))
+
+
+def _measure_on_own_face(faces, reg_of, P, d, near, rng):
+    """Points of a region's triangles found far from the tessellated shape are measured again against
+    the region's own true face: OpenCascade's mesher can leave out part of a face that holds them, and the
+    gap then is the mesher's, not the face's. Alters d in place."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    for face, mine, asked in _far_on_own_face(faces, reg_of, d, near, rng):
+        for i in asked:
+            ds = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(_pnt(P[i])).Vertex(), face)
+            if ds.IsDone():
+                d[i] = float(ds.Value())
+        _stand_for_rest(d, mine, asked, rng)
+
+
+def _chords_let_off(seg, regions, reg_of, tris, d, near):
+    """A far point whose mesh triangle has its corners on the region's own surface is the mesh's chord, not the face's error: a
+    mesh is a polyhedron inscribed in the design, its corners on the true surfaces and its sides cutting across them. A
+    cylinder stands off its chords, and a plane's face ends at the true curve where its triangles end at a chord
+    (obj_2_02: 0.6 mm on a mesh whose typical sag is 0.09, and ten surfaces rebuilt). Only for simple surfaces: a freeform
+    one can really bulge between corners, and that's what this check is for. Only up to tol_mid, the most the mesh's chords
+    stand off anything: past that it isn't a chord. Alters d in place."""
+    far = np.nonzero((d > near) & (d <= seg.tol_mid))[0]
+    for r in np.unique(reg_of[far]):
+        if r < 0 or r >= len(regions):
+            continue
+        prim = regions[r].prim
+        if regions[r].kind not in CHORD_KINDS or hasattr(prim, "geom"):
+            continue
+        mine = far[reg_of[far] == r]
+        off = prim.distance(seg.V[seg.F[tris[mine]]].reshape(-1, 3)).reshape(-1, 3).max(axis=1)
+        d[mine[off <= seg.tol]] = 0.0
+
+
+def _face_points_on_true_face(faces, reg_of, Q, d, near, mesh, exact, rng, tris=None):
+    """Points sampled on a face's triangles and found far from the mesh are moved onto the true face and measured
+    again: those triangles are only what OpenCascade's mesher made of the face. Its chords cross a curved
+    face, and it leaves a face's outline where the edge stands off the surface by its tolerance. x-end-clip's
+    wall of 579 mm2, r 9.7, has every mesh corner on its surface within 1e-6 mm, yet meshed at 0.002 mm it held a
+    triangle 34 mm long whose middle stands 0.47 mm inside it, and the check rebuilt that wall as B-spline cells.
+    A face that really leaves the mesh is as far off on the true face. (Idea and first version: helper regr,
+    2026-11-03.) Alters d, and tris (each point's nearest mesh triangle) if given, in place."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    for face, mine, asked in _far_on_own_face(faces, reg_of, d, near, rng):
+        at, on = [], []
+        for i in asked:
+            ds = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(_pnt(Q[i])).Vertex(), face)
+            if ds.IsDone() and ds.NbSolution() > 0:
+                p = ds.PointOnShape2(1)
+                at.append(i)
+                on.append((p.X(), p.Y(), p.Z()))
+        if on:
+            got, tri = mesh.nearest(np.array(on), exact_above=exact)
+            d[at] = got
+            if tris is not None:
+                tris[at] = tri
+        _stand_for_rest(d, mine, asked, rng)
+
+
 def _inaccurate_regions(seg, labels, asm, tol, share=0.05, count=3, far_count=None, skip=()):
     """Regions whose built face strays from the mesh triangles it stands
     for, found by measuring both ways (see fidelity.py): points of the face
@@ -3412,7 +6033,9 @@ def _inaccurate_regions(seg, labels, asm, tol, share=0.05, count=3, far_count=No
 
     # (faces already known to be broken are replaced anyway; meshing them
     # can fail)
-    items = [(r, f) for r, f in asm.region_faces.items() if r not in skip]
+    # (a designer's surface snapped over a coarse export stands off its chords by design)
+    items = [(r, f) for r, f in asm.region_faces.items() if r not in skip
+             and not (r < len(asm.regions) and getattr(asm.regions[r].prim, "designed", False))]
     if not items:
         return set()
     rng = np.random.default_rng(0)
@@ -3428,14 +6051,19 @@ def _inaccurate_regions(seg, labels, asm, tol, share=0.05, count=3, far_count=No
     n = int(np.clip(20 * len(F), 20_000, 150_000))
     # face -> mesh
     Q, qt = sample(SV, SF, n, rng)
-    dq, _ = mesh.nearest(Q, exact_above=0.5 * allow)
+    dq, dq_tri = mesh.nearest(Q, exact_above=0.5 * allow)
     # mesh -> shape (by the region the triangle belongs to)
     P, pt = sample(V, F, n, rng)
     dp, _ = shape.nearest(P, exact_above=0.5 * allow)
     near, far = Verdict.P99_K * allow, Verdict.P999_K * allow
+    _measure_on_own_face(dict(items), labels[pt], P, dp, near, rng)
+    _face_points_on_true_face(dict(items), own_region[qt], Q, dq, near, mesh, 0.5 * allow, rng, dq_tri)
+    _chords_let_off(seg, asm.regions, own_region[qt], dq_tri, dq, near)
+    _chords_let_off(seg, asm.regions, labels[pt], pt, dp, near)
     out = set()
     for reg_of, d in ((own_region[qt], dq), (labels[pt], dp)):
-        ok = reg_of >= 0
+        # (a surface left out of the shape above has nothing to be measured against: its triangles aren't far from it)
+        ok = np.isin(reg_of, own_region)
         reg_of, d = reg_of[ok], d[ok]
         if not len(d):
             continue
@@ -3515,6 +6143,7 @@ def _heal_faces(asm, faces, bad_faces, tol, report, mesh_area=None):
             report.log(f"Repaired {len(bad_faces) - still} of {len(bad_faces)} remaining face(s)")
             return out
     except Exception as e:
+        faults.caught(e)
         report.log(f"Automatic face repair was skipped ({e})")
     return faces
 
@@ -3595,7 +6224,15 @@ def split_pinched_regions(seg, labels, regions, max_passes=4):
                 continue
             done.add(ll)
             r = regions[ll]
-            parts = _half_turns(r, seg.V[vv], cen) if r.kind in PERIODIC else None
+            # The shortest cut from one outline to the other, on any surface: a plane or a strip of
+            # cylinder keeps nearly all of itself as one face. Halving a fillet's cylinder at a
+            # pinch (Rak N-USB, 104 mm2 cut into 81 and 22 along 33 mm) made one surface two faces
+            # with a long shallow border between them: Fusion marked one bad, and all 14 slices
+            # along the fillet failed. (Solar Panel Bracket Large went to 1,511 faces when this was
+            # first tried at every look; the cut wasn't why, its body sits at the fit check's limit.)
+            parts = _shortest_cut(seg, labels, ll, r, vv, seeds[:2])
+            if parts is None and r.kind in PERIODIC:
+                parts = _half_turns(r, seg.V[vv], cen)
             if parts is None:
                 parts = seeded_partition(r.faces, seeds[:2], cen, seg.nb)
             if len(parts) < 2 or not len(parts[0]) or not len(parts[1]):
@@ -3610,6 +6247,106 @@ def split_pinched_regions(seg, labels, regions, max_passes=4):
         if not changed:
             break
     return labels, regions
+
+
+def _shortest_cut(seg, labels, ll, r, vv, seeds):
+    """A region whose outlines touch at vertex vv only has to be cut once, from one outline to the
+    other, for each piece to have a simple outline: the shortest way along the mesh's edges, not
+    through any other outline. The floor keeps nearly all of itself as one face; the cut usually
+    takes off a small wedge in the cusp beside the touch (Rak Uni: 3 mm beside a standoff tangent
+    to the wall, where cutting half way between the fans took the floor apart in three, along
+    53 mm of its triangles' edges). Returns the two parts, or None when no such cut exists."""
+    import heapq
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    faces = np.asarray(r.faces)
+    topo, nb, V = seg.topo, seg.nb, seg.V
+    he = (3 * faces[:, None] + np.arange(3)).ravel()
+    a, b = topo.he_from[he], topo.he_to[he]
+    other = nb[np.repeat(faces, 3), np.tile(np.arange(3), len(faces))]
+    inner = (other >= 0) & (labels[np.maximum(other, 0)] == ll)
+    # the outlines, with the touching vertex taken out: the two it joined fall apart
+    keep = ~inner & (a != vv) & (b != vv)
+    ids, inv = np.unique(np.r_[a[~inner], b[~inner]], return_inverse=True)
+    m = int((~inner).sum())
+    A, B = inv[:m], inv[m:]
+    kept = keep[~inner]
+    n, comp = connected_components(coo_matrix((np.ones(int(kept.sum())), (A[kept], B[kept])), shape=(len(ids), len(ids))), directed=False)
+    where = {int(v): i for i, v in enumerate(ids)}
+    if int(vv) not in where:
+        return None
+    me = where[int(vv)]
+    at = {int(comp[x]) for x, y in zip(A, B) if y == me} | {int(comp[y]) for x, y in zip(A, B) if x == me}
+    at.discard(int(comp[me]))
+    if len(at) != 2:
+        return None
+    src, dst = sorted(at)
+    bound = {int(v): int(comp[i]) for v, i in where.items() if v != int(vv)}
+    # shortest path over the region's inner edges
+    adj = {}
+    for x, y in zip(a[inner], b[inner]):
+        x, y = int(x), int(y)
+        if x < y:
+            L = float(np.linalg.norm(V[x] - V[y]))
+            adj.setdefault(x, []).append((y, L))
+            adj.setdefault(y, []).append((x, L))
+    dist = {v: 0.0 for v, c in bound.items() if c == src}
+    back = {}
+    heap = [(0.0, v) for v in dist]
+    heapq.heapify(heap)
+    end = None
+    while heap:
+        d, x = heapq.heappop(heap)
+        if d > dist[x]:
+            continue
+        if bound.get(x) == dst:
+            end = x
+            break
+        for y, L in adj.get(x, ()):
+            # (not along the outline it starts from, and not through any other outline or the touch)
+            if y == int(vv) or bound.get(y, dst) != dst:
+                continue
+            if d + L < dist.get(y, np.inf):
+                dist[y] = d + L
+                back[y] = x
+                heapq.heappush(heap, (d + L, y))
+    if end is None:
+        return None
+    cut = set()
+    x = end
+    while x in back:
+        cut.add((min(x, back[x]), max(x, back[x])))
+        x = back[x]
+    # the pieces either side of it
+    member = set(map(int, faces))
+    seen = {int(seeds[0])}
+    stack = [int(seeds[0])]
+    while stack:
+        f = stack.pop()
+        for k in range(3):
+            g = int(nb[f, k])
+            if g < 0 or g not in member or g in seen:
+                continue
+            e = (int(topo.he_from[3 * f + k]), int(topo.he_to[3 * f + k]))
+            if (min(e), max(e)) in cut:
+                continue
+            seen.add(g)
+            stack.append(g)
+    if int(seeds[1]) in seen:
+        return None
+    first = np.fromiter(seen, dtype=np.int64)
+    rest = np.setdiff1d(faces, first)
+    # (a piece with no size to speak of can't be a face: cutting half way between the fans is
+    # then better; Solar Panel Bracket Large had a wedge of one zero-area triangle)
+    for part in (first, rest):
+        if _too_small_for_face(seg, labels, part, width_k=1.0):
+            return None
+    # (a piece of one triangle is a real face here: it must not be absorbed back, or the pinch returns)
+    for part in (first, rest):
+        if len(part) == 1:
+            seg.cusps = getattr(seg, "cusps", set()) | {int(part[0])}
+    return [first, rest]
 
 
 def _half_turns(r, p, cen):
@@ -3644,6 +6381,9 @@ TURN_GAP_DEG = 15.0     # degrees: a region whose triangles leave a gap this wid
 TURN_SLACK = 0.3        # radians: a boundary loop running further than a turn plus this winds more than once
 TURN_CUTS = 72          # meridians tried for the cut, evenly round the axis
 MIN_TURN_DEG = 20.0     # degrees: a piece spanning less is a sliver, joined to the piece beside it
+
+
+CURVED_KINDS = ("cylinder", "cone", "sphere", "torus")
 
 
 def _axis_of(prim):
@@ -3785,6 +6525,113 @@ def _turn_pieces(seg, faces, o, u, v, ang):
     return (pieces, float(uc)) if len(pieces) > 1 else None
 
 
+def _plane_edges_measured(shape):
+    """An edge on a plane has no curve on that face for SameParameter to measure, so nothing covers how
+    far it stands off the plane, and the check then fails the face: on Rak Uni one 10 mm line, tolerance
+    1e-4, stood 0.00016 mm off a 3,054 mm2 floor, which became B-spline patches for it. Its tolerance
+    becomes that distance, measured, and no more: a padded tolerance hides real crossings from
+    the check. An edge whose tolerance already covers the distance keeps it."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.TopAbs import TopAbs_FACE
+
+    builder = BRep_Builder()
+    faces = TopExp_Explorer(shape, TopAbs_FACE)
+    while faces.More():
+        face = TopoDS.Face(faces.Current())
+        faces.Next()
+        surface = BRepAdaptor_Surface(face)
+        if surface.GetType() != GeomAbs_Plane:
+            continue
+        plane = surface.Plane()
+        edges = TopExp_Explorer(face, TopAbs_EDGE)
+        while edges.More():
+            edge = TopoDS.Edge(edges.Current())
+            edges.Next()
+            if BRep_Tool.Degenerated_s(edge):
+                continue
+            curve = BRepAdaptor_Curve(edge)
+            a, b = curve.FirstParameter(), curve.LastParameter()
+            off = max(plane.Distance(curve.Value(a + (b - a) * i / PLANE_EDGE_SAMPLES)) for i in range(PLANE_EDGE_SAMPLES + 1))
+            if off > BRep_Tool.Tolerance_s(edge):
+                builder.UpdateEdge(edge, off)
+
+
+def _overstated_tolerances(shape, tol):
+    """SameParameter can state a short arc's tolerance at about its radius, though it lies on its faces
+    (Rak N: an arc 2.3 mm long, radius 75 mm, stated 73 mm, measured under 0.05). Spread to its corners,
+    that hides or makes crossings on every face those corners touch. An edge stated beyond OVERSTATED
+    tolerances takes what is measured against each face it bounds, and its corners what their edges need."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.ShapeFix import ShapeFix_ShapeTolerance
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_VERTEX
+
+    limit = OVERSTATED * tol
+    # (BRep_Builder can only raise a tolerance)
+    setter = ShapeFix_ShapeTolerance()
+    worst = {}
+    found = []
+    faces = TopExp_Explorer(shape, TopAbs_FACE)
+    while faces.More():
+        face = TopoDS.Face(faces.Current())
+        faces.Next()
+        surface = None
+        edges = TopExp_Explorer(face, TopAbs_EDGE)
+        while edges.More():
+            edge = TopoDS.Edge(edges.Current())
+            edges.Next()
+            if BRep_Tool.Tolerance_s(edge) <= limit or BRep_Tool.Degenerated_s(edge):
+                continue
+            if surface is None:
+                surface = BRep_Tool.Surface_s(face)
+            curve = BRepAdaptor_Curve(edge)
+            a, b = curve.FirstParameter(), curve.LastParameter()
+            off = 0.0
+            for i in range(PLANE_EDGE_SAMPLES + 1):
+                pr = GeomAPI_ProjectPointOnSurf(curve.Value(a + (b - a) * i / PLANE_EDGE_SAMPLES), surface)
+                if pr.NbPoints():
+                    off = max(off, pr.LowerDistance())
+            k = next((j for j, e in enumerate(found) if e.IsSame(edge)), None)
+            if k is None:
+                found.append(edge)
+                k = len(found) - 1
+            worst[k] = max(worst.get(k, 0.0), off)
+    for k, off in worst.items():
+        setter.SetTolerance(found[k], max(off, 1e-7), TopAbs_EDGE)
+    if not found:
+        return
+    # the corners of those edges: as far as any edge's end there, plus that edge's tolerance
+    corners = []
+    for edge in found:
+        vs = TopExp_Explorer(edge, TopAbs_VERTEX)
+        while vs.More():
+            v = TopoDS.Vertex(vs.Current())
+            vs.Next()
+            if not any(c.IsSame(v) for c in corners):
+                corners.append(v)
+    need = [0.0] * len(corners)
+    edges = TopExp_Explorer(shape, TopAbs_EDGE)
+    while edges.More():
+        edge = TopoDS.Edge(edges.Current())
+        edges.Next()
+        if BRep_Tool.Degenerated_s(edge):
+            continue
+        curve = BRepAdaptor_Curve(edge)
+        ends = (curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter()))
+        vs = TopExp_Explorer(edge, TopAbs_VERTEX)
+        while vs.More():
+            v = TopoDS.Vertex(vs.Current())
+            vs.Next()
+            k = next((j for j, c in enumerate(corners) if c.IsSame(v)), None)
+            if k is not None:
+                p = BRep_Tool.Pnt_s(v)
+                need[k] = max(need[k], min(p.Distance(ends[0]), p.Distance(ends[1])) + BRep_Tool.Tolerance_s(edge))
+    for v, t in zip(corners, need):
+        setter.SetTolerance(v, max(t, 1e-7), TopAbs_VERTEX)
+
+
 def _settle_tolerances(shape, tol):
     """Let OpenCASCADE measure how far each edge really is from its faces
     and raise tolerances to match (standard healing step). On some short
@@ -3801,9 +6648,32 @@ def _settle_tolerances(shape, tol):
             if not BRep_Tool.SameParameter_s(e):
                 ShapeFix_Edge().FixSameParameter(e)
             ex.Next()
+    except Exception as fault:
+        faults.caught(fault)
+    # (apart: one edge OpenCASCADE can't settle, gp_Dir2d of zero length on Rak Uni, stops the above,
+    # and the rest must still hold)
+    try:
+        _plane_edges_measured(shape)
         BRepLib.UpdateTolerances_s(shape, False)
-    except Exception:
-        pass
+        _overstated_tolerances(shape, tol)
+    except Exception as fault:
+        faults.caught(fault)
+
+
+CUT_CLEARANCE = 2.0     # tolerances: a straight cut across a plane stays this far from everything else on it
+READ_BOX_MARGIN = 0.05  # mm: how far a face's box may grow through a STEP file and still be that face's
+PINCH_AGAIN = 3         # times build() looks for pinched regions again after the slivers have moved
+CELL_SLIVER = 2.0       # tolerances: a freeform cell's mean width (2 x area / outline) at most this is a sliver
+CELL_SLIVER_TRIS = 16   # triangles: only small cells count (a long narrow strip of many is a fillet)
+
+
+def _handed_distance(prim, d):
+    """How far a triangle stands off a surface it is being handed to (d), infinite for a
+    designed plane it doesn't lie on: on Rak N-USB a sliver 0.157 mm off a clean 605 mm2 wall was
+    handed to it for lack of anything nearer, the wall's hole bulged that far, and the wall read
+    back valid but couldn't be meshed. Left over, such a triangle stays a freeform piece."""
+    near = getattr(prim, "on_design", None)
+    return np.inf if near is not None and d > near else d
 
 
 def _demote(seg, labels, regions, bad, split_more=False, facet=(), strict=()):
@@ -3826,13 +6696,20 @@ def _demote(seg, labels, regions, bad, split_more=False, facet=(), strict=()):
     for _ in range(8):
         left = []
         for f in pending:
-            best, bd = -1, np.inf
+            # only a neighbour whose surface holds the triangle within the tolerance
+            # (corners, edge midpoints and centre, like _absorb_isolated_fragments): the
+            # nearest neighbour at any distance took a tiny plane region 0.52 mm off and
+            # then a tiny freeform region 11 mm off into Rak N's spindle torus (R 0.55, r
+            # 1.88), whose face then wrapped the whole tube and stood 3.4 mm off the
+            # mesh, and the part was saved as flat facets. What fits no neighbour goes
+            # the way of the rest below (freeform cells, and flat facets at the end).
+            best, bd = -1, seg.tol
             for g in seg.nb[f]:
                 rr = new_labels[g] if g >= 0 else -1
                 if rr < 0 or rr == best:
                     continue
-                d = float(new_regions[rr].prim.distance(seg.V[seg.F[f]]).max())
-                if d < bd:
+                d = _handed_distance(new_regions[rr].prim, float(seg._gap(new_regions[rr].prim, np.array([f])).max()))
+                if d <= bd:
                     best, bd = rr, d
             if best >= 0:
                 new_labels[f] = best
@@ -3869,7 +6746,98 @@ def _demote(seg, labels, regions, bad, split_more=False, facet=(), strict=()):
         for cell in cells:
             new_labels[cell.faces] = len(new_regions)
             new_regions.append(cell)
-    return new_labels, new_regions
+    return _slivers_to_neighbours(seg, new_labels, new_regions)
+
+
+def _parts_cover(reg):
+    """Whether a pooled region's pieces still make up exactly its faces (else nothing to go back to)."""
+    if not reg.parts:
+        return False
+    own = np.sort(np.asarray(reg.faces, dtype=np.int64))
+    theirs = np.sort(np.concatenate([np.asarray(p.faces, dtype=np.int64) for p in reg.parts]))
+    return own.size == theirs.size and bool((own == theirs).all())
+
+
+def _unpool(labels, regions, back):
+    """The regions in `back` (pooled surfaces) replaced by the pieces they were made of, at the end of the list,
+    with the labels to match. The regions before them keep their order; those after move down."""
+    keep = [r for r in range(len(regions)) if r not in back]
+    out = [regions[r] for r in keep]
+    for r in sorted(back):
+        for part in regions[r].parts:
+            piece = Region(part.prim, np.asarray(part.faces, dtype=np.int64), part.sense, part.weak)
+            piece.facet, piece.parts, piece.cut, piece.pooled = part.facet, part.parts, part.cut, part.pooled
+            out.append(piece)
+    new_labels = np.full_like(labels, -1)
+    for i, reg in enumerate(out):
+        new_labels[np.asarray(reg.faces, dtype=np.int64)] = i
+    return new_labels, out
+
+
+def _renumbered(rs, back):
+    """Region numbers in `rs` after _unpool removed those in `back`: each falls by the number removed before it."""
+    gone = sorted(back)
+    return {r - sum(1 for g in gone if g < r) for r in rs if r not in back}
+
+
+def _slivers_to_neighbours(seg, labels, regions):
+    """A freeform cell thinner than CELL_SLIVER tolerances gives its triangles to the neighbours
+    that fit them best. Its surface spans only those few long, narrow triangles and can't reach
+    the outline it shares: on Rak N four of them made a face 0.25 x 1.3 mm with an edge wandering
+    8 mm off it; OpenCASCADE raised the tolerances to 8 and 31 mm to cover that, they spread to
+    the corners around, and the file read back as two faces or crashed the reader (2026-11-02)."""
+    drop = [r for r, reg in enumerate(regions) if reg.kind == "freeform" and len(reg.faces) <= CELL_SLIVER_TRIS
+            and _too_small_for_face(seg, labels, reg.faces, area_k=0.0, width_k=CELL_SLIVER)]
+    if not drop:
+        return labels, regions
+    gone = set(drop)
+    pending = [int(f) for r in drop for f in regions[r].faces]
+    labels = labels.copy()
+    labels[pending] = -1
+    added = {}
+    for _ in range(8):
+        left = []
+        for f in pending:
+            best, bd = -1, np.inf
+            for g in seg.nb[f]:
+                rr = labels[g] if g >= 0 else -1
+                if rr < 0 or rr in gone or rr == best:
+                    continue
+                d = _handed_distance(regions[rr].prim, float(regions[rr].prim.distance(seg.V[seg.F[f]]).max()))
+                if d < bd:
+                    best, bd = rr, d
+            if best >= 0:
+                labels[f] = best
+                added.setdefault(best, []).append(f)
+            else:
+                left.append(f)
+        if len(left) == len(pending):
+            break
+        pending = left
+    if pending:     # (nothing around to take them: as they were)
+        return labels_restored(labels, regions, drop, pending, added)
+    out = []
+    index = {}
+    for r, reg in enumerate(regions):
+        if r in gone:
+            continue
+        if r in added:
+            new = Region(reg.prim, np.concatenate([reg.faces, np.asarray(added[r], dtype=np.int64)]), reg.sense, reg.weak)
+            new.facet, new.parts, new.cut = reg.facet, reg.parts, reg.cut
+            reg = new
+        index[r] = len(out)
+        out.append(reg)
+    new_labels = np.full_like(labels, -1)
+    for i, reg in enumerate(out):
+        new_labels[reg.faces] = i
+    return new_labels, out
+
+
+def labels_restored(labels, regions, drop, pending, added):
+    """_slivers_to_neighbours when some triangles had nowhere to go: every region as it came in."""
+    for r in drop:
+        labels[regions[r].faces] = r
+    return labels, regions
 
 
 def _facets_ok(seg, faces, max_tris=2000, area_k=25.0):
@@ -3923,7 +6891,7 @@ def _flat_facets(seg, faces, max_deg=0.5, flat=FACET_GROUP):
     return out
 
 
-def _broken_when_saved(asm, shell=False):
+def _broken_when_saved(asm, shell=False, unmeshable=None):
     """Regions whose face is invalid once the faces are written to a STEP
     file and read back: as a loose compound, or with ``shell`` as one
     shell, as the saved file holds them (neighbours then share each edge's
@@ -3952,7 +6920,8 @@ def _broken_when_saved(asm, shell=False):
     try:
         stepio.write_step(comp, path)
         back = stepio.read_step(path)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return set()
     finally:
         try:
@@ -3961,14 +6930,221 @@ def _broken_when_saved(asm, shell=False):
             pass
     out = set()
     exp = TopExp_Explorer(back, TopAbs_FACE)
-    k = 0
-    while exp.More() and k < len(rs):
-        if not BRepCheck_Analyzer(exp.Current()).IsValid():
-            out.add(rs[k])
-        k += 1
+    got = []
+    while exp.More():
+        got.append(TopoDS.Face(exp.Current()))
         exp.Next()
-    # (a different number of faces read back: the order can't be trusted)
-    return out if k == len(rs) and not exp.More() else set()
+    # The reader mends a face whose wire crosses itself by cutting it in pieces, so one broken
+    # face used to change the count, and with the count the whole check was given up: Rak N's
+    # 0.26 mm2 cone, read back as 4 faces, hid every other broken face in the file (on Rak N,
+    # N-USB, SMA-USB and Solar, most builds; 2026-11-02). The pieces come where the face was, so
+    # the faces are lined up in order, and a face that didn't come back as one is broken.
+    grown = set()
+    pieces = _read_back_pieces([asm.region_faces[r] for r in rs], got, grown=grown)
+    if pieces is None:
+        return set()
+    owner = {}
+    for k, (r, idx) in enumerate(zip(rs, pieces)):
+        owner.update((j, r) for j in idx)
+        if k in grown or len(idx) != 1 or not BRepCheck_Analyzer(got[idx[0]]).IsValid():
+            out.add(r)
+    if shell:
+        from OCP.Bnd import Bnd_Box
+        from OCP.BRepBndLib import BRepBndLib
+
+        box = Bnd_Box()
+        BRepBndLib.Add_s(back, box)
+        if box.IsVoid():
+            # (nothing came back to mesh, and so nothing to say about meshing it: an exception here ended the whole CAD attempt,
+            # and tc-hotend-fan-shield went to 2,001 B-splines. The file's own read-back at the end still decides.)
+            return out
+        diag = box.CornerMin().Distance(box.CornerMax())
+        um = {owner[i] for i in _unmeshable(back, got, diag)}
+        if unmeshable is not None:
+            unmeshable |= um - out
+        out |= um
+    return out
+
+
+def _cusp_crossing(asm, r):
+    """The two borders of region r (each as first and last vertex) whose exact arcs cross where they meet
+    tangent, read back from a file: [] if none. Two r 3.2 chamfers on a Raspberry Pi case meet at a cusp on a
+    wall; each arc, worked out from its own cone, passes the corner by 1e-7 mm to the far side, so they
+    truly cross 0.0006 mm from it, a 1,773 mm2 plane reads back invalid and becomes B-spline. Fitted to
+    the mesh instead, as they used to be, they don't, and only these two lose exactness."""
+    import os
+    import tempfile
+
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.TopAbs import TopAbs_FACE
+
+    from . import meshguard, stepio
+
+    face = asm.region_faces.get(r)
+    if face is None:
+        return []
+    fd, path = tempfile.mkstemp(suffix=".step")
+    os.close(fd)
+    try:
+        stepio.write_step(face, path)
+        back = stepio.read_step(path)
+    except Exception as fault:
+        faults.caught(fault)
+        return []
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    faces = TopExp_Explorer(back, TopAbs_FACE)
+    if not faces.More():
+        return []
+    read = TopoDS.Face(faces.Current())
+    for hit in meshguard.self_crossings([read], flag=True)[0]:
+        # (the check died on this face: no cusp to fit)
+        if hit.died:
+            return []
+        # (only a border with two circular arcs can hold the crossing looked for, so a crossing of other edges in
+        # one border, or one that names no two edges, no longer stops the look at the face's other borders: a
+        # thread's helical borders cross themselves read back from a file, f_long_d8_l12, 2026-11-08)
+        if hit.e1 is None or hit.e2 is None or _circular_edges(hit.wire) < 2:
+            continue
+        e1, e2 = hit.e1, hit.e2
+        c1, c2 = BRepAdaptor_Curve(e1), BRepAdaptor_Curve(e2)
+        if c1.GetType() != GeomAbs_Circle or c2.GetType() != GeomAbs_Circle:
+            return []
+        ends = [[np.array([p.X(), p.Y(), p.Z()]) for p in (c.Value(c.FirstParameter()), c.Value(c.LastParameter()))] for c in (c1, c2)]
+        if min(float(np.linalg.norm(a - b)) for a in ends[0] for b in ends[1]) > CUSP_NEAR:
+            return []
+        out = []
+        for pair in ends:
+            for loop in asm.rg.region_loops[r]:
+                for cid, _ in loop:
+                    c = asm.rg.chains[cid]
+                    a, b = asm.V[c.verts[0]], asm.V[c.verts[-1]]
+                    if (min(np.linalg.norm(a - pair[0]), np.linalg.norm(a - pair[1])) <= CUSP_NEAR
+                            and min(np.linalg.norm(b - pair[0]), np.linalg.norm(b - pair[1])) <= CUSP_NEAR):
+                        out.append((c.verts[0], c.verts[-1]))
+        return out
+    return []
+
+
+def _circular_edges(wire):
+    """How many of a wire's edges are circular arcs."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.TopAbs import TopAbs_EDGE
+
+    n = 0
+    edges = TopExp_Explorer(wire, TopAbs_EDGE)
+    while edges.More():
+        if BRepAdaptor_Curve(TopoDS.Edge(edges.Current())).GetType() == GeomAbs_Circle:
+            n += 1
+        edges.Next()
+    return n
+
+
+def _face_box(face):
+    """(min corner, max corner) of a face's geometry, its tolerances left out."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(face, box, False, False)
+    a, b = box.CornerMin(), box.CornerMax()
+    return np.array([a.X(), a.Y(), a.Z()]), np.array([b.X(), b.Y(), b.Z()])
+
+
+def _read_back_pieces(written, read, margin=READ_BOX_MARGIN, grown=None):
+    """Which faces read back from a file came from which written face, given that the reader keeps
+    the order and may cut a face in pieces or leave it out: for each written face, the indices of
+    its pieces in ``read``. None when the two can't be lined up that way.
+
+    A broken face can also come back bigger than it went in (allen-key's inside-out torus, 0.6 mm
+    wide written, 2 mm read back). Lined up by boxes alone, its piece then fits no face, every
+    later face is left without its own, and they all count as broken until one big enough takes
+    them all (33 sound faces on allen-key). So a piece that fits neither this face nor the next,
+    where it covers this face's place and the piece after it fits the next face (or it is the
+    last of both), is this face's, read back grown; that face's index is added to ``grown``."""
+    boxes = [_face_box(f) for f in written]
+    rd = [_face_box(f) for f in read]
+
+    def inside(j, i):
+        return (rd[j][0] >= boxes[i][0] - margin).all() and (rd[j][1] <= boxes[i][1] + margin).all()
+
+    def covers(j, i):
+        return (rd[j][0] <= boxes[i][0] + margin).all() and (rd[j][1] >= boxes[i][1] - margin).all()
+
+    out = []
+    j = 0
+    for i in range(len(written)):
+        take = []
+        while j < len(read) and inside(j, i):
+            # (a piece that fits this face and the next, once this one has a piece, is the next's)
+            if take and i + 1 < len(written) and inside(j, i + 1):
+                break
+            take.append(j)
+            j += 1
+        if not take and j < len(read) and covers(j, i) and not (i + 1 < len(written) and inside(j, i + 1)):
+            last = i + 1 == len(written) and j + 1 == len(read)
+            if last or (j + 1 < len(read) and i + 1 < len(written) and inside(j + 1, i + 1)):
+                take.append(j)
+                j += 1
+                if grown is not None:
+                    grown.add(i)
+        out.append(take)
+    return out if j == len(read) else None
+
+
+def _unmeshable(shape, faces, diag):
+    """Indices into ``faces`` (the faces of ``shape``, read back from a STEP
+    file) of the faces OpenCascade can't triangulate at the fineness the app's
+    preview uses, even meshed on their own. Such a
+    face reads back valid, so nothing else flags it, and the preview and the
+    shape check mesh it more coarsely instead; a viewer or slicer that doesn't
+    retry shows a hole or a lumpy patch there (toolbox Body474: a 0.54 mm2
+    torus where three rounds meet, its edges 0.012 mm off its surface,
+    unmeshable up to 0.055 mm at the app's quality and shown as a crumpled pink patch). The face's
+    correct neighbours, a 32 mm2 sphere that meshes down to 0.002 mm, pass."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopLoc import TopLoc_Location
+
+    def meshed(face):
+        tri = BRep_Tool.Triangulation_s(face, TopLoc_Location())
+        return tri is not None and tri.NbTriangles() > 0
+
+    from OCP.GProp import GProp_GProps
+    from OCP.BRepGProp import BRepGProp
+
+    def area(face):
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, g)
+        return abs(g.Mass())
+
+    small = {i for i, f in enumerate(faces) if area(f) < SMALL_FACE * diag * diag}
+    bad = set()
+    for k, only in [(k, None) for k in MESH_FINE] + ([(MESH_FINE_SMALL, small)] if small else []):
+        d = max(diag * k, 1e-6)
+        whole = BRepBuilderAPI_Copy(shape).Shape()
+        # (a face the mesher doesn't finish counts as unmeshable, at the fineness asked for; so
+        # the result's coarser figure is no use here: it is the fineness asked that matters)
+        stopped = meshguard.mesh(whole, d, False, 0.35, True)
+        ex = TopExp_Explorer(whole, TopAbs_FACE)
+        i = 0
+        while ex.More() and i < len(faces):
+            if i in stopped.coarse or i in stopped.unmeshed:
+                if only is None or i in only:
+                    bad.add(i)
+            elif i not in bad and (only is None or i in only) and not meshed(TopoDS.Face(ex.Current())):
+                alone = TopoDS.Face(BRepBuilderAPI_Copy(faces[i]).Shape())
+                if meshguard.mesh(alone, d, False, 0.35, True) or not meshed(alone):
+                    bad.add(i)
+            i += 1
+            ex.Next()
+    return bad
 
 
 def _too_small_for_face(seg, labels, faces, area_k=25.0, width_k=6.0):
@@ -4038,7 +7214,7 @@ def summarize(regions):
     return kinds
 
 
-def convert_body_cad(B, body, tol, opts, report=NULL, segs=None):
+def convert_body_cad(B, body, tol, opts, report=NULL, segs=None, tidy=True, tidied=None):
     from .pipeline import _closed_volume, fix_shape, orient_like_mesh, sew_faces, shells_to_solid
     from . import stepio
 
@@ -4047,7 +7223,7 @@ def convert_body_cad(B, body, tol, opts, report=NULL, segs=None):
     kinds = {}
     for shell in body:
         seg = segs.get(id(shell)) if segs else None
-        asm, faces, regions = build_cad_shell(shell, tol, report, detail=opts.quality, seg=seg)
+        asm, faces, regions = build_cad_shell(shell, tol, report, detail=opts.quality, seg=seg, tidy=tidy, tidied=tidied)
         for k, v in summarize(regions).items():
             kinds[k] = kinds.get(k, 0) + v
         if asm.failed_regions:

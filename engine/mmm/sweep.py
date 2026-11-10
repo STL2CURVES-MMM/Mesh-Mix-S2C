@@ -13,6 +13,9 @@ Points are then moved back along the motion into one plane (the
 profile's), where they lie on a curve; a smooth curve is fitted to them,
 and swept again to give the surface."""
 import numpy as np
+# Modified 2026-11-04: a closed curve answers no points with no points, as an open one does (ProfileCurve.at).
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 
 from .fitting import perp_basis, unit
 
@@ -477,7 +480,10 @@ class ProfileCurve:
         if self.closed:
             from scipy.interpolate import splev
 
-            return np.array(splev(np.mod(np.asarray(t, float), 1.0), self.tck)).T.reshape(-1, self.dim)
+            t = np.asarray(t, float)
+            if not t.size:      # (FITPACK refuses no points at all, as "Invalid input data": open curves don't)
+                return np.zeros((0, self.dim))
+            return np.array(splev(np.mod(t, 1.0), self.tck)).T.reshape(-1, self.dim)
         # (beyond 0..1 the end spans are continued)
         return np.asarray(self.spl(np.asarray(t, float), extrapolate=True)).T.reshape(-1, self.dim)
 
@@ -739,7 +745,8 @@ def fit_swept(P, N, W, tol, X=None, margin=0.05, motion=None):
     closed = _is_loop(O, Q, tol)
     try:
         curve = ProfileCurve(O, tol, closed=closed)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None, np.inf
     d, s = curve.nearest(Q)
     dev = float(np.percentile(d, 99)) if len(d) else np.inf

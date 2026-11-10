@@ -17,6 +17,8 @@ Pipeline
 # nudged target; when every try sticks, smooth_shell's simpler layouts are used (a shared
 # Budget of FREEZE_CAP stuck runs per smooth_shell call).
 import os
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 import sys
 
 import numpy as np
@@ -626,7 +628,8 @@ def _manifold_clean(V, F):
             return None
         o = man.to_mesh()
         return np.asarray(o.vert_properties)[:, :3].astype(np.float64), np.asarray(o.tri_verts).astype(np.int64), man
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
 
 
@@ -652,8 +655,8 @@ def robust_decimate(V, F, target_tris, report=NULL):
                 F2 = np.asarray(o.tri_verts).astype(np.int64)
                 if len(F2) >= target_tris // 2:
                     V, F = V2, F2
-            except Exception:
-                pass
+            except Exception as fault:
+                faults.caught(fault)
     if len(F) <= 1.15 * target_tris:
         sh = Shell(V, F)
         if sh.closed and not sh.topo.same_dir.any() and len(sh.F) >= 4:
@@ -668,6 +671,7 @@ def robust_decimate(V, F, target_tris, report=NULL):
                 target_reduction=float(max(0.0, 1.0 - tt / max(len(F), 1))),
             )
         except Exception as e:
+            faults.caught(e)
             report.log(f"Decimation attempt failed ({e})")
             continue
         v2, f2 = compact(np.asarray(v2, dtype=np.float64), np.asarray(f2, dtype=np.int64))
@@ -691,7 +695,8 @@ def robust_decimate(V, F, target_tris, report=NULL):
         for k in range(12):
             try:
                 o = man.simplify(diag * 2e-3 * 1.6 ** k).to_mesh()
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 break
             sh = Shell(np.asarray(o.vert_properties)[:, :3].astype(np.float64), np.asarray(o.tri_verts).astype(np.int64))
             if len(sh.F) < 4:
@@ -784,6 +789,7 @@ def smooth_shell(shell, tol, budget, report=NULL):
         else:
             report.log(f"Merged {cage.nq} patches into {nf} surfaces")
     except Exception as e:
+        faults.caught(e)
         report.log(f"Patch merging skipped ({e})")
         sh = None
     if sh is None:
@@ -796,7 +802,8 @@ def _shell_ok(sh):
 
     try:
         return bool(BRepCheck_Analyzer(sh).IsValid())
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return False
 
 
@@ -814,8 +821,8 @@ def convert_body_smooth(B, body, tol, opts, report=NULL):
                 fixed = repair_shell_meshfix(shell, report)
                 if fixed.closed:
                     shell = fixed
-            except Exception:
-                pass
+            except Exception as fault:
+                faults.caught(fault)
         share = int(budget * a / tot)
         retry = 3 * share
         fine = 0 if opts.max_faces else fine_cage_budget(len(shell.F), getattr(opts, "fine_quality", opts.quality))
@@ -837,8 +844,8 @@ def convert_body_smooth(B, body, tol, opts, report=NULL):
                     v = abs(stepio.volume(make_solid(B, [sh_])))
                     if abs(v / abs(shell.volume) - 1.0) > 0.03:
                         return False
-                except Exception:
-                    pass
+                except Exception as fault:
+                    faults.caught(fault)
             return True
 
         try:

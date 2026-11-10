@@ -4,6 +4,7 @@
     mmm-engine inspect INPUT [--preview FILE]
 """
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-04: messages and file metadata users see name the current program (Mesh Mix-S2C).
 # Modified 2026-10-26 for the stl2curves merged engine: the error messages are one
 # function, failure(), which mms2c/merged.py's command line shares, and they cover
 # the path and option checks (pipeline.PathError, pipeline.OptionError).
@@ -13,6 +14,8 @@
 # Modified 2026-10-31: every mesh format goes through the merged engine for Auto and CAD: 3MF
 # projects whole (laid out as on the plate) or split into parts, and OBJ, PLY and OFF files.
 import argparse
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 import json
 import os
 import sys
@@ -41,8 +44,8 @@ def _preview_mesh(V, F):
         )
         if 0 < len(F2) <= 1.2 * PREVIEW_TRIS:
             return np.asarray(V2, dtype=np.float64), np.asarray(F2, dtype=np.int64)
-    except Exception:
-        pass
+    except Exception as fault:
+        faults.caught(fault)
     sel = np.random.default_rng(0).choice(len(F), PREVIEW_TRIS, replace=False)
     return V, F[np.sort(sel)]
 
@@ -133,7 +136,7 @@ def _merged(args):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="mmm-engine", description="Manifold Mesh Mix STL to STEP engine")
+    p = argparse.ArgumentParser(prog="mmm-engine", description="Mesh Mix-S2C mesh to STEP engine")
     sub = p.add_subparsers(dest="cmd")
 
     c = sub.add_parser("convert", help="convert a mesh to STEP")
@@ -202,7 +205,7 @@ def main(argv=None):
             try:
                 m = __import__(mod, fromlist=["_"])
                 report[mod] = getattr(m, "__version__", "ok")
-            except Exception as e:
+            except Exception as e:  # not engine work: an optional component that won't load
                 report[mod] = f"MISSING: {e}"
         print(json.dumps(report, indent=1))
         return 0 if all(not str(v).startswith("MISSING") for v in report.values()) else 1
@@ -252,7 +255,7 @@ def main(argv=None):
         if not rep.json_mode:
             print(json.dumps({k: v for k, v in res.items() if k != "input"}, indent=1))
         return 0
-    except Exception as e:  # report and exit non-zero
+    except Exception as e:  # not engine work: report and exit non-zero
         return failure(e, args.input, rep)
 
 

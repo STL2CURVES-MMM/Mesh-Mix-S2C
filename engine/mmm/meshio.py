@@ -1,5 +1,6 @@
 """Mesh loading, cleaning and repair."""
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-04: messages and file metadata users see name the current program (Mesh Mix-S2C).
 # Modified 2026-10-26 for the stl2curves merged engine: the weld tolerance is a Python
 # float (a float32 product overflowed to inf on huge coordinates and stopped cKDTree),
 # coordinates too large to calculate with and models too small for CAD's precision are
@@ -8,6 +9,8 @@
 # without the repair. read_stl refuses a text file that isn't an STL (an OBJ renamed .stl
 # was read as binary garbage).
 import io
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 import os
 import re
 import struct
@@ -119,6 +122,7 @@ def read_parts_framed(path, report=NULL, layout="parts"):
     except (MeshError, OSError, MemoryError):
         raise
     except Exception as e:
+        faults.caught(e)
         # broken XML, numbers, indices, zip entries...: the file is damaged
         raise MeshError(f"This file seems to be damaged, so it couldn't be read ({type(e).__name__}). "
                         "Try exporting it again.") from e
@@ -533,8 +537,8 @@ def organise_bodies(shells, report=NULL, stats=None):
                         target_reduction=float(1 - 20000 / len(F)),
                     )
                     V, F = np.asarray(v2, dtype=np.float64), np.asarray(f2, dtype=np.int64)
-                except Exception:
-                    pass
+                except Exception as fault:
+                    faults.caught(fault)
             coarse[j] = (V, F)
         return coarse[j]
     for i in order:
@@ -606,8 +610,8 @@ def repair_shell_light(shell, report=NULL):
     tm = pymeshfix.PyTMesh()
     try:
         tm.set_quiet(True)
-    except Exception:
-        pass
+    except Exception as fault:
+        faults.caught(fault)
     tm.load_array(shell.V.astype(np.float64), shell.F.astype(np.int32))
     tm.fill_small_boundaries(nbe=0, refine=True)
     v, f = tm.return_arrays()
@@ -855,7 +859,7 @@ def _body_mesh(bodies):
     return np.vstack(Vs), np.vstack(Fs)
 
 
-def write_stl(path, bodies, name="Manifold Mesh Mix"):
+def write_stl(path, bodies, name="Mesh Mix-S2C"):
     """Binary STL of all bodies."""
     V, F = _body_mesh(bodies)
     T = V[F].astype(np.float32)
@@ -892,7 +896,7 @@ def write_3mf(path, parts):
     model = ('<?xml version="1.0" encoding="UTF-8"?>\n'
              '<model unit="millimeter" xml:lang="en-US" '
              'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
-             '<metadata name="Application">Manifold Mesh Mix</metadata>'
+             '<metadata name="Application">Mesh Mix-S2C</metadata>'
              f"<resources>{''.join(objs)}</resources><build>{''.join(items)}</build></model>")
     types = ('<?xml version="1.0" encoding="UTF-8"?>\n'
              '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'

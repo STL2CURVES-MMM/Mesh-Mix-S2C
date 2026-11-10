@@ -64,6 +64,7 @@ CONFIDENT_TOL = 0.005   # mm: fillets fitting this well (or cylinders and tori f
 PRIOR_RANGE = 0.05      # a band whose own radius is within this share of a vouched one ...
 PRIOR_TOL = 0.05        # mm: ... is that radius if its corners lie this close to it
 FACE_LENGTH = 1.0       # a fillet, and the faces it joins alongside each other, run this many radii along it
+LONG_BORDER = 200       # neighbours of a flat face past which a fillet is looked for only near the other face
 FACE_WIDTH = 0.3        # each face it joins is this many radii wide across it
 ROUGH_AGREE = 0.7       # (faces stopping short of their meeting line by distances agreeing within e^this)
 WALL_SQUARE_DEG = 2     # deg: a flat face this close to square to a wall's axis can have a torus fillet to it
@@ -497,6 +498,9 @@ class _Flat:
     def coords(self, P):
         return self.coords_of(P)
 
+    def off_B(self, X):
+        return np.abs(X @ self.n2)
+
     def along(self, P):
         return np.atleast_2d(P) @ self.d
 
@@ -745,6 +749,34 @@ def _fillet(mesh, nbrs, used, sec, plane_pt, noise, vouched, corners, cache):
             group.update(frontier)
         return np.array(sorted(group), dtype=int)
 
+    def along_A():
+        """The facets bordering face A where a fillet could start. On a face with a very long border, only
+        those near face B: a grid of 124 x 234 mm is one flat facet with thousands of neighbours and 2,100
+        small walls, and judging that whole border again for every wall took 700 s of 1,060. A band has to
+        reach B (reaches_B), with its corners within about a radius of it, and its radius is held to the
+        two sides' widths, so what is further off or not joined to B can't be one."""
+        if sum(len(nbrs[g]) for g in sec.group_A.tolist()) <= LONG_BORDER:
+            return np.array(sorted({h for g in sec.group_A for h in nbrs[g]} - set(sec.group_A.tolist())), dtype=int)
+        reach = 2 * math.exp(DEPTH_AGREE) * min(sec.width_A, sec.width_B) / FACE_WIDTH + tol
+        other = set(np.flatnonzero(b_mask).tolist())
+        seen = set(other)
+        frontier = sorted({h for g in other for h in nbrs[g]} - seen)
+        out = []
+        # (a band's facets are all small, as judge has it, so the search goes on only through small ones: not
+        # across face A or the plate's far side, which would take in the whole border again. Beside a wall
+        # the first row may be large: triangles straddle where a fillet meets a wall, see reaches_B)
+        straddling = not sec.b_flat
+        while frontier:
+            seen.update(frontier)
+            cand = np.array(frontier, dtype=int)
+            P, starts = corners.of(cand)
+            size_ok = (mesh.farea[cand] <= small) | straddling
+            near = cand[(np.minimum.reduceat(sec.off_B(sec.coords(P)), starts) <= reach) & ~a_mask[cand] & size_ok].tolist()
+            out += near
+            frontier = sorted({h for g in near for h in nbrs[g]} - seen)
+            straddling = False
+        return np.array([g for g in sorted(out) if not a_mask[g] and any(a_mask[h] for h in nbrs[g])], dtype=int)
+
     touched = []
     guess = cache                   # (-1: not judged yet; nan: no)
 
@@ -758,7 +790,7 @@ def _fillet(mesh, nbrs, used, sec, plane_pt, noise, vouched, corners, cache):
                 touched.extend(todo.tolist())
             return guess[gs]
 
-        around = np.array(sorted({h for g in sec.group_A for h in nbrs[g]} - set(sec.group_A.tolist())), dtype=int)
+        around = along_A()
         seeds = around[np.isfinite(guesses(around))] if len(around) else around
         if not len(seeds):
             return None

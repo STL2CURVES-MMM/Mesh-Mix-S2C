@@ -26,10 +26,15 @@ What can't be mended is left in repair.left, to be reported.
 import math
 
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
+from . import walls
 from .features import grid_noise, _right_vectors
 
 CRACK = 1e-3            # mm (and a small share of the part's size): open edges this close are joined
+CROSS_WELD = 0.03       # mm: corners of triangles crossing each other this close are one point, tried before any cut
+WELD_FLAT = 1e-6        # mm^2: twice a triangle's area below which joining corners may turn it over
 SPECK = 0.1             # a self-crossing cluster smaller than this share of the part is cut out
 MARGIN_RINGS = 2        # ... together with this many rings of triangles around it
 SPECK_SHIFT = 0.05      # mm: ... if patching the hole moves the surface no more than this on average
@@ -92,6 +97,16 @@ def repair(pts, tris):
     tris, flipped = _orient(pts, tris)
     if flipped:
         notes.append(f"{flipped} triangles turned to face the right way")
+
+    # (the same as _duplicates' opposite pairs, with their triangles laid out differently: see walls.py. Only now, as it goes
+    # by which way triangles face: the repeater mount's file has 5,145 facing the wrong way)
+    pts, tris, area, planes = walls.seal(pts, tris)
+    if planes:
+        notes.append(f"{area / 2:.1f} mm2 of flat walls lying on each other removed, in {planes} plane{'s' if planes > 1 else ''}")
+
+    tris, welded = _weld_crossings(pts, tris)
+    if welded:
+        notes.append(f"{welded} corners of triangles crossing each other joined")
 
     specks = 0
     for _ in range(3):
@@ -481,32 +496,50 @@ def _orient(pts, tris):
     same = first[count == 2]
     ta, tb = own_s[same], own_s[same + 1]
     agree = d_s[same, 0] != d_s[same + 1, 0]            # opposite directions: consistent
-    # breadth-first over the pairs, flipping to agree with the first triangle reached
+    # over the pairs, flipping to agree with the first triangle reached, by the fewest
+    # disagreeing links: a triangle reached both ways keeps the file's own facing. Walked
+    # consistent links first (a 0-1 breadth-first search), so a triangle's flips are the
+    # parity of the fewest disagreeing links on any path to it. A plain walk flipped the
+    # repeater mount's front strip (5,143 triangles, 1,315 mm^3) inside out: a zero-thickness
+    # wall between strip and block meets the bottom face along edges of three triangles,
+    # which the walk skips, except where the two sheets' triangulations part by 0.001 mm and
+    # leave edges of two, the bottom and one sheet, disagreeing by geometry, not by error;
+    # the walk reached the strip through one of them first.
+    from collections import deque
+
     adj = [[] for _ in range(m)]
     for a, b, ok in zip(ta.tolist(), tb.tolist(), agree.tolist()):
         adj[a].append((b, ok))
         adj[b].append((a, ok))
     # (plain lists: element access on numpy arrays is slow in a loop like this)
-    flip = [False] * m
-    seen = [False] * m
+    inf = m + 1
+    dist = [inf] * m
     comp = [-1] * m
     c = 0
     for start in range(m):
-        if seen[start]:
+        if comp[start] >= 0:
             continue
-        seen[start] = True
-        comp[start] = c
-        stack = [start]
-        while stack:
-            t = stack.pop()
+        dist[start] = 0
+        queue = deque([start])
+        while queue:
+            t = queue.popleft()
+            if comp[t] >= 0:
+                continue        # (settled already, by a shorter way)
+            comp[t] = c
+            dt = dist[t]
             for u, ok in adj[t]:
-                if not seen[u]:
-                    seen[u] = True
-                    comp[u] = c
-                    flip[u] = flip[t] if ok else not flip[t]
-                    stack.append(u)
+                if comp[u] >= 0:
+                    continue
+                nd = dt if ok else dt + 1
+                if nd < dist[u]:
+                    dist[u] = nd
+                    if ok:
+                        queue.appendleft(u)
+                    else:
+                        queue.append(u)
         c += 1
-    flip, comp = np.array(flip, bool), np.array(comp)
+    flip = np.array(dist, np.int64) % 2 == 1
+    comp = np.array(comp)
     # each piece: flip it wholesale if it has more triangles flipped than not
     wholesale = np.bincount(comp, weights=flip, minlength=c) * 2 > np.bincount(comp, minlength=c)
     flip ^= wholesale[comp]
@@ -791,6 +824,58 @@ def _segment_hits_triangle(p, q, T):
     t = f * np.einsum("ij,ij->i", e2, qv)
     eps = 1e-9
     return ok & (u > eps) & (v > eps) & (u + v < 1 - eps) & (t > eps) & (t < 1 - eps)
+
+
+def _weld_crossings(pts, tris):
+    """Join the corners of crossing triangles that lie within CROSS_WELD of each other, in one piece.
+    An export can leave a corner in two or three places a few microns apart, and the triangles
+    round them then pass through each other by that much. Cut out and patched with two rings of
+    margin, as a speck, that costs what's around it: on Solar Panel Bracket Large, 5 crossing pairs
+    among corners 0.003 to 0.02 mm apart took 55 triangles, 6 mm across, and flattened a ratchet tooth
+    0.56 mm, the worst spot on the part. Joined,
+    the crossings and the edges of three triangles go, and nothing moves by more than 0.002 mm.
+    Kept only if there are fewer crossings, no new open edge or edge of three, and no triangle of any
+    size turned over. Returns (tris, corners joined)."""
+    from scipy.spatial import cKDTree
+
+    pairs = crossing_triangles(pts, tris)
+    if not len(pairs):
+        return tris, 0
+    corners = np.unique(tris[np.unique(pairs)])
+    near = cKDTree(pts[corners]).query_pairs(CROSS_WELD, output_type="ndarray")
+    if not len(near):
+        return tris, 0
+    a, b = corners[near[:, 0]], corners[near[:, 1]]
+    piece = _pieces(tris)
+    of = np.full(len(pts), -1, dtype=np.int64)
+    of[tris.ravel()] = np.repeat(piece, 3)
+    same = of[a] == of[b]
+    a, b = a[same], b[same]
+    if not len(a):
+        return tris, 0
+    n, comp = connected_components(coo_matrix((np.ones(len(a)), (a, b)), shape=(len(pts), len(pts))), directed=False)
+    uses = np.bincount(tris.ravel(), minlength=len(pts))
+    to = np.arange(len(pts))
+    touched = np.unique(np.r_[a, b])
+    joined = 0
+    for c in np.unique(comp[touched]).tolist():
+        group = touched[comp[touched] == c]
+        to[group] = group[np.argmax(uses[group])]
+        joined += len(group) - 1
+    moved = to[tris]
+    keep = (moved[:, 0] != moved[:, 1]) & (moved[:, 1] != moved[:, 2]) & (moved[:, 2] != moved[:, 0])
+    before = np.cross(pts[tris[:, 1]] - pts[tris[:, 0]], pts[tris[:, 2]] - pts[tris[:, 0]])
+    after = np.cross(pts[moved[:, 1]] - pts[moved[:, 0]], pts[moved[:, 2]] - pts[moved[:, 0]])
+    changed = (moved != tris).any(axis=1) & keep
+    # (a triangle with next to no area has no direction to keep)
+    big = np.linalg.norm(before, axis=1) > WELD_FLAT
+    if ((before * after).sum(axis=1)[changed & big] < 0).any():
+        return tris, 0
+    new = moved[keep]
+    if (len(_open_edges(new)) > len(_open_edges(tris)) or len(_overused(new)) > len(_overused(tris))
+            or len(crossing_triangles(pts, new)) >= len(pairs)):
+        return tris, 0
+    return new, joined
 
 
 def _self_crossing_specks(pts, tris, max_size):

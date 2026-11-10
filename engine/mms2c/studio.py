@@ -14,6 +14,7 @@ The first stages of each conversion are saved (stages.py) in a folder of its own
 converting again after painting skips the analysis.
 """
 import argparse
+from mmm import faults
 import base64
 import json
 import os
@@ -214,14 +215,14 @@ def _tessellated(shape):
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
     from OCP.BRepGProp import BRepGProp
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from mmm import meshguard
     from OCP.GProp import GProp_GProps
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
     from OCP.TopExp import TopExp, TopExp_Explorer
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
     from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as Map
-    BRepMesh_IncrementalMesh(shape, TESS_DEFLECTION, False, 0.3, True)
+    meshguard.mesh(shape, TESS_DEFLECTION, False, 0.3, True)
     pos, faces = [], []
     ex = TopExp_Explorer(shape, TopAbs_FACE)
     while ex.More():
@@ -334,6 +335,7 @@ def _handler(session):
                     return self._send(200, session.convert(req))
                 self._send(404, {"error": "not found"})
             except Exception as e:
+                faults.caught(e)
                 traceback.print_exc()
                 self._send(500, {"error": f"{type(e).__name__}: {e}"})
 

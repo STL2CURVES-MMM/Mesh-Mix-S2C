@@ -21,6 +21,8 @@ axis too, and that neighbourhood takes in the faces beside a narrow band.
 # AxisTorus, AxisSphere): only the profile is fitted, refits keep the axis, and two on one
 # axis are the same surface when their profiles agree (Segmenter._axis_hypotheses).
 import numpy as np
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 from scipy.optimize import least_squares
 
 EPS = 1e-12
@@ -100,8 +102,8 @@ def fit_circle_2d(Q, refine=True, W=None):
     try:
         out = least_squares(res, [cx, cy, r], method="lm", max_nfev=60)
         cx, cy, r = out.x
-    except Exception:
-        pass
+    except Exception as fault:
+        faults.caught(fault)
     return np.array([cx, cy]), abs(r)
 
 
@@ -110,7 +112,8 @@ def _lsq(res, x0, nfev, jac=None):
         if jac is None:
             return least_squares(res, x0, method="lm", max_nfev=nfev).x
         return least_squares(res, x0, jac=jac, method="lm", max_nfev=nfev).x
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
 
 

@@ -15,6 +15,8 @@ one exact or spline edge on both sides (see build.Edges, local.apply_local).
     shape, report = assemble(mesh, features, mesh_tol)
 """
 import dataclasses
+from mmm import faults
+from mmm import meshguard
 import math
 import time
 
@@ -30,7 +32,6 @@ from OCP.ShapeBuild import ShapeBuild_ReShape
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepLProp import BRepLProp_SLProps
-from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.GProp import GProp_GProps
 from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds, ShapeAnalysis_Surface
 from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_Face, ShapeFix_ShapeTolerance
@@ -265,7 +266,7 @@ def _signed_volume(mesh, facets):
 
 def _face_volume(face):
     """The face's share of a solid's volume (about the origin), from its tessellation."""
-    BRepMesh_IncrementalMesh(face, 0.001, False, 0.1, False)
+    meshguard.mesh(face, 0.001, False, 0.1, False)
     loc = TopLoc_Location()
     tri = BRep_Tool.Triangulation_s(face, loc)
     if tri is None:
@@ -530,7 +531,8 @@ def _fallback(mesh, f):
         if f.kind == "blend":
             return split_blend(mesh, f)
         return [as_blend(mesh, f.facets, ())] if len(f.facets) >= 3 else list(f.parts)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
 
 
@@ -586,6 +588,7 @@ def assemble(mesh, features, mesh_tol, tol=0.01):
             surface = _surface(f, k, mesh, owner, bounds, edge_tri, B.Edges(mesh.pts, None, mesh), mesh_tol)
             got, why = _swap(reg, f, surface, mesh) if surface is not None else (None, "no surface")
         except Exception as e:
+            faults.caught(e)
             got, why = None, f"error {type(e).__name__}"
         report["why"][why] = report["why"].get(why, 0) + 1
         label = f"{why}: {f.kind}/{f.model.kind}"

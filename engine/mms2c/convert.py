@@ -35,6 +35,8 @@ Usage:
   --no-repair      don't mend mesh defects first
 """
 import argparse
+from mmm import faults
+from mmm import meshguard
 import math
 import os
 import shutil
@@ -64,7 +66,6 @@ from OCP.STEPControl import STEPControl_Writer, STEPControl_Reader, STEPControl_
 from OCP.Interface import Interface_Static
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
-from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.TopLoc import TopLoc_Location
 from OCP.collections import (List_TopoDS_Shape, IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher,
                              IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher)
@@ -200,7 +201,7 @@ def tessellated_volume(shape):
     if tessellated_volume.untessellated:
         return None
     BRepTools.Clean_s(shape)
-    BRepMesh_IncrementalMesh(shape, TESS_DEFLECTION, False, 0.1, True)
+    meshguard.mesh(shape, TESS_DEFLECTION, False, 0.1, True)
     ex = TopExp_Explorer(shape, TopAbs_FACE)
     while ex.More():
         face = TopoDS.Face(ex.Current())
@@ -503,7 +504,8 @@ def fuse_checked(args, tools, low, high):
         except Timeout:
             workers.abandoned()     # (the worker is left to finish; then restarted)
             return None
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             workers.broken()
             return None
         fused = TopoDS_Shape()
@@ -722,7 +724,8 @@ def file_trouble(shape, allowed):
         path = os.path.join(tmp, "check.step")
         write_step(shape, path)
         back = read_step(path)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return []
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -849,7 +852,8 @@ def _mesh_defective(mesh, tol, fuse):
         if ahead is not None:
             try:
                 got = ahead.result()
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 got = None
         mesh.defective, mesh.bare_volume, mesh.bare_bodies = got or _bare(mesh, tol)
     return mesh.defective
@@ -881,7 +885,8 @@ def _bare_ahead(mesh, tol):
             if "shared_as" not in mesh.__dict__:
                 mesh.shared_as = workers.share(mesh)
             mesh.bare_ahead = pool.submit(_bare_job, (mesh.shared_as, tol))
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             mesh.__dict__.pop("bare_ahead", None)
 
 
@@ -1024,14 +1029,16 @@ def _swap_build(mesh, features, mesh_tol, tol, info, faceted_volume):
     from .assemble import assemble, revert
     try:
         solid, kept, report = assemble(mesh, features, mesh_tol, tol)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
     reg = report.pop("registry")
     report["rounds"] = []
     for _ in range(SWAP_ROUNDS):
         try:
             shape, nb, nv, signed = solids_from_shells(solid, inward_shells(mesh))
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             return None
         expected = faceted_volume + sum(f.change for f in kept)
         allowed = sum(f.tolerance for f in kept) + 1e-6 * abs(faceted_volume) + 1e-3
@@ -1584,7 +1591,8 @@ def tidied(shape, target):
         except Timeout:
             workers.abandoned()     # (the worker is left to finish; then restarted)
             return None, None
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             workers.broken()
             return None, None
         out = []
@@ -1629,7 +1637,8 @@ def _tidy(checked, target):
                 sf = ShapeFix_Shape(unify.Shape())
                 sf.Perform()
                 tidy = sf.Shape()
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 break
             if abs(volume(tidy) - target) <= UNIFY_VOLUME * abs(target) + 1e-3:
                 if BRepCheck_Analyzer(tidy, True, True).IsValid():
@@ -1738,7 +1747,7 @@ def describe_features(info, details=False):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+")
-    ap.add_argument("--version", action="version", version=f"stl2curves {__version__}")
+    ap.add_argument("--version", action="version", version=f"Mesh Mix-S2C engine {__version__}")
     ap.add_argument("--out", help="output folder (default: next to each STL)")
     ap.add_argument("--merge", help="also write all parts into one STEP with this name")
     ap.add_argument("--tol", type=float, default=0.01)
@@ -1784,6 +1793,7 @@ def main():
             jobs.append((f.name, f, f, f.stem))
 
     shapes = []
+    failed = 0
     for label, source, f, stem in jobs:
         t = time.time()
         print(f"{label}: converting...", flush=True)
@@ -1791,9 +1801,10 @@ def main():
             shape, info = stl_to_solid(source, args.tol, not args.no_fuse, not args.no_curves, args.true_size,
                                        not args.no_blends, not args.no_repair, args.simplify,
                                        time_limit=args.time_limit or None)
-        except Exception as e:
+        except Exception as e:  # not engine work: the top, where a failure is reported
             # (one part that can't be converted shouldn't stop the rest of the batch)
             print(f"  FAILED: {e} ({time.time() - t:.1f}s); no STEP written", flush=True)
+            failed += 1
             continue
         out_dir = Path(args.out) if args.out else f.parent
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1830,6 +1841,12 @@ def main():
         out = out_dir / (Path(args.merge).stem + ".step")
         write_step(comp, out)
         print(f"Combined file -> {out}")
+    found = faults.collected()
+    if found:
+        print("WARNING: " + faults.message(found) + " " + faults.summary(found), flush=True)
+    if failed:
+        # (a batch's other parts are saved, but a script reading the exit code must know)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from pathlib import Path
 import vtk
 from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
-from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from mmm import meshguard
 from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Sphere, GeomAbs_Torus
 from OCP.STEPControl import STEPControl_Reader
 from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_REVERSED
@@ -61,7 +61,7 @@ def read_step(path):
 
 
 def to_vtk(shape):
-    BRepMesh_IncrementalMesh(shape, 0.05, False, 0.3, True)
+    meshguard.mesh(shape, 0.05, False, 0.3, True)
     points, polys, colours = vtk.vtkPoints(), vtk.vtkCellArray(), vtk.vtkUnsignedCharArray()
     colours.SetNumberOfComponents(3)
     ex = TopExp_Explorer(shape, TopAbs_FACE)

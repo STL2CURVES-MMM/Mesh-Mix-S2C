@@ -8,6 +8,8 @@ its outline is replaced by the exact line or arc, so the faces meet cleanly. All
 faces are then sewn together.
 """
 import itertools
+from mmm import faults
+from mmm import meshguard
 import math
 import os
 import shutil
@@ -31,7 +33,6 @@ from OCP.collections import List_TopoDS_Shape
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.GCPnts import GCPnts_AbscissaPoint
 from OCP.GeomAdaptor import GeomAdaptor_Curve
-from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.TopLoc import TopLoc_Location
 from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
 from OCP.GeomLProp import GeomLProp_SLProps
@@ -280,7 +281,8 @@ class Edges:
             maker = BRepBuilderAPI_MakeEdge(curve, self.corner(first), self.corner(last),
                                             c.FirstParameter(), c.LastParameter())
             return maker.Edge() if maker.IsDone() else edge
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             return edge
 
     def exact(self, ids, make):
@@ -295,7 +297,8 @@ class Edges:
         if key not in self.exacts:
             try:
                 self.exacts[key] = make(canon)
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 self.exacts[key] = None
         edge = self.exacts[key]
         if edge is None:
@@ -321,7 +324,8 @@ class Edges:
         if key not in self.cache:
             try:
                 self.cache[key] = make(canon)
-            except Exception:           # e.g. an arc through three nearly aligned points
+            except Exception as fault:           # e.g. an arc through three nearly aligned points
+                faults.caught(fault)
                 self.cache[key] = None
             if self.cache[key] is None and make != self.spline:
                 self.cache[key] = self.spline(canon)
@@ -562,7 +566,8 @@ def _tightest_radius(m):
 def _safe_arc(a, mid, b):
     try:
         return _arc(a, mid, b)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return _line(a, b)
 
 
@@ -1142,7 +1147,7 @@ def _notches(m, pts, snap):
 def _facing_against(face, mesh):
     """Share of the face's area whose normal points against the nearest mesh triangle's."""
     from scipy.spatial import cKDTree
-    BRepMesh_IncrementalMesh(face, 0.005, False, 0.2, True)
+    meshguard.mesh(face, 0.005, False, 0.2, True)
     loc = TopLoc_Location()
     tri = BRep_Tool.Triangulation_s(face, loc)
     if tri is None:
@@ -1282,7 +1287,8 @@ def _cut_job(job):
         i += n
     try:
         face = _trimmed_cut(feature, Boundary(feature, 10 * tol), mesh, tools, loops, per_loop, tol)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         face = None
     if not has_surface and getattr(feature.model, "_surface", None) is not None:
         _surface_to(feature.model, surface_path)        # (fitted here: handed back, see _cut_all)
@@ -1295,8 +1301,8 @@ def _surface_to(model, path):
         face = model.face()
         if face is not None:
             BRepTools.Write_s(face, path)
-    except Exception:
-        pass
+    except Exception as fault:
+        faults.caught(fault)
 
 
 def _surface_from(model, path):
@@ -1308,8 +1314,8 @@ def _surface_from(model, path):
             ex = TopExp_Explorer(shape, TopAbs_FACE)
             if ex.More():
                 model._surface = BRep_Tool.Surface_s(TopoDS.Face(ex.Current()))
-    except Exception:
-        pass
+    except Exception as fault:
+        faults.caught(fault)
 
 
 def _cut_all(mesh, jobs, tol):
@@ -1368,7 +1374,7 @@ def _cut_all(mesh, jobs, tol):
             if not f.done():
                 out[key] = None         # (overran: failed, not left to be cut here)
                 continue
-            if f.exception() is not None:
+            if not faults.clean(f):
                 continue
             face = None
             if f.result():
@@ -1382,7 +1388,8 @@ def _cut_all(mesh, jobs, tol):
         for model, path, future in back:
             if model._surface is None and future.done() and os.path.exists(path):
                 _surface_from(model, path)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         out = {}                        # (the worker processes broke down: cut them here)
         workers.broken()
     finally:
@@ -1587,7 +1594,8 @@ def _fill(outline, inner, settings):
     try:
         fill.Build()
         return _repaired(fill.Face()) if fill.IsDone() else None
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
 
 
@@ -1659,7 +1667,7 @@ def _fill_all(jobs):
             judged, checking = {}, {}
             for f, (key, a) in futures.items():
                 face = None
-                if f.done() and not f.cancelled() and f.exception() is None and f.result():
+                if f.done() and not f.cancelled() and faults.clean(f) and f.result():
                     shape = TopoDS_Shape()
                     BRepTools.Read_s(shape, a[3], BRep_Builder())
                     ex = TopExp_Explorer(shape, TopAbs_FACE)
@@ -1688,12 +1696,13 @@ def _fill_all(jobs):
                     break
             now = time.time()
             for key, f in judged.items():
-                if f.done() and not f.cancelled() and f.exception() is None:
+                if f.done() and not f.cancelled() and faults.clean(f):
                     out[key] = (out[key][0], f.result())
                 elif f in began and now - began[f] > ASSESS_RUN_SECONDS:
                     out[key] = (out[key][0], False)
                     workers.abandoned()
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             out = {}                    # (the worker processes broke down: do them here)
             workers.broken()
         finally:
@@ -1908,7 +1917,7 @@ def _hugs_mesh(face, piece):
     (L its size, theta how far the surface turns across it, read from the mesh's own
     corner normals); a fitted patch that waves between the corners bows much further."""
     T, tn, tarea, corners, P, _ = piece
-    BRepMesh_IncrementalMesh(face, 0.005, False, 0.2, True)
+    meshguard.mesh(face, 0.005, False, 0.2, True)
     loc = TopLoc_Location()
     tri = BRep_Tool.Triangulation_s(face, loc)
     if tri is None:
@@ -2135,8 +2144,8 @@ def build_faces(mesh, features, tol):
                 for k in fresh:
                     try:
                         _blend_face(features[k], k, mesh, owner, bounds, edge_tri, edges)
-                    except Exception:
-                        pass
+                    except Exception as fault:
+                        faults.caught(fault)
                 jobs, mesh.fill_jobs = mesh.fill_jobs, None
                 if not jobs:
                     break
@@ -2156,7 +2165,8 @@ def build_faces(mesh, features, tol):
                 outlines[k] = _trimmed_outline(f, k, mesh, owner, bounds, edge_tri, edges)
             elif f.kind == "blend":
                 early[k] = [_blend_face(f, k, mesh, owner, bounds, edge_tri, edges)]
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             early[k] = [None]
     cut = _cut_all(mesh, [(k, features[k], *o) for k, o in outlines.items() if o is not None], tol)
     for k, (f, bound) in enumerate(zip(features, bounds)):
@@ -2179,7 +2189,8 @@ def build_faces(mesh, features, tol):
                         faces = [_trimmed_cut(f, bound, mesh, *outlines[k], tol)]
                 else:
                     faces = _patch_faces(f, bound, mesh)
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 # (OpenCascade gave up on one patch, a sweep of a degenerate profile say:
                 # that patch fails like any other, not the whole conversion)
                 faces = [None]

@@ -23,6 +23,7 @@ Each accepted patch records its exact surface and its boundary lines; build.py
 turns it into one true curved face and stitches it to the flat faces around it.
 """
 import copy
+from mmm import faults
 import math
 import time
 from collections import Counter
@@ -79,6 +80,17 @@ NOISY_MIN_FACETS = 12       # ... with at least this many facets
 TRIMMED_MIN_CORNERS = 12
 TRIMMED_MIN_FACETS = 6
 TRIMMED_MIN_TURN_DEG = 15   # the facets must face in directions at least this far apart
+# A round surface drawn coarsely is cut into even steps round its axis; one flat facet spanning
+# far more than the others is a flat face the designer drew (a hexagonal vent's bevel: six
+# straight runs of 42 deg between corner fans of 3 deg steps, taken as one cone 0.19 mm off the
+# runs' middles; Raspberry Pi 5 air-vent case, Duvdivan's report on #9)
+UNEVEN_MIN_DEG = 15         # deg: a facet spanning more than this round the axis ...
+UNEVEN_RATIO = 4.0          # ... and this many times the typical facet's span is a straight run
+UNEVEN_MIN_RUNS = 2         # runs that refuse a revolve patch of at least ...
+UNEVEN_MIN_FACETS = 8       # ... this many facets (a small candidate of 3-5 facets, one 34 deg and two
+                            # slivers, is a seed still growing: refused, a screw went 346 -> 998 faces)
+# (cones only: a chamfer round a polygon. A screw's thread-crest cylinders have long strips winding
+# round the axis that span 20-47 deg each though the surface is round; refused, 06_Screw 364 -> 540)
 
 # Loose pass (run last, on leftovers only; the approach of the stlToSolid project):
 # accept any patch the surface explains geometrically, without the outline and crease
@@ -126,7 +138,7 @@ def load_stl(path):
             mio.check_size(diag, float(np.abs(verts).max()))
             # (the weld's integer keys below overflow int64 past 9e14 mm)
             if float(np.abs(verts).max()) > 9e13:
-                raise mio.MeshError("This model's coordinates are too large for stl2curves' reader. "
+                raise mio.MeshError("This model's coordinates are too large for the reader. "
                                     "Scale it down in the program that made it (it may have been saved "
                                     "in the wrong unit), and export it again.")
     # corners joined on a WELD_GRID mm grid, which closes the hairline cracks of files that
@@ -662,7 +674,12 @@ def _on_axis(axis, P):
     """Cone/cylinder (line profile) or torus/sphere (circle profile) around a known axis."""
     base = Revolved(axis[0], axis[1], line=(1.0, 0))
     rho, z, _ = base.local(P)
-    if len(np.unique(np.round(np.c_[rho, z], 5), axis=0)) < 3:
+    # (two distinct profile points are enough for a line: a CAD export's chamfer or
+    # countersink is one ring of triangles between two circles, whose corners on the
+    # true axis all fall on just two points; asking three of them missed every such
+    # cone on a known axis, and the Pi 5 case's port corners went to tilted cylinders)
+    profile = len(np.unique(np.round(np.c_[rho, z], 5), axis=0))
+    if profile < 2:
         return None
     if np.ptp(z) > 1e-6:
         k, c0 = np.polyfit(z, rho, 1)
@@ -671,6 +688,8 @@ def _on_axis(axis, P):
         line = Revolved(axis[0], axis[1], line=(c0, k))
         if abs(k) < math.tan(math.radians(80)) and _fits(line, P):
             return line
+    if profile < 3:                                 # (a circle needs three)
+        return None
     c = _circle2d(rho, z)
     if c is None or c[2] > 1e4:
         return None
@@ -1272,9 +1291,8 @@ def analyze(pts, tris):
     done = []
     while True:
         # each round only tries the axes found since the last one
-        axes = [x for x in _distinct_axes(features, mesh)
-                if not any(abs(x[1] @ d) > math.cos(math.radians(0.5))
-                           and np.linalg.norm(np.cross(x[0] - a, d)) < TOL * 4 for a, d, _ in done)]
+        B, E = np.array([x[0] for x in done]).reshape(-1, 3), np.array([x[1] for x in done]).reshape(-1, 3)
+        axes = [x for x in _distinct_axes(features, mesh) if _same_axis(x[0], x[1], B, E) is None]
         if not axes:
             break
         done += axes
@@ -1583,7 +1601,8 @@ def _seed_pass(mesh, regions, how):
                     regions[k].free[:], regions[k].explored[:] = free, explored
                     regions[k].tube_fits = fits
                     results[k] = found
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             workers.broken()            # (then done here, from where they started)
             for k in jobs:
                 regions[k].free[:], regions[k].explored[:] = start[k]
@@ -2488,15 +2507,26 @@ def _distinct_axes(features, mesh=None):
             for g in big:
                 found.append((m.c, mesh.fn[g], m.r))
     axes = []
+    B, E = np.empty((len(found), 3)), np.empty((len(found), 3))
     for a, d, size in found:
         a = a - (a @ d) * d
-        for k, (b, e, reach) in enumerate(axes):
-            if abs(d @ e) > math.cos(math.radians(0.5)) and np.linalg.norm(np.cross(a - b, e)) < TOL * 4:
-                axes[k] = (b, e, max(reach, 2 * size + 3))
-                break
+        k = _same_axis(a, d, B[:len(axes)], E[:len(axes)])
+        if k is not None:
+            b, e, reach = axes[k]
+            axes[k] = (b, e, max(reach, 2 * size + 3))
         else:
+            B[len(axes)], E[len(axes)] = a, d
             axes.append((a, d, 2 * size + 3))
     return axes
+
+
+def _same_axis(a, d, B, E):
+    """The first of the axes (points B, directions E) that a through a, along d, lies on, or None.
+    (All at once: a grid with 2,100 small cylinders asked this of each about 4 million times, in 180 s.)"""
+    if not len(B):
+        return None
+    k = np.flatnonzero((np.abs(E @ d) > math.cos(math.radians(0.5))) & (np.linalg.norm(np.cross(a - B, E), axis=1) < TOL * 4))
+    return int(k[0]) if len(k) else None
 
 
 def _axis_pass(mesh, regions, axes, tol=None):
@@ -2582,6 +2612,31 @@ class Feature:
         return f"{self.label:<22} {self.detail}"
 
 
+def _uneven_steps(mesh, model, fids):
+    """Whether the facets of a revolve patch go round its axis in uneven steps: at least
+    UNEVEN_MIN_RUNS of its facets (of UNEVEN_MIN_FACETS or more) each spanning more than
+    UNEVEN_MIN_DEG and UNEVEN_RATIO times the typical facet's span (see UNEVEN_MIN_DEG).
+    A coarse round surface (an OpenSCAD 9-gon) has even steps."""
+    d = model.d
+    u = np.cross(d, [1.0, 0.0, 0.0] if abs(d[0]) < 0.9 else [0.0, 1.0, 0.0])
+    u /= np.linalg.norm(u)
+    v = np.cross(d, u)
+    spans = []
+    for f in fids:
+        q = mesh.pts[_uniq(mesh.tris[mesh.ftris[f]].ravel())] - model.a
+        ang = np.sort(np.arctan2(q @ v, q @ u))
+        if len(ang) < 2:
+            continue
+        # the facet's extent round the axis: the circle less its largest empty arc
+        gaps = np.diff(np.concatenate([ang, ang[:1] + TWO_PI]))
+        spans.append(TWO_PI - gaps.max())
+    if len(spans) < UNEVEN_MIN_FACETS:
+        return False
+    spans = np.asarray(spans)
+    big = spans > max(math.radians(UNEVEN_MIN_DEG), UNEVEN_RATIO * float(np.median(spans)))
+    return bool(big.sum() >= UNEVEN_MIN_RUNS)
+
+
 def _feature(mesh, model, fids, convex):
     tids = np.concatenate([mesh.ftris[f] for f in fids])
     T = mesh.tris[tids]
@@ -2601,6 +2656,8 @@ def _feature(mesh, model, fids, convex):
     if worst < 1e-5:
         return None
     if _loose and not _anchored and (worst > LOOSE_MAX_GAP or not _loose_support(mesh, fids, model.kind)):
+        return None
+    if isinstance(model, Revolved) and model.kind == "cone" and _uneven_steps(mesh, model, fids):
         return None
     base = dict(convex=convex, change=change, tolerance=0.5 * gain + 1e-3, facets=np.asarray(fids),
                 worst=worst)

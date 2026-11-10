@@ -80,6 +80,15 @@ def split_bodies(pts, tris):
     return groups
 
 
+def body_of(pts, tris):
+    """Which of split_bodies' groups each triangle is built in, -1 for one it drops as a stray."""
+    label = {}
+    for g, group in enumerate(split_bodies(pts, tris)):
+        for t in np.sort(group, axis=1).tolist():
+            label[tuple(t)] = g
+    return np.array([label.get(tuple(t), -1) for t in np.sort(tris, axis=1).tolist()])
+
+
 def _apart(pts, tris):
     """The mesh's pieces (no shared corners) in clusters whose bounding boxes overlap: a
     cavity or a body sunk into another stays with it, the rest are converted apart."""

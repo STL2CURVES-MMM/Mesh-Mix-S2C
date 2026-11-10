@@ -8,6 +8,8 @@ an N-sided patch spanning the area's outline (shared exactly with its neighbours
 passing through its mesh corners.
 """
 import copy
+from mmm import faults
+from mmm.fidelity import designed_flats
 import math
 from collections import deque
 
@@ -173,7 +175,7 @@ def add_blends(mesh, features):
     dropped.update(ext_parts)
     soft -= ext_taken
     free -= ext_taken
-    pieces =[p for area in _areas(mesh, soft, unit) for p in _freeform_pieces(mesh, area, unit)]
+    pieces =[p for area in _without_planes(mesh, soft, free, owner, unit) for p in _freeform_pieces(mesh, area, unit)]
     pieces = _absorb_strips(mesh, features, owner, pieces, ext_parts)
     pieces = _grown(mesh, pieces, soft, unit)
     for facets, model, dev in pieces:
@@ -377,7 +379,8 @@ def _transitions(mesh, features):
         from .features import corner_surface
         try:
             exact = corner_surface(mesh, facets)
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             exact = None
         if exact is not None:
             exact.corner_fit = True
@@ -416,7 +419,8 @@ def _exact(mesh, blend):
     from .features import corner_surface
     try:
         found = corner_surface(mesh, blend.facets)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
     if found is not None:
         found.corner_fit = True
@@ -444,7 +448,8 @@ def _exact_all(mesh, blends):
                     found.parts = tuple(blend.parts)   # (put back if its face can't be built)
                 out.append(found)
             return out
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             workers.broken()            # (then done here)
     return [_exact(mesh, f) for f in blends]
 
@@ -458,7 +463,8 @@ def _exact_job(job):
     saved, F._mesh_tol = F._mesh_tol, tol
     try:
         return F.corner_surface(mesh, facets)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
     finally:
         F._mesh_tol = saved
@@ -483,7 +489,8 @@ def _grow_exact(mesh, out):
                 from .features import corner_surface
                 try:
                     trial = corner_surface(mesh, np.r_[out[i].facets, g.facets])
-                except Exception:
+                except Exception as fault:
+                    faults.caught(fault)
                     trial = None
                 if trial is not None:
                     trial.corner_fit = True
@@ -605,7 +612,8 @@ def _rolled_ahead(mesh, features, pairs):
                                                 pair, pieces, F._mesh_tol))
                 for pair, pieces in pairs}
         return {pair: (True, job.result()) for pair, job in jobs.items()}
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         workers.broken()                # (then each worked out here)
         return {}
 
@@ -696,7 +704,8 @@ def merge(mesh, features, facets):
     merged = None
     try:
         best = _whole_region(mesh, Region(mesh, area))
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         best = None
     if best is not None and len(best[1]) == len(area):
         merged = best[0]
@@ -891,6 +900,21 @@ def _areas(mesh, free, unit):
                 stack += u
         out.append(np.array(sorted(area)))
     return out
+
+
+def _without_planes(mesh, soft, free, owner, unit):
+    """The smooth areas (_areas), without the designed planes in them, which go back to the flat faces (out of soft and
+    free, so nothing takes them later).
+
+    "Small" is measured against the part's biggest facet, so one big floor makes every other flat facet small, and
+    where they run smoothly into a blend they joined it as one freeform area. On test17 five planes of 127 mm2, 95% of their
+    areas, went to B-splines, and of the 2,543 such planes checked against the designers' files, 2,394 (40,390 mm2) were
+    open to this (see fidelity.designed_flats)."""
+    designed = designed_flats(mesh.pts, mesh.tris, mesh.tn, mesh.tarea, mesh.facet_of, len(mesh.farea))
+    planes = {f for f in soft if owner[f] < 0 and designed[f]}
+    soft -= planes
+    free -= planes
+    return _areas(mesh, soft, unit)
 
 
 def _regions(mesh, free, unit, owner_of):
