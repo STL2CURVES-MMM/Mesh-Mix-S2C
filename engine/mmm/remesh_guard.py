@@ -34,6 +34,7 @@ program itself, started with --remesh-child. The program's entry point must call
 child_main() for that flag before anything else (MMM's mmm_engine.py; packaging work).
 """
 import json
+from . import faults
 import os
 import re
 import subprocess
@@ -140,7 +141,7 @@ def child_main(argv):
         import resource
 
         resource.setrlimit(resource.RLIMIT_CPU, (CHILD_CPU_S, CHILD_CPU_S + 5))
-    except Exception:
+    except (ImportError, OSError, ValueError):
         pass                    # (Windows: the job object does this)
     import pynanoinstantmeshes as nim
 
@@ -222,8 +223,8 @@ def _keep_with_us(p):
                 return
             _job = job
         k.AssignProcessToJobObject(wintypes.HANDLE(_job), wintypes.HANDLE(int(p._handle)))
-    except Exception:
-        pass
+    except Exception as fault:
+        faults.caught(fault)
 
 
 def _usage(p):
@@ -259,7 +260,8 @@ def _usage(p):
         for x in parts:
             cpu = cpu * 60 + x
         return cpu, float(out[1]) / 1024
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None, None
 
 
@@ -352,12 +354,12 @@ def run_child(V, F, tv, crease_deg=0.0, command=None):
             try:
                 p.kill()
                 p.wait(10)
-            except Exception:
-                pass
+            except Exception as fault:
+                faults.caught(fault)
         try:
             p.stdout.close()
-        except Exception:
-            pass
+        except Exception as fault:
+            faults.caught(fault)
         for f in (src, dst):
             try:
                 os.remove(f)

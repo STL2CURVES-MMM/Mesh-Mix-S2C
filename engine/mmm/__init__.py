@@ -18,5 +18,5 @@ def build_id():
 
         return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(__file__),
                               capture_output=True, text=True, timeout=10).stdout.strip()
-    except Exception:
+    except Exception:  # not engine work: a label for reports
         return ""

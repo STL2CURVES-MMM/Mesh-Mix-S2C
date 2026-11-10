@@ -10,6 +10,8 @@ The spine is sampled from those pieces themselves (a torus's centre circle,
 a cylinder's axis), so it comes from measurements of the mesh, and the
 radius from the corners, which lie on the fillet."""
 import numpy as np
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 
 from .sweep import ProfileCurve, SweptSurface, _is_loop, _on_polyline, order_curve, samples_for
 
@@ -184,7 +186,8 @@ def fit_pipe(C, X, r, tol, margin=0.05):
         closed = len(O) >= 12 and gap < min(4 * r, 0.1 * np.linalg.norm(np.diff(O, axis=0), axis=1).sum())
     try:
         spine = ProfileCurve(O, 4 * tol, closed=closed)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None, np.inf
     rng = (0.0, 1.0) if closed else (-margin, 1.0 + margin)
     surf = PipeSurface(spine, r, rng, (0.0, 1.0), tol)
@@ -208,7 +211,8 @@ def fit_pipe(C, X, r, tol, margin=0.05):
             break
         try:
             spine = ProfileCurve(P2, tol, closed=closed)
-        except Exception:
+        except Exception as fault:
+            faults.caught(fault)
             break
         surf = PipeSurface(spine, surf.r, rng, (0.0, 1.0), tol)
         d, s = _on_polyline(surf.tree, surf.SS, surf.ss, X, False)

@@ -15,6 +15,27 @@ It's made for real-world files, including messy ones: CAD exports, coarse OpenSC
 
 <a href="https://buymeacoffee.com/tunathefirst"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=%E2%98%95&slug=TunaTheFirst&button_colour=5F7FFF&font_colour=ffffff&font_family=Poppins&outline_colour=000000&coffee_colour=FFDD00" alt="Buy Me a Coffee" height="40"></a>
 
+## In development since 2.0.1 (not released yet)
+
+The code on `main` is ahead of the 2.0.1 download: it has the engine work done since then, which will ship as 2.0.2. Build it from source (below) to try it now. Daily progress reports are in the pinned **Progress reports** issue.
+
+Measured on 387 real parts of our test set (no scans, no duplicates, each STEP file read back and judged), against 2.0.1:
+
+| | 2.0.1 | In development |
+|---|---|---|
+| Detail lost (summed over the parts) | 14.3 | **3.3** |
+| Faces | **87,309** | 93,468 |
+| Conversion time | **6.4 h** | 10.4 h |
+
+The extra faces are mostly detail 2.0.1 left out. Still to do before 2.0.2: four parts that come out invalid (2.0.1: none), six saved as "poor" or timed out, and the extra time.
+
+- **Surfaces that agree with each other:** directions that agree to within the fit's noise become one direction, and the coordinate axes when they're that close. Faces at the same place share one level, and a fillet that nearly touches its neighbour touches it exactly. A CAD program then finds real edges to edit, not tiny gaps.
+- **Fewer loose edges and tiny faces:** pieces of one surface that the mesh's triangles had split are pooled back into it, so the parts edit more cleanly in CAD programs.
+- **Closer to the mesh:** threads, fillets, holes and freeform areas follow the mesh more closely.
+- **Files every program reads the same way:** no surface of revolution is saved in the form some CAD programs misread (a body could come out with the wrong volume), and the saved file is read back and must be sound solids before it counts.
+- **Sturdier:** OpenCASCADE's own checks run in a watched helper process, so a crash inside one fails only that face, not the whole conversion. Each error is recorded and reported plainly.
+- **Precise is retired:** the engine converts it as Auto and says so. Auto's checks now cover what Precise was for. The app's menu still lists Precise until 2.0.2.
+
 ## What's new in 2.0
 
 Measured on our test set of 150 real parts (CAD exports, community prints, coarse OpenSCAD models, scans and slicer projects), with each STEP file read back and judged strictly: **144 of 150 come out good** (a valid closed solid, its volume within 1% of the mesh's, and 99% of the surface within 0.1 mm both ways). On the parts both engines were run on, 2.0 fixes 18 of the 22 that 1.6.0 got wrong and uses **31% fewer faces** on the ones both get right. A USB plug's M12 thread went from 1,341 faces to 45; a worm gear from 358 to 23.
@@ -117,7 +138,7 @@ If a conversion fails, the app says what went wrong and **why**, in plain words 
 | **Auto** | Everything | Checks every part and picks CAD or Smooth for it. After converting, the preset Auto used is marked **Auto used** in its own color. |
 | **CAD** | Mechanical parts, brackets, enclosures, wheels | Planes, holes, cylinders, cones, fillets (tori) and spheres as exact CAD faces you can select, measure and edit. Anything else becomes fitted NURBS. |
 | **Smooth** | Sculpts, figurines, organic shapes, scans | Large smooth NURBS surfaces fitted to the mesh. |
-| **Precise** | When accuracy matters most | Like Auto, but with a tighter tolerance and more detail. |
+| **Precise** | When accuracy matters most | Like Auto, but with a tighter tolerance and more detail. (Retired in the development code on `main`: converted as Auto.) |
 
 ### 3MF projects (Bambu Studio, OrcaSlicer, Snapmaker Orca, PrusaSlicer)
 
@@ -190,7 +211,7 @@ Pushing a tag such as `v2.0.1` (matching `VERSION`), or running the workflow wit
 
 ### How the engine works (short version)
 
-- **Merged engine** (`engine/mms2c/merged.py`), for Auto and CAD: stl2curves' front end mends the mesh and finds screw threads, fillets, radii at their design size, freeform patches and pipes along curved edges. Each of these becomes a region with a locked surface in the segmentation below, which covers what's left; then the steps below carry on. The descriptions below come from Manifold Mesh Mix's engine (`engine/mmm/`), which also does Smooth and Precise alone.
+- **Merged engine** (`engine/mms2c/merged.py`), for Auto and CAD: stl2curves' front end mends the mesh and finds screw threads, fillets, radii at their design size, freeform patches and pipes along curved edges. Each of these becomes a region with a locked surface in the segmentation below, which covers what's left; then the steps below carry on. Before faces are built, surfaces are settled with each other (`engine/mmm/regular.py`: directions that agree made one, levels shared, fillets and cones made to touch their neighbours exactly), and pieces of one surface are pooled back into it (`cad.py`, `_pool_pieces`). The descriptions below come from Manifold Mesh Mix's engine (`engine/mmm/`), which also does Smooth and Precise alone.
 - **Mesh check** (`engine/mmm/meshcheck.py`): runs on every part before converting. Each problem has its own detector (zero-volume pieces and coincident opposite sheets for internal walls, union-find over corner fans for pinched points, a uniform grid with exact triangle–triangle tests for self-intersections, Manifold booleans for overlapping pieces) and is fixed in an order where each fix makes the next one easier. MeshFix repairs crossing surfaces, but its result is compared with the original patch by patch, using winding numbers to tell inside from outside, and only kept where no material is added or removed. A second pass (`verify_bodies`) checks the fixed mesh again without fixing anything; the engine's `fix` command saves the fixed mesh.
 
 - **CAD:** the mesh is segmented by region growing with robust, area-weighted fits of planes, cylinders, cones, spheres and tori. Simpler surface types are preferred, and fits are checked between mesh vertices, not just at them, within the mesh's own faceting (measured from its curved areas; shallow creases don't count). Coarse cylinders made of a few long facets (typical of OpenSCAD) are recognised from the edges that run along them.

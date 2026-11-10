@@ -32,6 +32,7 @@ MAX_INTERVALS = 128     # knot intervals along each direction at most
 MIN_SPAN = 0.25         # mm: knots no closer than this
 SMOOTHING = 1e-7        # penalty weight: only settles the surface where corners are sparse
 SAMPLE_WEIGHT = 0.01    # weight of points on the facets between their corners (corners: 1)
+LATTICE_MAX = 16        # intervals along a triangle's edge in the even lattice of those points; longer ones go in rows
 RIM_WEIGHT = 10.0       # weight of the corners on the area's outline
 MARGIN = 0.05           # share of the area's extent (plus MARGIN_MM) the surface reaches past it
 MARGIN_MM = 0.5
@@ -192,18 +193,42 @@ def _solve(u, v, h, tu, tv, w):
     return c.reshape(mu, mv), A
 
 
+def _long_samples(tri, step):
+    """Points on one long triangle, in rows along its longest edge, about half a knot apart both
+    ways. Their number goes with its area, not the square of its length: a 120 mm sliver 0.05 mm
+    wide gets one row of a few hundred points, where a lattice over it would hold many thousands."""
+    edges = np.linalg.norm(tri - tri[[1, 2, 0]], axis=1)
+    i = int(np.argmax(edges))
+    o, end, apex = tri[i], tri[(i + 1) % 3], tri[(i + 2) % 3]
+    along = (end - o) / edges[i]
+    height = np.linalg.norm((apex - o) - ((apex - o) @ along) * along)
+    rows = max(1, math.ceil(2 * height / step))
+    out = []
+    for r in range(rows):       # (the last row would be the apex alone, a corner)
+        s = r / rows
+        left, right = o + s * (apex - o), end + s * (apex - end)
+        n = max(2, math.ceil(2 * np.linalg.norm(right - left) / step))
+        w = np.linspace(0, 1, n + 1)[1:-1] if r == 0 else np.linspace(0, 1, n + 1)      # (not the corners)
+        out.append(left + w[:, None] * (right - left))
+    return np.vstack(out)
+
+
 def _inner_samples(corners, step):
     """Points on the triangles (corners (n, 3, 3)) no further apart than about half the
     knot spacing (at least each one's middle and edge midpoints): a long sliver of a
-    triangle leaves the surface free to bow between its far-apart corners otherwise."""
+    triangle leaves the surface free to bow between its far-apart corners otherwise.
+    A knot span with neither corners nor points in it is held by nothing: Solar Panel Bracket's
+    120 mm strip, all its corners at its two ends and 51 spans along it, dipped 0.69 mm where
+    points on the facets stood 7.5 mm apart and the knots 2.4 mm."""
     size = np.linalg.norm(corners - corners[:, [1, 2, 0]], axis=2).max(axis=1)
-    out = []
-    for n in np.unique(np.clip(np.ceil(2 * size / step), 2, 16).astype(int)):
+    count = np.ceil(2 * size / step).astype(int)
+    out = [_long_samples(tri, step) for tri in corners[count > LATTICE_MAX]]
+    count = np.maximum(count, 2)
+    for n in np.unique(count[count <= LATTICE_MAX]):
         a, b = np.meshgrid(np.arange(n + 1), np.arange(n + 1), indexing="ij")
         keep = (a + b <= n) & (a < n) & (b < n) & (a + b > 0)      # (not the corners)
         bary = np.c_[a[keep], b[keep], n - a[keep] - b[keep]] / n
-        group = corners[np.clip(np.ceil(2 * size / step), 2, 16).astype(int) == n]
-        out.append(np.einsum("kj,tjd->tkd", bary, group).reshape(-1, 3))
+        out.append(np.einsum("kj,tjd->tkd", bary, corners[count == n]).reshape(-1, 3))
     return np.vstack(out)
 
 

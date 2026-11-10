@@ -5,12 +5,17 @@ between neighbouring faces, so the result is a watertight shell without any
 sewing step.
 """
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-04: a border that can't be made fails its own faces, not the whole body (chain_edges_or_fail).
+# Modified 2026-11-03 (edits): a step after the edges are made and before the faces (edges_made).
+# Modified 2026-11-02: a segment left out of a polyline no longer breaks the wire (_polyline_edges).
 # Modified 2026-10-28 for the stl2curves merged engine (group C): a region with no boundary
 # loops whose surface can't make a face without one is recorded as failed instead of being
 # left out silently, so the caller replaces it like any other face that won't build.
 # Modified 2026-10-28: a polyline skips a segment between two vertices lying within each
 # other's tolerance, which no edge can join (it failed every method on a repeater-mount body).
 import numpy as np
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace
@@ -70,6 +75,7 @@ class BRepAssembler:
         self._verts = {}
         self.vtol = np.zeros(len(V))
         self.failed_regions = []
+        self.broken_borders = set()
 
     # ------------------------------------------------------------------
     def compute_vertex_tolerances(self):
@@ -159,6 +165,23 @@ class BRepAssembler:
         off = np.linalg.norm(Q - np.outer(t, d), axis=1)
         return off.max() <= self.tol and (t > 0).all() and (t < L).all()
 
+    def chain_edges_or_fail(self, chain):
+        """A border's edges. One that can't be made fails the faces either side of it, which the rounds then replace as
+        they do any broken face: it used to end the whole body (torque-indicator: one border whose two ends are one point, and the
+        part went to 1,823 flat faces, invalid, against 178)."""
+        try:
+            self.build_chain_edges(chain)
+        except Exception as e:
+            faults.caught(e)
+            chain.edges = []
+            for r in (chain.left, chain.right):
+                if r >= 0:
+                    self.broken_borders.add(r)
+                    self.failed_regions.append((r, str(e)))
+
+    def edges_made(self):
+        """Called once every border has its edges, before any face is made."""
+
     def build_chain_edges(self, chain):
         """Default: one line if straight, otherwise a polyline."""
         if self.chain_is_straight(chain):
@@ -177,17 +200,28 @@ class BRepAssembler:
         return e
 
     def _polyline_edges(self, verts):
-        out = []
-        for a, b in zip(verts[:-1], verts[1:]):
-            if a == b:
-                continue
-            # (two vertices lying within each other's tolerance are one point, which no edge
-            # can join: the segment is left out; asked for, it failed every method on a body
-            # of the repeater mount, and with it the whole file)
-            if np.linalg.norm(self.V[a] - self.V[b]) <= max(self.vtol[a], self.vtol[b], MIN_TOL):
-                continue
-            out.append(self._line_edge(a, b))
-        return out
+        def same(i, j):
+            return i == j or np.linalg.norm(self.V[i] - self.V[j]) <= max(self.vtol[i], self.vtol[j], MIN_TOL)
+
+        # (two vertices lying within each other's tolerance are one point, which no edge can
+        # join: the later one is left out and the next edge starts from the earlier, so the
+        # edges still share their vertices; asked for, such a segment failed every method on a
+        # body of the repeater mount, and with it the whole file. Leaving out the segment alone
+        # left a wire with a break in it: on Rak Uni a 0.002 mm one made a 398 mm2 plane invalid,
+        # and it became freeform patches)
+        kept = [verts[0]]
+        for v in verts[1:]:
+            if not same(kept[-1], v):
+                kept.append(v)
+        # (the chain has to end on its own last vertex, which its neighbours share)
+        # (only the last kept vertex gives way to it: one corner of a tolerance of 20 mm, seen on
+        # Rak N, would otherwise swallow the whole chain, and the file then crashed the reader)
+        if kept[-1] != verts[-1]:
+            if len(kept) > 1:
+                kept[-1] = verts[-1]
+            elif kept[0] != verts[-1]:
+                kept.append(verts[-1])
+        return [self._line_edge(a, b) for a, b in zip(kept[:-1], kept[1:])]
 
     # ------------------------------------------------------------------
     def wire_for_loop(self, loop):
@@ -238,14 +272,17 @@ class BRepAssembler:
         self.compute_vertex_tolerances()
         nch = len(rg.chains)
         for k, c in enumerate(rg.chains):
-            self.build_chain_edges(c)
+            self.chain_edges_or_fail(c)
             if progress and k % 2000 == 0:
                 progress(0.3 * k / max(1, nch))
+        self.edges_made()
         faces = []
         self.region_faces = {}
         nr = rg.n_regions
         held = np.bincount(rg.labels[rg.labels >= 0], minlength=nr) > 0
         for r in range(nr):
+            if r in self.broken_borders:
+                continue
             if not rg.region_loops[r] and not self.closed_region_ok(r):
                 # (a region with triangles but no boundary is a whole closed surface;
                 # left out, it left a hole in the shell that nothing reported)
@@ -257,6 +294,7 @@ class BRepAssembler:
                 faces.append(f)
                 self.region_faces[r] = f
             except Exception as e:  # keep going; caller decides what to do
+                faults.caught(e)
                 self.failed_regions.append((r, str(e)))
             if progress and r % 2000 == 0:
                 progress(0.3 + 0.7 * r / max(1, nr))

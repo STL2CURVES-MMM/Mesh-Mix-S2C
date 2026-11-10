@@ -21,6 +21,10 @@ worst spot is, so a conversion can be rejected (and another method tried)
 before it is saved.
 """
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-04: a far point of the shape's triangles is measured from its own trimmed face, not from the untrimmed surface (_Faces.on_face).
+# Modified 2026-11-04: the final check meshes every edge at the smallest tolerance, as the fit check does (compare).
+# Modified 2026-11-04: designed_flats, how the mesh itself tells a designed plane from a facet of a curve.
+# Modified 2026-11-03 (planes): the percentiles judge each point against the mesh's coarseness where it is.
 # Modified 2026-10-25 for the stl2curves merged engine: tessellate() meshes each face from
 # a copy of its own (no edges shared, copied in memory after one round trip), 166x quicker
 # on one body where OpenCASCADE ground on. The KD-tree queries use every core (workers=-1;
@@ -33,7 +37,12 @@ before it is saved.
 # (_bend_continues): a lone crease (a 30-degree chamfer between two big flat faces) made a
 # CAD part finely meshed elsewhere look tessellated to 0.24 mm (toolbox bottom and top),
 # so the engine took a bulging freeform face across the crease for right.
+# Modified 2026-11-02: tessellate meshes through meshguard, and says which faces came out rougher
+# than asked or not at all (notes); judge and Verdict carry that, so the verdict says what it stands on.
+# Broad handlers call faults.caught.
 import numpy as np
+from . import faults
+from . import meshguard
 from scipy.spatial import cKDTree
 
 # a surface point "faces the wrong way" when its direction differs by more
@@ -71,8 +80,8 @@ def _round_trip(shape):
         out = TopoDS_Shape()
         if BRepTools.Read_s(out, path, BRep_Builder()) and not out.IsNull():
             return out
-    except Exception:
-        pass
+    except Exception as fault:
+        faults.caught(fault)
     finally:
         try:
             os.remove(path)
@@ -142,7 +151,8 @@ def _loosen_far_edges(shape, limit, n=24):
                 c2 = BRepAdaptor_Curve2d(edge, face)
                 ts = np.linspace(c3.FirstParameter(), c3.LastParameter(), n)
                 gap = max(surf.Value(*c2.Value(t).Coord()).Distance(c3.Value(t)) for t in ts)
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 continue
             if gap > limit and gap > BRep_Tool.Tolerance_s(edge):
                 B.UpdateEdge(edge, 1.1 * gap)
@@ -180,13 +190,16 @@ def _onto_surface(face, P):
         try:
             uv = sas.ValueOfUV(gp_Pnt(*p), 1e-7)
             out[i] = surf.Value(uv.X(), uv.Y()).Coord()
-        except Exception:
-            pass
+        except Exception as fault:
+            faults.caught(fault)
     return out
 
 
-def tessellate(shape, deflection, angle=0.25, loose=None):
+def tessellate(shape, deflection, angle=0.25, loose=None, notes=None):
     """The shape's faces as triangles: (V, F, face index of each triangle).
+    notes (a dict, if given): "coarse" gets the faces the mesher only finishes coarser than
+    asked (face index -> what they were meshed at), and "unmeshed" those it doesn't finish
+    at all: see meshguard.
 
     OpenCASCADE never meshes a face finer than its tolerance, and converted
     faces carry the fit tolerance: a sphere asked for 0.005 mm came out
@@ -195,7 +208,6 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
     also leaves no fine mesh on the shape itself for the 3D preview to
     reuse); faces that copy can't mesh are meshed from the shape."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.ShapeFix import ShapeFix_ShapeTolerance
     from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
     from OCP.TopExp import TopExp_Explorer
@@ -244,7 +256,9 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
     # (the copy holds the faces that aren't blown up, in order)
     kept = [fi for fi, b in enumerate(blown) if not b]
     touched_orig = {kept[k] for k in touched if k < len(kept)}
-    BRepMesh_IncrementalMesh(copy, deflection, False, angle, True)
+    meshed = meshguard.mesh(copy, deflection, False, angle, True)
+    coarse = {kept[k]: d for k, d in meshed.coarse.items()}
+    unmeshed = {kept[k] for k in meshed.unmeshed}
     copied = TopExp_Explorer(copy, TopAbs_FACE)
     retry = []
     Vs, Fs, ids = [], [], []
@@ -264,9 +278,14 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
             face = orig
             for k in range(6):
                 BRepTools.Clean_s(face)
-                BRepMesh_IncrementalMesh(face, deflection * 4 ** k, False, angle, True)
+                again = meshguard.mesh(face, deflection * 4 ** k, False, angle, True)
                 tri = BRep_Tool.Triangulation_s(face, loc)
                 if tri is not None and tri.NbTriangles() > 0:
+                    # (only what the guard had to stop counts: the ordinary retries here, of a
+                    # face the mesher gives up on at once, measure as they always have)
+                    if again:
+                        coarse[fi] = again.coarse.get(0, deflection * 4 ** k)
+                    unmeshed.discard(fi)
                     break
             retry.append(face)
         if tri is not None and tri.NbTriangles() > 0:
@@ -296,12 +315,15 @@ def tessellate(shape, deflection, angle=0.25, loose=None):
     # anything else that meshes it, would reuse it)
     for face in retry:
         BRepTools.Clean_s(face)
+    if notes is not None:
+        notes["coarse"] = coarse
+        notes["unmeshed"] = sorted(unmeshed)
     if not Vs:
         return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64)
     return np.vstack(Vs), np.vstack(Fs), np.concatenate(ids)
 
 
-def tessellate_faces(faces, deflection, angle=0.25, loose=None):
+def tessellate_faces(faces, deflection, angle=0.25, loose=None, notes=None):
     """Like tessellate, for a list of faces: (V, F, index into ``faces`` of
     each triangle)."""
     from OCP.BRep import BRep_Builder
@@ -313,7 +335,7 @@ def tessellate_faces(faces, deflection, angle=0.25, loose=None):
     for f in faces:
         B.Add(comp, f)
     # a compound keeps its faces in the order they were added
-    return tessellate(comp, deflection, angle, loose)
+    return tessellate(comp, deflection, angle, loose, notes)
 
 
 def _tri_normals(V, F):
@@ -356,17 +378,59 @@ def chord_deflection(N, A, f, g, L, tiny=None):
     the edge bend again the same way round (_bend_continues).
 
     Returns (typical, high): the 95th and 99.5th percentiles."""
+    return chord_stats(N, A, f, g, L, tiny)[:2]
+
+
+def chord_stats(N, A, f, g, L, tiny=None):
+    """chord_deflection's (typical, high) and the turn of an ordinary chord, in radians: how far the
+    normal turns across an edge, at the same 95th percentile by length."""
     th = np.arccos(np.clip((N[f] * N[g]).sum(1), -1, 1))
     smooth = (th > np.radians(1.0)) & (th < np.radians(40.0))
     if tiny is not None:
         smooth &= ~tiny[f] & ~tiny[g]
     smooth &= _bend_continues(N, A, f, g, th, smooth)
     if smooth.sum() < 10:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     Ls = np.maximum(L, 1e-30)
     sag = np.minimum(2 * A[f] / Ls, 2 * A[g] / Ls) * th / 8.0
     return (weighted_percentile(sag[smooth], L[smooth], 95),
-            weighted_percentile(sag[smooth], L[smooth], 99.5))
+            weighted_percentile(sag[smooth], L[smooth], 99.5),
+            weighted_percentile(th[smooth], L[smooth], 95))
+
+
+def designed_flats(V, F, N, A, group, n_groups):
+    """For each group of triangles, each group flat: is it a designed plane, by the mesh's own showing? Yes unless it reads
+    as one facet of something curved, most of its outline bending smoothly (FLAT_BEND) into a neighbour of like area
+    (FLAT_LIKE). A coarse curve's strips bend into each other and are alike; a real flat is usually many times wider than
+    the strips of the fillet beside it. A lone triangle says nothing, being flat whatever it lies on, and a very small
+    group stays out (FLAT_LEAST). Triangles of no group have group -1.
+
+    Checked against the designers' own STEP files. Of 4,052 flat facets on 110 parts that could join a freeform area (2,543
+    planes, 1,509 curved), it calls 2,432 planes right, 93 wrong (227 mm2 against 41,394) and 111 planes curved. Of the 112
+    big flat pieces MMM's clusters made into freeform cells on 33 parts, all planes, it calls 102 right and none wrong."""
+    T = np.asarray(F)
+    E = np.sort(np.vstack([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1)
+    who = np.tile(group, 3)
+    tri = np.tile(np.arange(len(T)), 3)
+    order = np.lexsort((E[:, 1], E[:, 0]))
+    E, who, tri = E[order], who[order], tri[order]
+    at = np.nonzero((E[1:] == E[:-1]).all(axis=1) & (who[1:] != who[:-1]) & (who[1:] >= 0) & (who[:-1] >= 0))[0]
+    a, b = who[at], who[at + 1]
+    length = np.linalg.norm(V[E[at, 0]] - V[E[at, 1]], axis=1)
+    bend = np.degrees(np.arccos(np.clip((N[tri[at]] * N[tri[at + 1]]).sum(axis=1), -1, 1)))
+    bent = (bend >= FLAT_BEND[0]) & (bend <= FLAT_BEND[1])
+    a, b = np.r_[a, b], np.r_[b, a]
+    length, bent = np.r_[length, length], np.r_[bent, bent]
+    has = group >= 0
+    area = np.bincount(group[has], A[has], n_groups)
+    count = np.bincount(group[has], minlength=n_groups)
+    around = np.bincount(a, length, n_groups)
+    smooth = np.bincount(a[bent], length[bent], n_groups)
+    size = area[b] / np.maximum(area[a], 1e-30)
+    alike = np.zeros(n_groups, dtype=bool)
+    alike[a[bent & (size >= 1 / FLAT_LIKE) & (size <= FLAT_LIKE)]] = True
+    curved = alike & (smooth >= FLAT_OUTLINE * around)
+    return (count >= FLAT_TRIS) & (area >= max(FLAT_LEAST[0], FLAT_LEAST[1] * float(A.sum()))) & ~curved
 
 
 def _bend_continues(N, A, f, g, th, bent):
@@ -874,6 +938,15 @@ class Verdict:
         self.local = float(r.get("local_max", 0.0))
         self.score = -p99 - 0.25 * p999 - 200.0 * ww - 0.25 * max(0.0, self.local - self.LOCAL_K)
         self.certainty, self.doubt = self._certainty(p99, p999, ww)
+        # What the comparison stands on. A face measured coarser than asked may look further
+        # off than it is; a face with no triangles at all was measured only from the mesh's
+        # side, so what it adds that the mesh hasn't isn't seen, and a face the mesher can't
+        # finish at any fineness is a defect a CAD program may trip on too.
+        if r.get("unmeshed_faces"):
+            self.ok = False
+            self.certainty, self.doubt = 0.0, f"{r['unmeshed_faces']} face(s) couldn't be meshed to measure them"
+        elif r.get("coarse_faces") and self.certainty > 0.4:
+            self.certainty, self.doubt = 0.4, f"{r['coarse_faces']} face(s) could only be measured coarsely"
 
     def _certainty(self, p99, p999, ww):
         """How sure the verdict is (0 to 1), and why not (in words)."""
@@ -1075,6 +1148,11 @@ def _coherent(P, flags, rho, k=48):
 
 # at most this many points over the limit are measured again exactly
 # (a few milliseconds each)
+FLAT_BEND = (0.05, 30.0)  # degrees: a bend between flat groups that reads as curvature (designed_flats)
+FLAT_LIKE = 3.0     # a neighbour within this factor of a group's area, either way, is of like size
+FLAT_OUTLINE = 0.5  # share of a group's outline that must bend smoothly for it to read as a facet of a curve
+FLAT_TRIS = 2       # triangles at least in a designed plane
+FLAT_LEAST = (0.25, 2e-5)   # mm2, and share of the mesh's area: smaller flat groups aren't asked
 EXACT_CAP = 2000
 
 
@@ -1164,6 +1242,23 @@ class _Faces:
         return on, N
 
 
+    def on_face(self, fids, X, prec):
+        """Each point's nearest point on its own face ``fids[i]``, inside the face's outline, and the surface's outward
+        direction there. OpenCascade's mesher can spill past a face's outline, and a point out there laid onto the
+        untrimmed surface stays out there: Side 40x40's r 35 wall, whose triangles stray 6.4 mm while the face itself is
+        0.016 mm from the mesh, sent the whole part to 3,430 flat faces. A face that really leaves the mesh is as far off here."""
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+        from OCP.gp import gp_Pnt
+
+        on = np.array(X, dtype=float)
+        for i, (fi, x) in enumerate(zip(fids, X)):
+            ds = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, x))).Vertex(), self.faces[fi])
+            if ds.IsDone() and ds.NbSolution() > 0:
+                on[i] = ds.PointOnShape2(1).Coord()
+        return on, self.project(fids, on, prec)[1]
+
+
 def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     """Compares a converted shape with the mesh pieces it came from
     (``meshes``: list of (V, F) with outward-facing triangles).
@@ -1196,7 +1291,12 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     M, MN, spacing = mesh_surface(MV, MF)
     kind = mesh_kind(M, tol)
     allow = max(tol, M.deflection, M.noise)
-    SV, SF, owner = tessellate(shape, tol * (0.125 if fine else 0.25), loose=4 * tol)
+    notes = {}
+    # (every edge at the smallest tolerance, as in the fit check: OpenCASCADE meshes a face no finer than its edges' tolerance,
+    # so one edge 4 tolerances off a big freeform face, given that as its tolerance, coarsened the whole face. On a turtle's shell
+    # that was 24,836 triangles against 137,216, 92% of the mesh within twice the tolerance against a true 99.8%, and the
+    # part went to 6,132 flat faces instead of 151. The endless meshing that loosening was for is meshguard's to stop now.)
+    SV, SF, owner = tessellate(shape, tol * (0.125 if fine else 0.25), notes=notes)
     if len(SF) == 0:
         return {"empty": True}
     S = Surface(SV, SF, spacing, rng)
@@ -1237,11 +1337,11 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     d_sm, mtri = M.nearest(Q, exact_above=0.5 * allow)
     SN = S.normals[qtri]
     # a sample over the limit that isn't on its face (it lies on such a
-    # triangle) is laid onto it and measured from there
+    # triangle, or past the face's outline) is laid onto it and measured from there
     over = np.argsort(-d_sm)[:EXACT_CAP]
     over = over[d_sm[over] > allow]
     if len(over):
-        on, N = faces.project(owner[qtri[over]], Q[over], prec)
+        on, N = faces.on_face(owner[qtri[over]], Q[over], prec)
         off = (np.linalg.norm(on - Q[over], axis=1) > 0.5 * allow) & (np.linalg.norm(N, axis=1) > 0.5)
         if off.any():
             moved = over[off]
@@ -1275,11 +1375,22 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
     loc_ms = d_ms / np.maximum(allow, M.local_dev[ptri])
     loc_sm = d_sm / np.maximum(allow, M.local_dev[mtri])
     local_max = float(max(loc_ms.max() if len(loc_ms) else 0.0, loc_sm.max() if len(loc_sm) else 0.0))
+    # The percentiles too judge each point against the coarseness of the mesh where it is, as the
+    # tolerance grows to a whole coarse mesh's deflection (mesh_kind): a true curve stands off a
+    # big flat triangle by that triangle's own sag. On Solar Panel Bracket Large a cylinder through
+    # the corners of two 30 mm2 triangles, mesh corners on it to 0.01 mm, stood 0.12 mm off their
+    # middles, 1.5% of the body beyond twice the tolerance, at the limit by chance: any small change
+    # sent the whole body to flat facets (511 faces, or 1,520). 3.5 times the coarseness is still
+    # a miss (local_max, LOCAL_K).
+    eq_ms = loc_ms * allow
+    eq_sm = loc_sm * allow
     k = int(np.argmax(d_ms)) if len(d_ms) else 0
     k2 = int(np.argmax(d_sm)) if len(d_sm) else 0
     worst, worst_d = (P[k], float(d_ms[k])) if d_ms[k] >= d_sm[k2] else (Q[k2], float(d_sm[k2]))
     return {
         "empty": False,
+        "coarse_faces": len(notes["coarse"]),
+        "unmeshed_faces": len(notes["unmeshed"]),
         "tol": tol,
         "allow": allow,
         "mesh_kind": kind,
@@ -1287,9 +1398,9 @@ def compare(shape, meshes, tol, n_points=None, seed=0, fine=False):
         "deflection": M.deflection,
         "n_points": int(len(P)),
         "diag": diag,
-        "to_shape": {"p50": float(np.median(d_ms)), "p99": float(np.percentile(d_ms, 99)),
-                     "p999": float(np.percentile(d_ms, 99.9)), "max": float(d_ms.max())},
-        "to_mesh": {"p99": float(np.percentile(d_sm, 99)), "p999": float(np.percentile(d_sm, 99.9)),
+        "to_shape": {"p50": float(np.median(d_ms)), "p99": float(np.percentile(eq_ms, 99)),
+                     "p999": float(np.percentile(eq_ms, 99.9)), "max": float(d_ms.max())},
+        "to_mesh": {"p99": float(np.percentile(eq_sm, 99)), "p999": float(np.percentile(eq_sm, 99.9)),
                     "max": float(d_sm.max())},
         "within": float(np.mean(d_ms <= allow)),
         "within2": float(np.mean(np.maximum(d_ms, 0) <= 2 * allow)),

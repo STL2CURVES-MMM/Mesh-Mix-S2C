@@ -6,11 +6,20 @@ waits. Only the main process reports (workers only help within a step).
 import time
 
 _now = {"step": "", "since": 0.0, "within": ""}
+_listener = None
+
+
+def listen(tell):
+    """tell(text) hears each step as it starts, for what shows steps rather than asking; None stops it."""
+    global _listener
+    _listener = tell
 
 
 def step(text):
     """The conversion is now doing this (plain words, e.g. "finding screw threads")."""
     _now["step"], _now["since"] = text, time.time()
+    if _listener is not None:
+        _listener(current()[0])
 
 
 def within(text):

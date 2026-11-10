@@ -1,11 +1,21 @@
 """Conversion pipeline and presets."""
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-04: messages and file metadata users see name the current program (Mesh Mix-S2C).
+# Modified 2026-11-04: a failure while using the features found costs that part its features, not the whole file (convert_one).
+# Modified 2026-11-04: Precise retired, by both owners' decision: asking for it (or "exact") converts with Auto and
+# says so (RETIRED_PRESETS). Its tolerance stays as "tight", the floor of body_tol. See archive/precise.md.
+# Modified 2026-11-04: a body a few simple surfaces explain goes to CAD faces (few_surfaces).
+# Modified 2026-11-02 (edits): CAD faces are fitted as tightly as the mesh's own accuracy allows (Options.mesh_accuracy,
+# body_tol), between the Precise tolerance and the usual one; the fit check stays at the usual one (see merged._accuracy).
+# Modified 2026-11-02: Precise takes stl2curves' features too, at its tighter tolerance (convert_one).
+# Modified 2026-11-02: broad handlers call faults.caught, a result carries faults.attach's report, and a
+# shape saved without its comparison having run says so. The mesher goes through meshguard.
 # Modified 2026-10-25 for the stl2curves merged engine (mms2c/merged.py): convert()
 # takes a front end (stl2curves' reading, mending and features) and seeded segmentations;
-# Options.judge_floor (a least tolerance for the fit check), Options.fewest_faces (of
-# the CAD results that pass, the one with the fewest faces), Options.enough (no
-# fallback methods once a rival conversion passes) and Options.smooth_elsewhere (no
-# smooth surfaces for seeded bodies), all off by default.
+# Options.judge_floor (a least tolerance for the fit check) and Options.fewest_faces (of
+# the CAD results that pass, the one with the fewest faces), both off by default.
+# Modified 2026-11-04: Options.enough, Options.smooth_elsewhere and a front end's extra
+# candidates are gone, with the rival conversions they served (archive/rivals.py).
 # Modified 2026-10-26: the input and output paths are checked before any work
 # (check_paths: a missing or unwritable folder failed only after the whole conversion,
 # and an output naming the input overwrote the user's mesh), and Options refuses a NaN
@@ -31,11 +41,18 @@
 # tubes, 89% of the area square to one direction) gave 19% and routed it to Smooth.
 # Modified 2026-10-29 for Mesh Mix-S2C: results (and each part of a split 3MF) carry
 # "presets", the methods actually used, so the apps can name what "mixed" is made of.
+# Modified 2026-11-02: the report says plainly when the saved file isn't sound solids
+# (_final_word): "valid" false, "sound", an error and a warning for the user, its solids as they
+# read back, and what doesn't close saved as OPEN_SHELL. It runs after every repair choice,
+# so no conversion's choices change.
 import errno
+from . import faults
+from . import meshguard
 import os
 import time
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
@@ -52,10 +69,6 @@ from .report import NULL
 from .topology import RegionGraph
 
 PRESETS = {
-    "precise": {
-        "label": "Precise",
-        "description": "Real CAD surfaces that follow the mesh as closely as possible (tight tolerance).",
-    },
     "cad": {
         "label": "CAD",
         "description": "Recognises planes, cylinders, cones, spheres and tori as editable CAD faces.",
@@ -132,9 +145,16 @@ def check_paths(input_path, output_path):
     os.remove(probe)
 
 
+# presets no longer offered: older scripts and saved settings may still ask for them, and get Auto, with a note
+RETIRED_PRESETS = ("precise", "exact")
+
+
 class Options:
     def __init__(self, **kw):
         self.preset = kw.get("preset", "auto")
+        self.retired_preset = kw.get("retired_preset")
+        if self.preset in RETIRED_PRESETS:
+            self.retired_preset, self.preset = self.preset, "auto"
         self.repair = kw.get("repair", "auto")
         self.remove_debris = kw.get("remove_debris", True)
         self.unit = kw.get("unit", "mm")
@@ -147,8 +167,7 @@ class Options:
         if not 0.0 <= self.quality <= 1.0:      # (also false for NaN)
             raise OptionError(f"The quality must be a number from 0 to 1 (got {self.quality}).")
         self.detail = self.quality
-        # the quality the user picked (Precise raises ``quality`` for organic
-        # parts); its top end also keeps the fine detail of dense meshes
+        # the quality the user picked, whose top end also keeps the fine detail of dense meshes
         self.fine_quality = float(kw.get("fine_quality", self.quality))
         self.layout = kw.get("layout", "parts")  # 3MF: "parts" or "plate"
         self.max_faces = int(kw.get("max_faces", 0))  # 0 = unlimited (exact)
@@ -167,13 +186,10 @@ class Options:
         # units; 0 = MMM's own, from the body's size), and of the CAD results that pass,
         # the one with the fewest faces kept (see _fewest)
         self.judge_floor = float(kw.get("judge_floor", 0.0))
+        # (stl2curves merged engine) how far each body's mesh corners stand off the simple surfaces
+        # found on it, by the id of its first shell: faces are fitted as tightly as that allows (body_tol)
+        self.mesh_accuracy = dict(kw.get("mesh_accuracy") or {})
         self.fewest_faces = bool(kw.get("fewest_faces", False))
-        # (stl2curves merged engine) a callable, true once a rival conversion of the whole
-        # file passes: a body's fallback methods are then not tried (rivals.Judges.passing)
-        self.enough = kw.get("enough")
-        # (stl2curves merged engine) smooth surfaces for seeded bodies are tried elsewhere
-        # (MMM alone runs alongside): not here
-        self.smooth_elsewhere = bool(kw.get("smooth_elsewhere", False))
 
 
 # ----------------------------------------------------------------------------
@@ -249,7 +265,8 @@ def fix_acceptable(fixed, original, mesh_volume=None):
     try:
         v = stepio.volume(fixed)
         ref = mesh_volume if mesh_volume else stepio.volume(original)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return True
     if not ref:
         return True
@@ -292,7 +309,8 @@ def orient_like_mesh(shape, mesh_volume):
     try:
         if stepio.volume(shape) >= 0:
             return shape
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return shape
     solids = []
     exp = TopExp_Explorer(shape, TopAbs_SOLID)
@@ -302,7 +320,8 @@ def orient_like_mesh(shape, mesh_volume):
     out = solids[0] if len(solids) == 1 else make_compound(solids)
     try:
         return out if stepio.volume(out) > 0 else shape
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return shape
 
 
@@ -326,8 +345,8 @@ def outward_solids(shape):
             written = _rebuilt_solid(so)
             if stepio.volume(written) < 0:
                 so, flipped = _rebuilt_solid(so, flip=True), True
-        except Exception:
-            pass
+        except Exception as fault:
+            faults.caught(fault)
         parts.append(so)
     if not flipped:
         return shape
@@ -374,7 +393,8 @@ def _volume_ratio(shape, body):
         return None
     try:
         return abs(stepio.volume(shape)) / abs(mesh_vol)
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         return None
 
 
@@ -447,8 +467,8 @@ NEARLY_ALL = 0.98
 # tolerance of the 99th-percentile gap)
 CLEARLY_CLOSER = 1.0
 
-KIND_WORDS = {"smooth": "smooth surfaces", "cad": "CAD faces", "precise": "precise CAD faces",
-              "faceted": "flat faces (exactly like the mesh)", "stl2curves": "stl2curves' sewn CAD faces"}
+KIND_WORDS = {"smooth": "smooth surfaces", "cad": "CAD faces",
+              "faceted": "flat faces (exactly like the mesh)", "stl2curves": "sewn CAD faces"}
 
 
 def _judge(shape, body, tol, kind, report):
@@ -474,6 +494,7 @@ def _judge(shape, body, tol, kind, report):
     except MemoryError:
         raise
     except Exception as e:  # the check itself must never stop a conversion
+        faults.caught(e)
         report.log(f"The shape couldn't be compared with the mesh ({e})")
         verdict = Verdict({"unknown": True}, tol)
     return _Candidate(shape, kind, valid, verdict)
@@ -507,7 +528,7 @@ def _best(cands):
 
 # (stl2curves merged engine) the kinds of result made of CAD faces, and how much closer to
 # the fewest faces a passing result must come to be kept for following the mesh better
-CAD_KINDS = ("cad", "precise", "stl2curves")
+CAD_KINDS = ("cad", "stl2curves")
 FEWER_FACES = 0.05
 
 
@@ -529,12 +550,12 @@ def _fewest(cands, best):
     faces over CAD faces 163-253 strong (stl2curves merged engine)."""
     if best is None or not best.good or best.kind not in CAD_KINDS:
         return best
-    rivals = [c for c in cands if c is not None and c.good and c.kind in CAD_KINDS]
-    if len(rivals) < 2:
+    passed = [c for c in cands if c is not None and c.good and c.kind in CAD_KINDS]
+    if len(passed) < 2:
         return best
-    n = {id(c): _face_count(c.shape) for c in rivals}
-    fewest = min(rivals, key=lambda c: n[id(c)])
-    near = [c for c in rivals if n[id(c)] <= n[id(fewest)] * (1 + FEWER_FACES)]
+    n = {id(c): _face_count(c.shape) for c in passed}
+    fewest = min(passed, key=lambda c: n[id(c)])
+    near = [c for c in passed if n[id(c)] <= n[id(fewest)] * (1 + FEWER_FACES)]
     closest = max(near, key=lambda c: c.verdict.score)
     # (closeness decides only by a clear margin: measurement noise mustn't)
     return closest if closest.verdict.score > fewest.verdict.score + CLEARLY_CLOSER else fewest
@@ -598,6 +619,32 @@ def _fix_broken_parts(items, item_bodies, item_presets, bodies, path, check, wri
     return new_items, new_presets, check, [RECONVERTED] + done
 
 
+def _final_word(items, path, check, write, verify, open_parts, report):
+    """The last word on the saved file (stepio.final_word), after every repair and fallback.
+    If it isn't sound, the user is told, and what doesn't close is saved again as open shells,
+    if that keeps every face. Returns (check, the file's solids and shells as they read back, or None)."""
+    check = stepio.final_word(check, path, open_parts)
+    if check.get("sound") is not False:
+        return check, None
+    for i in check["issues"]:
+        if i["code"] == "not_sound":
+            report.warn(i["message"])
+    opened = [(stepio.open_up(sh), n) for sh, n in items]
+    if any(a is not b[0] for (a, _), b in zip(opened, items)):
+        try:
+            write(opened, path)
+            again = verify(path)
+            if again.get("faces") == check.get("faces"):
+                check = stepio.final_word(again, path, open_parts)
+            else:
+                write(items, path)
+        except Exception as e:
+            faults.caught(e)
+            report.log(f"The open surfaces couldn't be saved as open shells ({e})")
+            write(items, path)
+    return check, {"solids": check.get("solids", 0), "shells": check.get("shells", 0)}
+
+
 def repair_steps(results):
     """The repair steps any of the parts needed, in order, once each."""
     out = []
@@ -619,6 +666,7 @@ def _step_writer(name, unit, report):
                 stepio.write_step_named(items, path, product_name=name, unit=unit)
                 return
             except Exception as e:
+                faults.caught(e)
                 report.log(f"Couldn't store part names in the STEP file ({e}); it was saved without them.")
             stepio.write_step(make_compound([sh for sh, _ in items]), path, product_name=name, unit=unit)
         elif items[0][1] is not None:
@@ -656,13 +704,16 @@ def _save_checked(items, path, write, verify, tol, report, stage):
 # ----------------------------------------------------------------------------
 
 
+ACCURACY_ROOM = 4.0     # the fit's tolerance is at least this many times how far the mesh's corners stand off their surfaces
+
+
 def auto_tolerance(diag, preset, quality=0.7):
     """Fit tolerance from the body size; higher quality = tighter."""
     q = float(np.clip(quality, 0.0, 1.0))
     factor = 1.4 - 0.6 * q  # 1.4 at fastest, 0.8 at best quality
     if preset == "exact":
         return 1e-5 * diag
-    if preset == "precise":
+    if preset == "tight":       # (what a clean mesh's CAD faces may go down to, and denser smooth surfaces use)
         return 1.6e-4 * diag * factor
     return 5e-4 * diag * factor
 
@@ -675,10 +726,11 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
     opts = opts or Options()
     t0 = time.time()
     check_paths(input_path, output_path)
-    seeded, extra = {}, {}
+    meshguard.use(report)
+    seeded = {}
     with report.section(0.0, 0.08):
         if front is not None:
-            bodies, info, seeded, extra = front(input_path, opts, report)
+            bodies, info, seeded = front(input_path, opts, report)
         else:
             bodies, info = load_and_prepare(
                 input_path, repair=opts.repair, remove_debris=opts.remove_debris, report=report, layout=opts.layout,
@@ -696,17 +748,24 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
     stepio.set_model_unit(unit)
     q = opts.quality
     req = opts.preset
-    if req == "exact":
-        req = "precise"  # faceted output was retired: everything is real surfaces
+    if opts.retired_preset:
+        report.warn(f"{opts.retired_preset.capitalize()} mode has been retired, so this file is converted with Auto.")
     tol = opts.tolerance if opts.tolerance else auto_tolerance(diag, req if req != "auto" else "cad", q)
     report.log(f"Model size {diag:.4g} {unit} (diagonal), quality {int(round(q * 100))}%")
 
-    def body_tol(body, preset):
+    def body_tol(body, preset, judging=False):
         if opts.tolerance:
             return opts.tolerance
         P = np.vstack([s.V for s in body])
         d = float(np.linalg.norm(P.max(0) - P.min(0)))
-        return auto_tolerance(d, preset, q)
+        t = auto_tolerance(d, preset, q)
+        # (a mesh whose corners lie on what was drawn shows it to far better than the usual
+        # tolerance, and at that tolerance a chamfer's cone passes for a tilted cylinder: the fit
+        # follows the mesh's own accuracy; what counts as following the mesh doesn't change)
+        acc = opts.mesh_accuracy.get(id(body[0])) if preset == "cad" and not judging else None
+        if acc is not None:
+            t = min(t, max(auto_tolerance(d, "tight", q), ACCURACY_ROOM * acc))
+        return t
 
     B = BRep_Builder()
     shapes = []
@@ -762,29 +821,29 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         if preset in ("auto", "cad") and seed is not None and not later:
             # (stl2curves found features here: CAD faces, segmented from them; chosen
             # by the front end per body before seeding, or by the user)
-            report.stage("Segmenting what stl2curves left" + label, lo, lo + 0.2 * (hi - lo))
-            preset, segs = seed(body_tol(body, "cad"))
-            report.log("Using CAD (stl2curves' features, MMM's segmentation of the rest)"
-                       + (", as chosen" if req == "cad" else ""))
-        elif preset == "auto" and later:
+            report.stage("Segmenting the rest of the shape" + label, lo, lo + 0.2 * (hi - lo))
+            try:
+                preset, segs = seed(body_tol(body, "cad"))
+                report.log(f"Using {PRESETS[preset]['label']} (features found, the rest segmented)"
+                           + (", as chosen" if req == "cad" else ""))
+            except (ConversionError, MemoryError):
+                raise
+            except Exception as e:
+                # (one failure here ended the whole file, no STEP at all, while the other way of
+                # segmenting was still there to try: bravo's nut.stl)
+                faults.caught(e)
+                report.warn(f"Using the features found failed on this part ({type(e).__name__}: {e}), "
+                            "so it is segmented without them.")
+                seed = None
+        if preset == "auto" and later:
             # (the front end chose smooth surfaces for it, by choose_preset_body, already
             # said why; its features are looked for if CAD faces are tried after all)
             preset = "smooth"
             report.log(f"Using {PRESETS[preset]['label']}" + (f" for {body_names[bi]}" if n_bodies > 1 and body_names[bi] else ""))
-        elif preset in ("auto", "precise"):
+        elif preset == "auto":
             report.stage("Analysing shape" + label, lo, lo + 0.2 * (hi - lo))
-            kind, segs = choose_preset_body(body, body_tol(body, "cad" if preset == "auto" else "precise"), q, report)
-            if preset == "precise":
-                if kind == "smooth":
-                    # organic body: precise means more, tighter surface patches
-                    preset = "smooth"
-                    body_opts = Options(**{**opts.__dict__, "quality": min(1.0, q + 0.2)})
-                    body_opts.max_faces = opts.max_faces
-                    segs = None
-                else:
-                    preset = "precise"
-            else:
-                preset = kind
+            kind, segs = choose_preset_body(body, body_tol(body, "cad"), q, report)
+            preset = kind
             report.log(f"Using {PRESETS[preset]['label']}" + (f" for {body_names[bi]}" if n_bodies > 1 and body_names[bi] else ""))
         btol = body_tol(body, preset)
         name = (body_names[bi] if n_bodies > 1 and body_names[bi] else None)
@@ -798,24 +857,31 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
             except (ConversionError, MemoryError):
                 raise
             except Exception as e:
+                faults.caught(e)
                 errors.append(e)
-                report.log(f"{how or kind} didn't work ({e})")
+                report.log(f"{how or kind} didn't work ({type(e).__name__}: {e})")
                 return None
             if shape is None:
                 return None
-            c = (_judge(shape, body, max(btol, opts.judge_floor), kind, report) if opts.validate
+            c = (_judge(shape, body, max(body_tol(body, preset, judging=True), opts.judge_floor), kind, report) if opts.validate
                  else _Candidate(shape, kind, True, None))
             tried.append(c)
             return c
 
-        def cad(tol_kind="cad"):
+        tidied = []     # (whether regularise changed a surface in this body's CAD build)
+
+        def cad(tol_kind="cad", tidy=True):
             from .cad import convert_body_cad
 
             use = segs if tol_kind == preset else None
+            if not tidy:
+                # (the first build has altered its segmentation in place: a new one)
+                use = seed(body_tol(body, tol_kind))[1] if seed is not None else None
+                return convert_body_cad(B, body, body_tol(body, tol_kind), body_opts, report, segs=use, tidy=False)
             if use is None and later and tol_kind == "cad":
                 # (a body the front end routed to smooth surfaces: its features now)
                 use = seed(body_tol(body, "cad"))[1]
-            return convert_body_cad(B, body, body_tol(body, tol_kind), body_opts, report, segs=use)
+            return convert_body_cad(B, body, body_tol(body, tol_kind), body_opts, report, segs=use, tidied=tidied)
 
         def smooth(o=None):
             from .smooth import convert_body_smooth
@@ -825,10 +891,9 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         held_back = []
 
         def plan():
-            """The other methods, in the order they're tried (a front end's own
-            candidates first: stl2curves' sewn faces, see merged.py)."""
-            if preset in ("cad", "precise"):
-                out = list(extra.get(bi, []))
+            """The other methods, in the order they're tried."""
+            if preset == "cad":
+                out = []
                 if not borderline and mostly_flat(body):
                     # (after failed CAD faces, smooth surfaces don't suit a part made mostly
                     # of flat faces: they are held back, for when nothing else builds at all;
@@ -841,7 +906,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
                                "(they are kept for when nothing else can be built)")
                     return out
                 return out + [("smooth", "Fitting smooth surfaces", lambda: smooth())]
-            out = list(extra.get(bi, []))
+            out = []
             if looks_mechanical(body):
                 out.append(("cad", "Recognising CAD features", lambda: cad("cad")))
             denser = min(1.0, body_opts.quality + 0.2)
@@ -852,8 +917,8 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
                 out.append(("smooth", "Fitting denser smooth surfaces", lambda: smooth(dense_opts)))
             return out
 
-        if preset in ("cad", "precise"):
-            report.stage(("Recognising CAD features" if preset == "cad" else "Fitting precise surfaces") + label, lo, hi)
+        if preset == "cad":
+            report.stage("Recognising CAD features" + label, lo, hi)
             first = attempt(preset, lambda: cad(preset))
         elif preset == "smooth":
             report.stage("Fitting smooth surfaces" + label, lo, hi)
@@ -885,16 +950,10 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
                        + ("" if first.verdict.ok else ", which isn't close enough")
                        + ("" if first.valid else "; the shape also has errors") + ".")
         for kind, stage, make in plan():
-            if opts.enough is not None and opts.enough():
-                report.log("Another conversion of the whole file already follows the mesh, so no other "
-                           "method is tried here (the results are compared at the end)")
-                break
-            if kind == "smooth" and bi in seeded and not later and (any(c.good for c in tried) or opts.smooth_elsewhere):
+            if kind == "smooth" and bi in seeded and not later and any(c.good for c in tried):
                 # (a mechanical body, seeded with stl2curves' features, that already has
                 # good CAD faces: smooth surfaces never win there, and on Rak N-USB
-                # trying them took over 100 s; nor when MMM alone runs alongside, which
-                # tries them itself wherever its own rules call for them: in six tries
-                # on seeded bodies they never won, and Rak Uni-USB spent 380 s on them)
+                # trying them took over 100 s)
                 continue
             if borderline:
                 report.log(f"Also trying {stage[0].lower() + stage[1:]}, to keep whichever follows the mesh better")
@@ -905,16 +964,27 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
             c = attempt(kind, make, stage)
             if c is not None and c.good and not borderline:
                 break
-        if not any(c.good for c in tried) and not (opts.enough is not None and opts.enough()):
+        if not any(c.good for c in tried):
             # the faceted shape follows the mesh exactly: the last resort
             # when nothing smoother does (only for meshes small enough
             # to give a file of reasonable size)
             n_tri = sum(len(s.F) for s in body)
-            if n_tri <= FACETED_MAX_TRIANGLES:
+            # A fallback for meshes whose folds make tidying cross, before flat facets. regular.py
+            # straightens surfaces that nearly agree; where the mesh folds back on itself that can make a
+            # real crossing. Found on Solar Panel Bracket Large: its raw file holds 141 folds, the
+            # tidied top body ended invalid and went to 1,354 flat faces, and the same build untidied was
+            # 269 faces. Untidied surfaces are less exact, but they beat losing the body's surfaces. It runs
+            # only on a body otherwise faceted, whose build ended invalid and where tidying changed something.
+            if first is not None and not first.valid and tidied and preset == "cad" and n_tri <= FACETED_MAX_TRIANGLES:
+                report.log("The CAD faces have errors after surfaces were tidied to agree with each other, "
+                           "so they are built once more without that, before falling back to flat faces.")
+                report.stage("Recognising CAD features again" + label, lo, hi)
+                attempt(preset, lambda: cad(preset, tidy=False), "CAD faces, untidied")
+            if n_tri <= FACETED_MAX_TRIANGLES and not any(c.good for c in tried):
                 report.stage("Building flat faces" + label, lo, hi)
                 attempt("faceted", lambda: convert_body_exact(B, body, auto_tolerance(_diag(body), "exact", q), report),
                         "Flat faces")
-        if held_back and not tried and not (opts.enough is not None and opts.enough()):
+        if held_back and not tried:
             # nothing at all could be built: smooth surfaces after all, mechanical or not
             for kind, stage, make in held_back:
                 report.log("Nothing else could be built for this part, so smooth surfaces are tried after all")
@@ -942,6 +1012,11 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         if not best.verdict.ok:
             report.warn(("The" if name is None else f"“{name}”:") + " converted shape doesn't follow the mesh everywhere: "
                         + best.verdict.summary(unit) + ". Try a higher quality, or another preset.")
+        elif best.verdict.r.get("unknown"):
+            # (Verdict counts it as passing, so that a failed check doesn't throw the shape away;
+            # the user mustn't take that for a result that was checked)
+            report.warn(("The" if name is None else f"“{name}”:") + " converted shape couldn't be compared with the "
+                        "mesh, so how closely it follows it isn't known. Check it before relying on it.")
         _record(bi, best)
         return best.shape, best.kind
 
@@ -964,18 +1039,11 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         if done:
             c = _best(done)
             how = f"{KIND_WORDS[c.kind]} instead"
-        elif bi in seeded and preset in ("cad", "precise") and (
-                opts.smooth_elsewhere or (opts.enough is not None and opts.enough())):
-            # (stl2curves merged engine: a seeded body's other method would be smooth
-            # surfaces, which MMM alone, running alongside, tries itself; Rak Uni-USB
-            # spent 140 s on them here after its saved file broke, and lost anyway)
-            report.log("No other method is tried for this part here: the conversions running alongside cover it")
-            return None, preset, ""
         else:
             shape, kind, how = _alt_shape(bi, preset)
             if shape is None or not opts.validate:
                 return shape, kind, how
-            c = _judge(shape, body, max(body_tol(body, kind if kind != "faceted" else "cad"), opts.judge_floor),
+            c = _judge(shape, body, max(body_tol(body, kind if kind != "faceted" else "cad", judging=True), opts.judge_floor),
                        kind, report)
         if c.verdict is not None and not c.verdict.ok:
             report.log(f"The other method doesn't follow the mesh closely enough ({c.verdict.summary(unit)}), "
@@ -996,7 +1064,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         body = bodies[bi]
         name = body_names[bi] or "the part"
         try:
-            if preset in ("cad", "precise"):
+            if preset == "cad":
                 if mostly_flat(body):
                     # (smooth surfaces don't suit a part made mostly of flat faces: see
                     # convert_one's plan)
@@ -1009,17 +1077,17 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
                 report.log(f"Converting {name} again with CAD faces")
                 return (convert_body_cad(B, body, body_tol(body, "cad"), opts, report), "cad",
                         "CAD faces instead of smooth surfaces")
-            used = min(1.0, q + 0.2) if req == "precise" else q
-            denser = min(1.0, used + 0.2)
-            if denser <= used:
+            denser = min(1.0, q + 0.2)
+            if denser <= q:
                 report.log("This part is organic and already has the densest smooth surfaces.")
                 return None, preset, ""
             report.log("This part is organic, so it is fitted again with denser smooth surfaces")
             dense_opts = Options(**{**opts.__dict__, "quality": denser})
             dense_opts.max_faces = opts.max_faces
-            return (convert_body_smooth(B, body, body_tol(body, "precise"), dense_opts, report), "smooth",
+            return (convert_body_smooth(B, body, body_tol(body, "tight"), dense_opts, report), "smooth",
                     "denser smooth surfaces")
         except Exception as e:
+            faults.caught(e)
             report.log(f"That didn't work either ({e})")
             return None, preset, ""
 
@@ -1081,9 +1149,14 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
             kinds = list(item_presets)
     if repaired:
         result = items[0][0] if len(items) == 1 else make_compound([sh for sh, _ in items])
+    as_read = None
+    if opts.validate:
+        check, as_read = _final_word(items, output_path, check, write, verify, len(bodies) - expected, report)
     if opts.validate and "valid" in check:
         valid = check["valid"]  # what CAD programs will find in the saved file
     st = stepio.shape_stats(result)
+    if as_read:
+        st.update(as_read)
     vol = check["volume"] if "volume" in check else (stepio.volume(result) if st["solids"] else 0.0)
 
     if opts.preview:
@@ -1091,6 +1164,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         try:
             stepio.export_preview(result, opts.preview, diag)
         except Exception as e:
+            faults.caught(e)
             report.warn(f"The 3D preview couldn't be made ({e}); the STEP file itself is fine.")
 
     res = {
@@ -1098,6 +1172,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         "preset": preset,
         "presets": sorted(set(kinds)),
         "valid": valid,
+        "sound": check.get("sound"),
         "solids": st["solids"],
         "shells": st["shells"],
         "faces": st["faces"],
@@ -1120,6 +1195,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         item_bodies = shape_bodies if len(items) == len(shape_bodies) else []
         res["alternative"] = alternative_version(items, item_bodies, offered, verdicts, output_path, opts.preview,
                                                  write, verify, diag, report)
+    faults.attach(res, report)
     report.result(res)
     return res
 
@@ -1140,7 +1216,7 @@ def alternative_version(items, item_bodies, offered, verdicts, path, preview, wr
     alt_path = os.path.splitext(path)[0] + ".valid.step"
     try:
         write(alt, alt_path)
-        check = verify(alt_path)
+        check = stepio.final_word(verify(alt_path), alt_path)
         shape = alt[0][0] if len(alt) == 1 else make_compound([sh for sh, _ in alt])
         st = stepio.shape_stats(shape)
         alt_preview = None
@@ -1148,6 +1224,7 @@ def alternative_version(items, item_bodies, offered, verdicts, path, preview, wr
             alt_preview = os.path.splitext(preview)[0] + ".valid.mmmp"
             stepio.export_preview(shape, alt_preview, diag)
     except Exception as e:
+        faults.caught(e)
         report.log(f"The second version couldn't be saved ({e})")
         return None
     report.log("No method made a shape that follows the mesh everywhere, so two versions were saved to choose "
@@ -1156,6 +1233,7 @@ def alternative_version(items, item_bodies, offered, verdicts, path, preview, wr
         "output": alt_path,
         "preview": alt_preview,
         "valid": check.get("valid"),
+        "sound": check.get("sound"),
         "checked": check.get("checked", False),
         "checks": check.get("issues", []),
         "solids": st["solids"],
@@ -1245,6 +1323,9 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
                 repaired = more + [st_ for st_ in repaired if st_ not in more]
         if repaired:
             shape = items[0][0] if len(items) == 1 else make_compound([sh for sh, _ in items])
+        as_read = None
+        if opts.validate:
+            check, as_read = _final_word(items, out, check, write, verify, len(groups[p]) - expected, report)
         if opts.validate and "valid" in check:
             valid = check["valid"]
         prev = opts.part_previews[p] if p < len(opts.part_previews) and opts.part_previews[p] else None
@@ -1253,9 +1334,12 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
                 P = np.vstack([s.V for bi in groups[p] for s in bodies[bi]])
                 stepio.export_preview(shape, prev, float(np.linalg.norm(P.max(0) - P.min(0))))
             except Exception as e:
+                faults.caught(e)
                 report.warn(f"The 3D preview couldn't be made ({e}); the STEP file itself is fine.")
                 prev = None
         st = stepio.shape_stats(shape)
+        if as_read:
+            st.update(as_read)
         r = {
             "index": k,
             "part": p,
@@ -1265,6 +1349,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
             "preset": presets[0] if all(x == presets[0] for x in presets) else "mixed",
             "presets": sorted(set(presets)),
             "valid": valid,
+            "sound": check.get("sound"),
             "solids": st["solids"],
             "shells": st["shells"],
             "faces": st["faces"],
@@ -1298,6 +1383,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
         "preset": presets[0] if all(x == presets[0] for x in presets) else "mixed",
         "presets": sorted({x for r in results for x in r["presets"]}),
         "valid": (all(r["valid"] is not False for r in results)) if opts.validate else None,
+        "sound": all(r["sound"] is not False for r in results) if opts.validate else None,
         "solids": sum(r["solids"] for r in results),
         "shells": sum(r["shells"] for r in results),
         "faces": sum(r["faces"] for r in results),
@@ -1315,6 +1401,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
         "repaired": repair_steps(results),
         "fidelity": fidelity_summary([r["fidelity"] for r in results if r.get("fidelity")]),
     }
+    faults.attach(res, report)
     report.result(res)
     return res
 
@@ -1381,6 +1468,16 @@ def _extruded_share(C, N, A, max_deg=3.0):
     return float(A[np.abs(N @ d) <= np.sin(np.radians(max_deg))].sum() / A.sum())
 
 
+FEW_MOST = 8            # a body explained by at most this many simple surfaces is a designed one
+FEW_SHARE = 0.8         # share of its area they have to explain
+FEW_LEAST = 0.02        # share of its area a surface must take to count
+FEW_POINTS = 5000       # triangles looked at, at most
+FEW_SEEDS = 8           # seeds tried for each surface
+FEW_PATCH = (150, 600)  # triangles in a patch round a seed
+FEW_NORMAL = 0.94       # cosine: a triangle's normal agrees with the surface within about 20 degrees
+FEW_SAME = 10.0         # tolerances: surfaces this alike are one surface
+
+
 def choose_preset_body(body, tol, quality, report, big=400_000):
     """CAD for parts made of planes/cylinders/etc., Smooth for organic ones.
 
@@ -1433,7 +1530,8 @@ def choose_preset_body(body, tol, quality, report, big=400_000):
         for cls in (Sphere, Cylinder, Cone, Torus):
             try:
                 prim = cls.fit(P, N, ext=ext)
-            except Exception:
+            except Exception as fault:
+                faults.caught(fault)
                 prim = None
             if prim is not None and not prim.degenerate(ext) and prim.distance(P).max() <= tol:
                 return prim.kind
@@ -1444,4 +1542,67 @@ def choose_preset_body(body, tol, quality, report, big=400_000):
         if all(kinds):
             report.log("Each shell is a single " + "/".join(sorted(set(kinds))))
             return "cad", None
+    share, count = few_surfaces(body, tol)
+    if share >= FEW_SHARE:
+        report.log(f"{count} simple surface(s) explain {share:.0%} of it")
+        return "cad", None
     return "smooth", None
+
+
+def few_surfaces(body, tol):
+    """How much of a body FEW_MOST simple surfaces can explain, and how many it took: (share of its area, count). A designer
+    draws a pipe elbow as a torus and two cylinders, with no flats and no one motion, and it went to smooth surfaces (then flat
+    faces: 4,012 for 5). A sculpture has no such surfaces at the fit's tolerance, and a knot or metaballs need many small ones
+    (measured: skull, sculpt, gyroid 0%; a knot's and metaballs' biggest pieces 7%, the elbow's three 94%). Greedy: seeds on what
+    is left, surfaces fitted to patches round them, and the one taking the most of what is left is kept."""
+    from .fitting import Cone, Cylinder, Sphere, Torus
+
+    V = np.vstack([s.V for s in body])
+    offset = np.cumsum([0] + [len(s.V) for s in body])
+    F = np.vstack([s.F + o for s, o in zip(body, offset[:-1])])
+    normals, areas = face_normals_areas(V, F)
+    rng = np.random.default_rng(0)
+    C = V[F].mean(axis=1)
+    if len(C) > FEW_POINTS:
+        pick = rng.choice(len(C), FEW_POINTS, replace=False, p=areas / areas.sum())
+        C, normals, areas = C[pick], normals[pick], np.full(FEW_POINTS, areas.sum() / FEW_POINTS)
+    total = float(areas.sum())
+    ext = float(np.linalg.norm(V.max(0) - V.min(0)))
+    tree = cKDTree(C)
+    left = np.ones(len(C), dtype=bool)
+    taken, count, kept = 0.0, 0, []
+    for _ in range(FEW_MOST):
+        idx = np.nonzero(left)[0]
+        if not len(idx):
+            break
+        best = None
+        for seed in rng.choice(idx, min(FEW_SEEDS, len(idx)), replace=False, p=areas[idx] / areas[idx].sum()):
+            for k in FEW_PATCH:
+                if k > len(C):
+                    continue
+                near = tree.query(C[seed], k=k)[1]
+                for cls in (Sphere, Cylinder, Cone, Torus):
+                    try:
+                        prim = cls.fit(C[near], normals[near], ext=ext)
+                    except Exception as fault:
+                        faults.caught(fault)
+                        continue
+                    if prim is None or prim.degenerate(ext):
+                        continue
+                    on = idx[prim.distance(C[idx]) <= tol]
+                    if not len(on):
+                        continue
+                    on = on[np.abs((prim.normal(C[on]) * normals[on]).sum(axis=1)) >= FEW_NORMAL]
+                    if best is None or areas[on].sum() > areas[best].sum():
+                        best, surface = on, prim
+        if best is None or areas[best].sum() < FEW_LEAST * total:
+            break
+        left[best] = False
+        # (the same surface again is noise, not design: what a scan's sphere leaves over a tolerance off is that sphere,
+        # and the CAD route took over 1,200 s on one, for the smooth route's 34)
+        if any(surface.same_as(q, FEW_SAME * tol, ext) for q in kept):
+            continue
+        kept.append(surface)
+        taken += float(areas[best].sum())
+        count += 1
+    return taken / max(total, 1e-30), count

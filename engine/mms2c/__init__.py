@@ -1,29 +1,28 @@
 """stl2curves: convert STL meshes and 3MF projects into solid STEP files with true
 curved surfaces (see README.md). The command line is `stl2curves` (convert.main)."""
 
-__version__ = "0.4.0"
+__version__ = "2.0.1"
 
 import os as _os
 import platform as _platform
 import sys as _sys
 
-BLAS_CORE = "Haswell"   # OpenBLAS kernel family every x86-64 PC with AVX2 runs alike (see _pin_blas)
+BLAS_CORE = "Sandybridge"   # OpenBLAS kernel family every x86-64 PC with AVX runs alike (see _pin_blas)
 
 
-def _has_avx2():
-    """Whether this processor runs AVX2 code, found without loading numpy (Windows and Linux;
+def _has_avx():
+    """Whether this processor runs AVX code, found without loading numpy (Windows and Linux;
     elsewhere unknown, so False)."""
     try:
         if _sys.platform == "win32":
             import ctypes
-            return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))     # (PF_AVX2_INSTRUCTIONS_AVAILABLE)
+            return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(39))     # (PF_AVX_INSTRUCTIONS_AVAILABLE)
         if _sys.platform.startswith("linux"):
             with open("/proc/cpuinfo") as f:
                 for line in f:
                     if line.startswith("flags"):
-                        flags = line.split()
-                        return "avx2" in flags and "fma" in flags
-    except Exception:
+                        return "avx" in line.split()
+    except Exception:  # not engine work: finding out about the processor, False when unsure
         pass
     return False
 
@@ -35,15 +34,21 @@ def _pin_blas():
     an older desktop), and the kernels round the last digit differently. A last-digit
     difference is harmless, except where a decision sits right on its threshold: then the
     two machines decide it differently and the difference grows from there (stl2step's test13
-    gave 106 faces on one machine and 94 on the other from the same code). The AVX2 kernels
-    run on every x86-64 processor with AVX2, alike, so all of them give the same result. Set
+    gave 106 faces on one machine and 94 on the other from the same code). The AVX kernels
+    run on every x86-64 processor with AVX, alike, so all of them give the same result.
+
+    Not the Haswell (AVX2) kernels, which this pin used until 2.0.2: on a Ryzen 9 9955HX3D (Zen 5)
+    they end the process with an access violation in numpy's solve, with nothing else loaded,
+    from about size 200 when called repeatedly (OpenBLAS 0.3.34; not on an Intel Xeon with
+    AVX-512). A pipe's spline fit of size 186 ended whole conversions that way. tests/mmm/test_blas_pin.py
+    runs these calls in a child process. Set
     before numpy loads (it reads the setting once), and inherited by the worker processes.
     Not set over the user's own choice, nor when numpy is already loaded in this process: its
     workers must then run the kernel it runs. Macs use Apple's own library and can't be
     pinned this way."""
     if "OPENBLAS_CORETYPE" in _os.environ or "numpy" in _sys.modules:
         return
-    if _platform.machine().lower() in ("amd64", "x86_64") and _has_avx2():
+    if _platform.machine().lower() in ("amd64", "x86_64") and _has_avx():
         _os.environ["OPENBLAS_CORETYPE"] = BLAS_CORE
 
 

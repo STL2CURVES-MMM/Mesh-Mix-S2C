@@ -10,6 +10,7 @@ first surfaces found. Big data they all need (the mesh) is written once to a fil
 (share) and read by each worker once (load).
 """
 import atexit
+from mmm import faults
 import multiprocessing
 import os
 import pickle
@@ -109,14 +110,16 @@ def _start(n):
                 if _pool is None and not _cancel:
                     pool.submit(int).result()
                     _pool = pool
-        except Exception:
-            pass
+        except Exception as fault:
+            faults.caught(fault)
         _guard(pool)
         if _pool is None and not _cancel and pool._processes:
             pool.submit(int).result()
             _pool = pool
-    except Exception:
+    except Exception as fault:
+        faults.caught(fault)
         _pool = None                # (no worker processes to be had: the work is done here)
+        faults.event("the worker processes couldn't be started, so everything was done on one core, which takes longer")
 
 
 def get(wait=True):
@@ -152,10 +155,12 @@ def finish():
 
 
 def broken():
-    """The pool failed: stop using it (the work falls back to this process)."""
+    """The pool failed: stop using it (the work falls back to this process, slower, with the
+    same results)."""
     global _pool
     pool, _pool = _pool, None
     if pool is not None:
+        faults.event("the worker processes broke down, so the rest was done on one core, which takes longer")
         _terminate(pool)
 
 
@@ -252,8 +257,8 @@ def _guard(pool):
                 # (a Process's sentinel on Windows is its process handle)
                 if kernel.AssignProcessToJobObject(wintypes.HANDLE(_job), wintypes.HANDLE(p.sentinel)):
                     _guarded.add(pid)
-    except Exception:
-        pass                        # (no job: the workers are only stopped at a normal exit)
+    except Exception as fault:
+        faults.caught(fault)                        # (no job: the workers are only stopped at a normal exit)
 
 
 def _watch_parent():

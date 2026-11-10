@@ -18,6 +18,8 @@ the same number of solids and the same volume, so a repair never makes a
 file worse. Nothing runs when the first check finds no problems.
 """
 import os
+# Modified 2026-11-02: broad handlers call faults.caught.
+from . import faults
 import shutil
 import tempfile
 
@@ -145,6 +147,7 @@ def repair(items, path, check, write, verify, tol, report=NULL):
                 write(cand, cpath)
                 c = verify(cpath)
             except Exception as e:
+                faults.caught(e)
                 report.log(f"Repair step '{label}' didn't work ({e})")
                 continue
             if _better(c, check):
