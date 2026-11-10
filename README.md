@@ -25,9 +25,8 @@ Measured on 387 real parts of our test set (no scans, no duplicates, each STEP f
 |---|---|---|
 | Detail lost (summed over the parts) | 14.3 | **3.3** |
 | Faces | **87,309** | 93,468 |
-| Conversion time | **6.4 h** | 10.4 h |
 
-The extra faces are mostly detail 2.0.1 left out. Still to do before 2.0.2: four parts that come out invalid (2.0.1: none), six saved as "poor" or timed out, and the extra time.
+The extra faces are mostly detail 2.0.1 left out. By current estimates the development code takes about 1.6 times as long as 2.0.1. Still to do before 2.0.2: making it faster, four parts that come out invalid (2.0.1: none), and six saved as "poor" or timed out.
 
 - **Surfaces that agree with each other:** directions that agree to within the fit's noise become one direction, and the coordinate axes when they're that close. Faces at the same place share one level, and a fillet that nearly touches its neighbour touches it exactly. A CAD program then finds real edges to edit, not tiny gaps.
 - **Fewer loose edges and tiny faces:** pieces of one surface that the mesh's triangles had split are pooled back into it, so the parts edit more cleanly in CAD programs.
