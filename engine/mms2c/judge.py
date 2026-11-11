@@ -103,7 +103,7 @@ CLOSURE_SHARE = 0.0005 # share of the volume by which a solid's integral may mov
 try:
     from mmm import faults, meshguard
 except ImportError:                 # (run as a script: compare/bench/judge.py)
-    from mms2c.mmm import faults, meshguard
+    from mmm import faults, meshguard
 
 TYPES = {GeomAbs_Plane: "plane", GeomAbs_Cylinder: "cylinder", GeomAbs_Cone: "cone", GeomAbs_Sphere: "sphere",
          GeomAbs_Torus: "torus", GeomAbs_BezierSurface: "bezier", GeomAbs_BSplineSurface: "bspline",

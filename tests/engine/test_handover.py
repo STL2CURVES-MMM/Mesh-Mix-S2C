@@ -102,15 +102,22 @@ def test_a_whole_torus_is_one_closed_feature_and_builds():
 
 
 def test_winner_prefers_fewer_regions_but_exact_surfaces_unless_freeform_saves_enough():
+    # (third: the area left freeform; equal where both use some, so the counts decide)
     w = merged._winner
-    assert w((12, True), (3, True)) == "mmm"          # fewer, both exact
-    assert w((3, True), (3, True)) == "ours"          # a tie keeps ours
-    assert w((4, True), (3, False)) == ("mmm" if 3 <= merged.FREEFORM_SAVES * 4 else "ours")
-    assert w((5, True), (4, False)) == "ours"         # saves 20%: exact stays
-    assert w((8, True), (2, False)) == "mmm"          # saves 75%
-    assert w((4, False), (5, True)) == "mmm"          # exact wins although one more region
-    assert w((3, False), (5, True)) == "ours"         # freeform at 0.6 of it
-    assert w((9, False), (4, False)) == "mmm"
+    assert w((12, True, 0.0), (3, True, 0.0)) == "mmm"          # fewer, both exact
+    assert w((3, True, 0.0), (3, True, 0.0)) == "ours"          # a tie keeps ours
+    assert w((9, False, 5.0), (4, False, 5.0)) == "mmm"
+    assert w((5, False, 5.0), (8, False, 5.0)) == "ours"
+
+
+def test_winner_prefers_the_way_with_less_freeform_area():
+    """Closer to the design beats fewer regions (Tuna and Duvdivan, 2026-11-01)."""
+    w = merged._winner
+    assert w((1, False, 120.0), (8, True, 0.0)) == "mmm"        # a frame: 8 exact faces beat 1 freeform
+    assert w((3, False, 10.0), (12, False, 4.0)) == "mmm"       # less than half as much freeform
+    assert w((12, False, 4.0), (3, False, 10.0)) == "ours"
+    assert w((4, False, 10.0), (3, False, 6.0)) == "mmm"        # 0.6 of it: the counts decide
+    assert w((1, False, 50.0), (9, True, 0.0), True) == "mmm"   # all exact with the corners on them
 
 
 def test_held_report_passes_progress_and_holds_messages():
@@ -189,7 +196,7 @@ def test_unsure_pieces_of_one_smooth_area_give_way_to_mmms_one_surface():
     regs = [r for r in seg.regions if len(r.faces)]
     assert not any(getattr(r.prim, "locked", False) for r in regs)
     assert len(regs) < 3
-    assert any("tried there as well: kept in 1" in m for m in logs)
+    assert any("tried there as well" in m and "kept in 1," in m for m in logs)
 
 
 # ---- the method per body, chosen before any feature is looked for (merged._Route) ----
@@ -270,3 +277,92 @@ def test_prepare_skips_the_bodies_not_chosen():
     assert [len(f) for _, f, _ in parts] == [0]
     parts, _, _ = convert.prepare((pts, tris), 0.01, analyze=lambda p, g: [True] * len(g))
     assert [f.kind for f in parts[0][1]] == ["closed"]
+
+
+class _Plane:
+    kind = "plane"
+
+    def distance(self, P):
+        return np.abs(np.asarray(P)[:, 2])
+
+
+class _Seg:
+    """Just what the comparison reads of a segmentation: two triangles, each a region on z = 0,
+    the second with one corner 0.03 mm off it."""
+
+    def __init__(self):
+        self.V = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0.03]], dtype=float)
+        self.F = np.array([[0, 1, 2], [1, 3, 2]])
+        self.fa = np.array([0.5, 0.5])
+        self.tol = 0.05
+        self.label = np.array([0, 1])
+        self.regions = [merged.mcad.Region(_Plane(), np.array([0]), 1), merged.mcad.Region(_Plane(), np.array([1]), 1)]
+        self.strays = np.array([False, False])
+
+    def face_error(self, prim, sense, faces):
+        return np.where(self.strays[faces], np.inf, 0.0), np.ones(len(faces))
+
+
+def test_exact_surface_forced_onto_a_blend_counts_as_off_the_design():
+    """Inside the tolerance, but not on it: no closer to the design than a freeform face."""
+    seg = _Seg()
+    off = merged._off_design(seg)
+    assert off.tolist() == [False, True]
+    assert merged._census(seg, np.array([0, 1]), off) == (2, False, 0.5)     # exact, but not on the design
+    assert merged._census(seg, np.array([0]), off) == (1, True, 0.0)
+    assert merged._on_surfaces(seg, np.array([0]))
+    assert not merged._on_surfaces(seg, np.array([1]))
+
+
+def test_a_triangle_whose_middle_strays_from_its_surface_is_off_the_design_with_its_corners_on_it():
+    """A torus through head's three rings of corners holds every one of them."""
+    seg = _Seg()
+    seg.strays = np.array([True, False])
+    assert merged._off_design(seg).tolist() == [True, True]
+
+
+def test_compose_keeps_each_cluster_whole():
+    a, b = _Seg(), _Seg()
+    # A has two regions, B one over both, and a further triangle-free region stays ours
+    b.label = np.array([0, 0])
+    b.regions = [merged.mcad.Region(_Plane(), np.array([0, 1]), 1)]
+    cluster = np.array([0, 0])
+    kept = merged._compose(a, b, cluster, np.array([True]))
+    assert kept.label.tolist() == [0, 0] and len(kept.regions) == 1
+    a2 = _Seg()
+    kept = merged._compose(a2, b, cluster, np.array([False]))
+    assert kept.label.tolist() == [0, 1] and len(kept.regions) == 2
+
+
+class _Facets:
+    """Just what blends._without_planes reads: flat strips 10 mm long in a row, of these areas, each bending 5 degrees into the next."""
+
+    def __init__(self, sizes):
+        n = len(sizes)
+        turn = np.radians(5.0) * np.arange(n)
+        at = np.r_[np.zeros((1, 2)), np.cumsum(np.c_[np.cos(turn), np.sin(turn)] * (np.array(sizes, dtype=float) / 10.0)[:, None], axis=0)]
+        self.pts = np.vstack([np.c_[at, np.zeros(n + 1)], np.c_[at, np.full(n + 1, 10.0)]])
+        self.tris = np.array([t for i in range(n) for t in ((i, i + 1, i + n + 2), (i, i + n + 2, i + n + 1))])
+        a, b, c = (self.pts[self.tris[:, k]] for k in range(3))
+        cross = np.cross(b - a, c - a)
+        self.tarea = np.linalg.norm(cross, axis=1) / 2
+        self.tn = cross / (2 * self.tarea)[:, None]
+        self.facet_of = np.repeat(np.arange(n), 2)
+        self.farea = np.bincount(self.facet_of, self.tarea, n)
+        self.fn = self.tn[::2]
+        self.ftris = [np.array([2 * i, 2 * i + 1]) for i in range(n)]
+        self.nbrs = [[j for j in (i - 1, i + 1) if 0 <= j < n] for i in range(n)]
+
+
+def test_a_designed_plane_comes_out_of_a_freeform_area_and_a_coarse_curve_does_not():
+    from mms2c import blends
+    mesh = _Facets([0.3, 0.2, 21.0, 0.3, 0.2])
+    soft, free = set(range(5)), set(range(5))
+    areas = blends._without_planes(mesh, soft, free, np.full(5, -1), lambda a: [a])
+    assert sorted(sorted(a.tolist()) for a in areas) == [[0, 1], [3, 4]]
+    assert 2 not in soft and 2 not in free
+    # facets alike in size are a coarse curve's strips
+    mesh = _Facets([3.0, 3.1, 3.0, 2.9])
+    soft, free = set(range(4)), set(range(4))
+    areas = blends._without_planes(mesh, soft, free, np.full(4, -1), lambda a: [a])
+    assert [sorted(a.tolist()) for a in areas] == [[0, 1, 2, 3]] and soft == {0, 1, 2, 3}

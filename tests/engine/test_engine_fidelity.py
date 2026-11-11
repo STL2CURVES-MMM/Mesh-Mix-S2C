@@ -126,8 +126,8 @@ def test_a_hole_in_the_checkers_own_triangles_is_not_a_gap(monkeypatch):
     V, F = _box_mesh((10, 8, 6))
     real = fidelity.tessellate
 
-    def holed(shape, deflection, angle=0.25, loose=None):
-        SV, SF, owner = real(shape, deflection, angle)
+    def holed(shape, deflection, angle=0.25, loose=None, notes=None):
+        SV, SF, owner = real(shape, deflection, angle, notes=notes)
         keep = owner != 0  # one whole face left out
         return SV, SF[keep], owner[keep]
 
@@ -146,7 +146,7 @@ def test_triangles_that_cut_across_a_curved_face_dont_count_as_gaps(monkeypatch)
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 
     real = fidelity.tessellate
-    monkeypatch.setattr(fidelity, "tessellate", lambda shape, deflection, angle=0.25, loose=None: real(shape, 0.3, 1.0))
+    monkeypatch.setattr(fidelity, "tessellate", lambda shape, deflection, angle=0.25, loose=None, notes=None: real(shape, 0.3, 1.0, notes=notes))
     cyl = trimesh.creation.cylinder(radius=5.0, height=10.0, sections=720)
     cyl.apply_translation((0, 0, 5))
     r = _strip(fidelity.compare(BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape(), [(cyl.vertices, cyl.faces)], 0.01, n_points=1500))
@@ -209,10 +209,10 @@ def test_preview_draws_a_face_the_mesher_left_out(tmp_path, monkeypatch):
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopExp import TopExp_Explorer
 
-    from mmm import stepio
+    from mmm import meshguard, stepio
 
     shape = BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()
-    real = stepio.BRepMesh_IncrementalMesh
+    real = meshguard.mesh
 
     def failing(s, *a):
         # the whole shape meshed, its side face left bare
@@ -221,7 +221,7 @@ def test_preview_draws_a_face_the_mesher_left_out(tmp_path, monkeypatch):
             BRepTools.Clean_s(TopExp_Explorer(shape, TopAbs_FACE).Current())
         return m
 
-    monkeypatch.setattr(stepio, "BRepMesh_IncrementalMesh", failing)
+    monkeypatch.setattr(meshguard, "mesh", failing)
     path = tmp_path / "p.mmmp"
     stepio.export_preview(shape, str(path), 22.0)
     b = path.read_bytes()
