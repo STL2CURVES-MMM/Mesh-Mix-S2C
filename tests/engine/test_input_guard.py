@@ -107,7 +107,6 @@ def test_any_finite_size_is_accepted(size):
 
 
 def test_a_model_outside_our_front_ends_sizes_goes_to_mmm_alone(tmp_path, monkeypatch):
-    monkeypatch.setattr(merged, "RIVALS", False)
     src = write(tmp_path, "tiny.stl", binary_stl(cube(0.05)))
     warnings = []
 
@@ -118,7 +117,7 @@ def test_a_model_outside_our_front_ends_sizes_goes_to_mmm_alone(tmp_path, monkey
 
     res = merged.convert_file(src, str(tmp_path / "tiny.step"), None, Rep())
     assert res["faces"] == 6
-    assert any("on its own" in m for m in warnings)
+    assert any("converted without it" in m for m in warnings)
 
 
 def test_a_mesh_every_triangle_of_which_the_weld_squashes_is_refused():

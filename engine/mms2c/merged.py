@@ -86,6 +86,9 @@ FALSE_SHARE = 0.5       # of a seed's area: taken by that test on less than this
 EXACT_KINDS = ("plane", "cylinder", "cone", "sphere", "torus")     # the surfaces a designer draws
 FREEFORM_SAVES = 0.75   # a way using freeform surfaces beats an all-exact one only with at most this share of its regions
 ON_SURFACE = 0.25       # share of MMM's tolerance the mesh's corners may stand off its exact surfaces in an area for them to win there
+MOTIF_GROUP = 0.05      # mm: cylinders whose radii lie this close are one recurrent motif's copies (_motifs)
+MOTIF_ROUND = 0.05      # mm: round radii, on this grid, are tried first for a motif ...
+MOTIF_ROUND_NEAR = 0.01 # mm: ... when the motif's own value lies this close to one
 LOOSE_WINS = 0.5        # a way whose area off the design is at most this share of the other's wins that cluster
 ON_DESIGN = 0.002       # mm: a triangle whose corners are all this near its exact surface is on the design (see _off_design)
 ON_DESIGN_SIZE = 2e-5   # ... or this share of the mesh's size, for a big part's float32 noise
@@ -488,6 +491,13 @@ def _nest(shells, seeds):
 
 
 def seeded_segmenter(shell, seeds, tol, quality, report=NULL):
+    """_seeded_segmenter, then each recurrent radius brought to one value (_motifs)."""
+    seg = _seeded_segmenter(shell, seeds, tol, quality, report)
+    _motifs(seg, report)
+    return seg
+
+
+def _seeded_segmenter(shell, seeds, tol, quality, report=NULL):
     """MMM's Segmenter for one shell, seeded with our features (_segment), checked where
     they are unsure against MMM's own segmentation (on demand).
 
@@ -595,6 +605,69 @@ def _loose_onto_exact(A, seeds):
     for i, j in into.items():
         out[j][1] = np.concatenate([out[j][1], out[i][1]])
     return [(surf, faces) for k, (surf, faces) in enumerate(out) if k not in into], len(into)
+
+
+def _motifs(seg, report=NULL):
+    """Recurrent motifs: a designer draws many holes, bosses and fillets at one radius, and MMM fits
+    each copy on its own, a few hundredths apart (x-end-idler: 11 cylinders drawn at 3.0 mm came out
+    from 2.95 to 3.04). Each of MMM's cylinders (ours, locked, are already equalised by
+    features.snap and never moved here) is offered its motif's value: the median radius of every
+    cylinder in the part within MOTIF_GROUP of its own, ours included, or the round value on
+    MOTIF_ROUND's grid when that median lies within MOTIF_ROUND_NEAR of one. The cylinder keeps its
+    axis direction, its axis line is refitted at that radius, and the change is kept only if MMM's
+    accept test still takes all its triangles. The group, not whichever side found a copy, is the
+    reference: copying the values of our locked surfaces pulled the knob's exact 0.3 mm surfaces to
+    0.298. On the designers' own parts, the share of our cylinders at a radius the designer used
+    went 69 -> 77% (x-end-idler), 57 -> 64% (el-box cover), 49 -> 83% (knob), with faces and
+    closeness to the mesh unchanged."""
+    regs = seg.regions
+    cyl = [r for r in regs if r.kind == "cylinder"]
+    if len(cyl) < 2:
+        return 0
+    radii = np.array([float(r.prim.r) for r in cyl])
+    moved = 0
+    for r in cyl:
+        if mcad._locked(r.prim):
+            continue
+        own = float(r.prim.r)
+        group = radii[np.abs(radii - own) <= MOTIF_GROUP]
+        if len(group) < 2:
+            continue
+        value = float(np.median(group))
+        rounded = round(value / MOTIF_ROUND) * MOTIF_ROUND
+        tries = ([rounded] if abs(rounded - value) <= MOTIF_ROUND_NEAR else []) + [value]
+        faces = np.asarray(r.faces, dtype=np.int64)
+        P = None
+        for v in tries:
+            if abs(v - own) < 1e-9:
+                break
+            if P is None:
+                P = seg.region_points(faces, True)[0]
+            new = mfit.Cylinder(_axis_at_radius(P, r.prim.d, r.prim.a, v), r.prim.d, v)
+            if seg.accept(new, r.sense, faces).all():
+                r.prim = new
+                moved += 1
+                break
+    if moved:
+        report.log(f"{moved} cylinder(s) brought to the radius their copies share (a designer's recurring "
+                   "hole, boss or fillet size)")
+    return moved
+
+
+def _axis_at_radius(P, d, a0, r, iters=8):
+    """The axis line, in direction d, that puts the points P at distance r from it, near a0 (Gauss-Newton
+    on the axis's offset across d)."""
+    u, v = mfit.perp_basis(d)
+    Q = np.c_[(P - a0) @ u, (P - a0) @ v]
+    c = np.zeros(2)
+    for _ in range(iters):
+        D = Q - c
+        rho = np.maximum(np.linalg.norm(D, axis=1), 1e-12)
+        step = np.linalg.lstsq(-D / rho[:, None], -(rho - r), rcond=None)[0]
+        c = c + step
+        if np.linalg.norm(step) < 1e-10:
+            break
+    return a0 + c[0] * u + c[1] * v
 
 
 def _clusters(A, B, comp, areas):
@@ -1257,6 +1330,7 @@ def _convert_parts(path, out, quality_, report, preset, base):
             try:
                 got = convert_file(src, dest, quality_, rep, preset=preset, base=sub) or rep.res or {}
             except Exception as e:
+                faults.caught(e)
                 report.warn(f"The part “{name}” couldn't be converted and was left out ({type(e).__name__}: {e}).")
                 continue
             r = {k: got.get(k) for k in ("preset", "presets", "valid", "solids", "shells", "faces", "edges", "volume",
