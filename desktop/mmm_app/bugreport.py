@@ -126,7 +126,7 @@ def build(job, settings):
     add("Settings" + (" (of the last conversion)" if run else " (current)"))
     add(f"  Preset:        {choice(PRESETS, r.preset).title}")
     q = run["quality"] if run else s.quality_for(job.triangles)
-    auto = r.preset == "auto" and r.autoQuality
+    auto = r.preset != "smooth"     # (every preset but Smooth takes it from the file's size)
     add(f"  Quality:       {'Auto, ' if auto else ''}{round(q * 100)}%")
     add(f"  Mesh repair:   {choice(REPAIR_LEVELS, r.repair).title}")
     add(f"  Units:         {choice(UNITS, r.unit).title}")

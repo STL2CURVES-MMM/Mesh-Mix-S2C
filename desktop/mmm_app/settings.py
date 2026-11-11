@@ -249,12 +249,17 @@ class Settings(QObject):
 
     @property
     def auto_quality_on(self):
-        return self.preset == "auto" and self.autoQuality
+        """Whether the quality comes from each file's size rather than the slider: always,
+        except with Smooth. For CAD, Auto and Precise the slider only loosened the fit
+        tolerance, and a looser one sometimes gave cleaner flat faces only by luck of where
+        the slider sat; the owners took it away there (2026-11-01). It stays for Smooth,
+        where it sets how much surface detail an organic model keeps."""
+        return self.preset != "smooth"
 
     def quality_for(self, triangles):
         """The quality a file with this many triangles is converted at."""
-        if self.auto_quality_on and triangles:
-            return auto_quality(triangles)
+        if self.auto_quality_on:
+            return auto_quality(triangles or 1)
         return self.quality
 
     @classmethod

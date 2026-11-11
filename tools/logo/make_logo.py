@@ -1,7 +1,8 @@
 """Draws the Mesh Mix-S2C logo as SVG: logo.svg (with the MM-S2C badge, used at
 64 px and up) and logo-small.svg (no badge, for 16 and 32 px, where the text
 would blur). render.js turns them into PNGs with Playwright
-(node render.js logo logo-small), and the app icons are resized from those."""
+(node render.js logo logo-small), and the app icons are resized from those. logo-win.svg is
+the Windows icon (make_win_icon.py), drawn to fill its square, without the badge."""
 import numpy as np, math
 W=1024
 BG='''<defs>
@@ -66,3 +67,15 @@ open('logo-small.svg','w').write(svg(A))
 # B: A plus S2C badge
 badge='<rect x="327" y="782" width="370" height="118" rx="46" fill="#0d0f14" fill-opacity="0.6"/><rect x="335" y="774" width="354" height="110" rx="42" fill="#2ad4f0"/><text x="512" y="851" font-family="DejaVu Sans, Arial, sans-serif" font-weight="bold" font-size="64" text-anchor="middle" fill="#0d0f14">MM-S2C</text>'
 open('logo.svg','w').write(svg(A+badge))
+# C: Windows (taskbar, Start, Explorer): Windows icons fill their square, with no transparent
+# margin and no text (Duvdivan, 2026-11-01: ours sat at half the size of its taskbar neighbours,
+# and the badge was 4 px tall at 32 px). The tile fills the square and the sphere is drawn
+# WIN_SCALE times as big; no badge at any size.
+WIN_SCALE = 1.45
+def svg_win(body):
+    full = ('<rect x="0" y="0" width="1024" height="1024" rx="190" fill="url(#bg)"/>'
+            + ''.join(f'<line x1="{x}" y1="0" x2="{x}" y2="1024" stroke="#ffffff" stroke-opacity="0.04" stroke-width="2"/>' for x in range(64, 1024, 64))
+            + ''.join(f'<line x1="0" y1="{y}" x2="1024" y2="{y}" stroke="#ffffff" stroke-opacity="0.04" stroke-width="2"/>' for y in range(64, 1024, 64)))
+    t = f'translate({cx} {cy}) scale({WIN_SCALE}) translate({-cx} {-cy})'
+    return f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{W}" viewBox="0 0 {W} {W}">{BG}{full}<g transform="{t}">{body}</g></svg>'
+open('logo-win.svg','w').write(svg_win(A))

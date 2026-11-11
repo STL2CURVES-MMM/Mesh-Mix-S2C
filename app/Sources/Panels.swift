@@ -824,25 +824,8 @@ struct SettingsPanel: View {
         }
     }
 
-    /// The slider's position: with Auto quality, the quality picked for the
-    /// selected file.
-    var shownQuality: Double {
-        settings.autoQualityOn ? settings.quality(for: model.selectedJob?.triangles) : settings.quality
-    }
-
-    var qualityHeader: String {
-        guard settings.autoQualityOn else { return qualityWord(settings.quality) }
-        guard let t = model.selectedJob?.triangles else { return "Auto" }
-        return "Auto · \(Int((settings.quality(for: t) * 100).rounded()))%"
-    }
-
     var qualityHint: String {
-        guard settings.autoQualityOn else { return settings.preset.qualityHint }
-        var h = "Auto picks the quality for each file from its size: up to 90% for small meshes, down to 50% for very big ones, so they don't take hours."
-        if let j = model.selectedJob, let t = j.triangles {
-            h += " “\(j.fileName)” gets \(Int((settings.quality(for: t) * 100).rounded()))%."
-        }
-        return h + " Move the slider to use one setting for every file."
+        "How much surface detail the smooth surfaces keep: more detail follows the mesh more closely, with more surfaces and a bigger file."
     }
 
     var body: some View {
@@ -859,52 +842,43 @@ struct SettingsPanel: View {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            SectionLabel(text: "Speed ↔ Quality")
-                            Spacer()
-                            Text(qualityHeader).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(accent)
-                            if settings.preset == .auto && !settings.autoQuality {
-                                // switches Auto quality back on
-                                Button("Auto") { settings.autoQuality = true }
-                                    .buttonStyle(GhostButtonStyle())
-                                    .font(.system(size: 10.5, weight: .medium))
-                                    .fixedSize()
-                                    .help("Pick the quality for each file from its size again")
+                    // (only with Smooth: every other preset takes the quality from each file's size)
+                    if !settings.autoQualityOn {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                SectionLabel(text: "Speed ↔ Quality")
+                                Spacer()
+                                Text(qualityWord(settings.quality)).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(accent)
+                            }
+                            Slider(value: $settings.quality, in: 0...1)
+                                .controlSize(.small)
+                                .accessibilityLabel("Speed versus quality")
+                            HStack {
+                                Label("Faster", systemImage: "hare").labelStyle(.titleAndIcon)
+                                Spacer()
+                                Label("Better", systemImage: "sparkles").labelStyle(.titleAndIcon)
+                            }
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.textFaint)
+                            Text(qualityHint)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Theme.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let warning = FineDetail.warning(jobs: model.jobs, quality: { settings.quality(for: $0.triangles) },
+                                                                preset: settings.preset, maxFaces: settings.maxFaces) {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12))
+                                    Text(warning)
+                                        .font(.system(size: 10.5))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .foregroundStyle(Theme.warn)
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel("Large file warning: \(warning)")
                             }
                         }
-                        Slider(value: Binding(get: { shownQuality }, set: { v in
-                            // moving the slider: one quality for every file
-                            if settings.autoQualityOn { settings.autoQuality = false }
-                            settings.quality = v
-                        }), in: 0...1)
-                            .controlSize(.small)
-                            .accessibilityLabel("Speed versus quality")
-                        HStack {
-                            Label("Faster", systemImage: "hare").labelStyle(.titleAndIcon)
-                            Spacer()
-                            Label("Better", systemImage: "sparkles").labelStyle(.titleAndIcon)
-                        }
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.textFaint)
-                        Text(qualityHint)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Theme.textDim)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let warning = FineDetail.warning(jobs: model.jobs, quality: { settings.quality(for: $0.triangles) },
-                                                            preset: settings.preset, maxFaces: settings.maxFaces) {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12))
-                                Text(warning)
-                                    .font(.system(size: 10.5))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .foregroundStyle(Theme.warn)
-                            .accessibilityElement(children: .combine)
-                            .accessibilityLabel("Large file warning: \(warning)")
-                        }
+                        .card()
                     }
-                    .card()
 
                     VStack(alignment: .leading, spacing: 10) {
                         SectionLabel(text: "Export to")
@@ -988,7 +962,7 @@ struct SettingsPanel: View {
                             Toggle("Remove tiny floating pieces", isOn: $settings.removeDebris).font(.system(size: 12))
                                 .onChange(of: settings.removeDebris) { _, _ in model.recheck() }
                             Toggle("Custom fit tolerance", isOn: $settings.useCustomTolerance).font(.system(size: 12))
-                                .help("How far the CAD surfaces may deviate from the mesh. Normally chosen automatically from the part size and the quality slider.")
+                                .help("How far the CAD surfaces may deviate from the mesh. Normally chosen automatically from the part size.")
                             if settings.useCustomTolerance {
                                 HStack {
                                     TextField("", value: $settings.customTolerance, format: .number)
