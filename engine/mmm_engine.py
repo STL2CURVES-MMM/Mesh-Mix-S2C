@@ -4,6 +4,14 @@ import sys
 import threading
 import time
 
+# (before anything loads numpy: mms2c pins OpenBLAS to one kernel family, so the app converts as the
+# benchmark and the command line do. Started through mmm.cli, numpy loaded first and the pin was
+# skipped: OpenBLAS ran the processor's own kernel (SkylakeX on an Intel Xeon, checked with
+# threadpoolctl), whose last digits differ and can tip a decision, see mms2c._pin_blas)
+from mms2c import _pin_blas
+
+_pin_blas()     # (already done on import; called so the reason it is imported is plain)
+
 
 def _windows_job():
     """Puts this process in a Windows job object that ends every process in it when its
