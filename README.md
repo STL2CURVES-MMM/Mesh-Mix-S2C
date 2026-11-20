@@ -33,6 +33,8 @@ The extra faces are mostly detail 2.0.1 left out. By current estimates the devel
 - **Closer to the mesh:** threads, fillets, holes and freeform areas follow the mesh more closely.
 - **Files every program reads the same way:** no surface of revolution is saved in the form some CAD programs misread (a body could come out with the wrong volume), and the saved file is read back and must be sound solids before it counts.
 - **Sturdier:** OpenCASCADE's own checks run in a watched helper process, so a crash inside one fails only that face, not the whole conversion. Each error is recorded and reported plainly.
+- **Screw threads read from their own motion:** a thread, worm, spring or helical gear is found by the screw motion its surface follows, and its outline is read from the mesh's own corners, so each flank becomes one face at the thread's true lead. This came after the measurements above, which don't include it yet.
+- **Experimental, switched off:** work on recovering the exact surfaces a designer drew (the `DESIGN_*` settings in `engine/mmm/cad.py`) is in the code with its main steps off by default.
 - **Precise is retired:** the engine converts it as Auto and says so. Auto's checks now cover what Precise was for. The app's menu still lists Precise until 2.0.2.
 
 ## What's new in 2.0

@@ -13,6 +13,9 @@ Points are then moved back along the motion into one plane (the
 profile's), where they lie on a curve; a smooth curve is fitted to them,
 and swept again to give the surface."""
 import numpy as np
+# Modified 2026-11-13, later (design intent): ProfileCurve takes spots=False, so the sketch step's runs are not reduced to cluster centres (docs/design-intent/probes/patch_spots61.py).
+# Modified 2026-11-12 (design intent; behind DESIGN_TIERS): an extruded surface is built from its curve's own poles, straight along the direction (SweptSurface._exact_extrusion).
+# Modified 2026-11-13 (design intent; behind DESIGN_TIERS): an open outline's curve may have at most MAX_POLES poles (ProfileCurve).
 # Modified 2026-11-04: a closed curve answers no points with no points, as an open one does (ProfileCurve.at).
 # Modified 2026-11-02: broad handlers call faults.caught.
 from . import faults
@@ -21,6 +24,7 @@ from .fitting import perp_basis, unit
 
 # a patch only counts as swept when its normals are this square to the
 # motion (rms, degrees) ...
+MAX_POLES = 512         # poles an outline's curve may have (design-intent prototype): no designer's sketch curve in the reference set has more than 421
 MAX_RMS_DEG = 2.0
 # ... and the best motion fits this many times better than the next one
 # (a cylinder or a plane fits two or three motions equally well: those are
@@ -436,7 +440,7 @@ class ProfileCurve:
     of a part pulled up or tapered all the way round) is periodic: its
     parameter goes round once over 0..1 and on past it."""
 
-    def __init__(self, P, tol, closed=False):
+    def __init__(self, P, tol, closed=False, spots=True):
         from scipy.interpolate import make_splprep
 
         P = np.asarray(P, float)
@@ -458,7 +462,7 @@ class ProfileCurve:
         # nothing about a curve between them, and a cubic through the
         # clusters swings far off: straight lines between their centres.
         gap = seg > 0.2 * seg.sum()
-        if gap.any() and gap.sum() <= 2:
+        if spots and gap.any() and gap.sum() <= 2:
             parts = np.split(P, np.nonzero(gap)[0] + 1)
             P = np.array([q.mean(0) for q in parts])
             seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
@@ -466,7 +470,19 @@ class ProfileCurve:
         t /= t[-1]
         # smooth within the tolerance, never wiggling between points
         k = min(3, len(P) - 1)
-        self.spl, _ = make_splprep(P.T, u=t, k=k, s=0.0 if k < 3 else len(P) * (0.25 * tol) ** 2)
+        s_ = 0.0 if k < 3 else len(P) * (0.25 * tol) ** 2
+        import os
+        capped = (k == 3 and len(P) > 2 * MAX_POLES and os.environ.get("DESIGN_TIERS") == "1"
+                  and os.environ.get("DESIGN_CURVE_CAP", "1") == "1")
+        if capped:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")      # (scipy says the condition wasn't met: that is tested just below)
+                self.spl, _ = make_splprep(P.T, u=t, k=k, s=s_, nest=MAX_POLES + k + 1)
+            if float(((np.asarray(self.spl(t)).T - P) ** 2).sum()) > 1.5 * s_:
+                raise ValueError("these points are not one curve: more than MAX_POLES poles would be needed")
+        else:
+            self.spl, _ = make_splprep(P.T, u=t, k=k, s=s_)
         self._finish(len(P))
 
     def _finish(self, n):
@@ -689,7 +705,75 @@ class SweptSurface:
         C = self.curve.at(s)
         return np.stack([self.motion.from_profile(C, tj) for tj in t], axis=1)  # (nu, nv, 3)
 
+    def _exact_extrusion(self):
+        """Design-intent prototype. The extruded surface as the curve's own poles and knots, straight along the
+        direction, or None when the curve's piece over the range can't be written that way exactly."""
+        from scipy.interpolate import make_lsq_spline
+
+        from OCP.collections import Array1_double, Array1_int
+        from OCP.collections import Array2_gp_Pnt
+        from OCP.Geom import Geom_BSplineSurface
+        from OCP.gp import gp_Pnt
+
+        c = self.curve
+        if c.dim != 2:
+            return None
+        s0, s1 = map(float, self.s_range)
+        t0, t1 = map(float, self.t_range)
+        if not (s1 > s0 and t1 > t0):
+            return None
+        if c.closed:
+            kn = np.asarray(c.tck[0], float)
+            k = int(c.tck[2])
+        else:
+            kn = np.asarray(c.spl.t, float)
+            k = int(c.spl.k)
+        if k != 3:
+            return None
+        gap = 1e-9 * (s1 - s0)
+        br = np.unique(kn[(kn > s0 + gap) & (kn < s1 - gap)])
+        t = np.r_[[s0] * 4, br, [s1] * 4]
+        # (four points in every span, ends included: the spline space with these breaks holds the curve's piece
+        # exactly when its inner knots are simple, and least squares then returns it)
+        edges = np.r_[s0, br, s1]
+        u = np.unique(np.concatenate([np.linspace(a, b, 5) for a, b in zip(edges[:-1], edges[1:])]))
+        Y = c.at(u)
+        spl = make_lsq_spline(u, Y, t, k=3)
+        chk = 0.5 * (u[1:] + u[:-1])
+        size = max(float(np.ptp(Y, axis=0).max()), 1e-12)
+        if not np.isfinite(spl.c).all() or float(np.abs(spl(chk) - c.at(chk)).max()) > 1e-9 * size:
+            return None
+        C = np.asarray(spl.c, float)
+        n = len(C)
+        poles = Array2_gp_Pnt(1, n, 1, 2)
+        for j, tj in enumerate((t0, t1)):
+            X = self.motion.from_profile(C, tj)
+            for i in range(n):
+                poles.SetValue(i + 1, j + 1, gp_Pnt(*map(float, X[i])))
+        uk = np.r_[s0, br, s1]
+        um = np.r_[4, np.ones(len(br), dtype=int), 4]
+        UK, UM = Array1_double(1, len(uk)), Array1_int(1, len(uk))
+        for i in range(len(uk)):
+            # (u and v run 0..1 over the ranges, as uv() and the edges placed by it expect)
+            UK.SetValue(i + 1, float((uk[i] - s0) / (s1 - s0)))
+            UM.SetValue(i + 1, int(um[i]))
+        VK, VM = Array1_double(1, 2), Array1_int(1, 2)
+        VK.SetValue(1, 0.0)
+        VK.SetValue(2, 1.0)
+        VM.SetValue(1, 2)
+        VM.SetValue(2, 2)
+        return Geom_BSplineSurface(poles, UK, VK, UM, VM, 3, 1)
+
     def geom(self):
+        if self._geom is None and self.motion.kind == "extrusion":
+            import os
+
+            if os.environ.get("DESIGN_TIERS") == "1" and os.environ.get("DESIGN_EXTRUDE_EXACT", "1") == "1":
+                try:
+                    self._geom = self._exact_extrusion()
+                except Exception as fault:
+                    faults.caught(fault)
+                    self._geom = None
         if self._geom is None:
             from OCP.Approx import Approx_IsoParametric
             from OCP.GeomAbs import GeomAbs_C2

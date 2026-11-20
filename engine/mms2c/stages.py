@@ -28,7 +28,10 @@ FOLDER = os.environ.get("MM_S2C_CACHE")
 STAGES = {
     "mesh": ["repair", "simplify", "bodies", "read3mf", ("features", "load_stl"), ("features", "grid_noise"),
              ("convert", "_repair_parts")],
-    "analysis": ["features", "fillets", "threads", "sizing"],
+    # (every module the analysis's results depend on: screws.py finds the threads threads.py builds, and was left out, so a change
+    # to the thread finder alone would have reused a stale analysis; it reads its allowance from MMM's fidelity check)
+    "analysis": ["features", "fillets", "threads", "screws", "sizing", "symmetry", "accuracy", "mmm.fidelity",
+                 ("mmm.pipeline", "auto_tolerance")],
     "blends": ["blends", "pipes", "freeform", "extrude"],
 }
 ORDER = list(STAGES)

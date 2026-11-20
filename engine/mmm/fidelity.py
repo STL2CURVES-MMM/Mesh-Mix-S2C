@@ -1,3 +1,4 @@
+# Modified 2026-11-05 (threads): a Surface can be told how many threads its nearest-point queries use (Surface.workers).
 """How closely a converted shape follows the mesh it came from.
 
 Being a valid solid with the right volume isn't enough: a shape can pass
@@ -744,6 +745,8 @@ class Surface:
     """A triangle surface that answers "how far is this point from you, and
     which way do you face there"."""
 
+    workers = -1    # threads a query uses: every core, unless a caller asking thousands of small questions knows better
+
     def __init__(self, V, F, spacing, rng, max_samples=3_000_000):
         self.V, self.F = V, F
         self.normals, area = _tri_normals(V, F)
@@ -781,7 +784,7 @@ class Surface:
         V, F = self.V, self.F
         for s in range(0, len(P), chunk):
             Q = P[s:s + chunk]
-            _, idx = self.tree.query(Q, k=min(k, len(self.points)), workers=-1)
+            _, idx = self.tree.query(Q, k=min(k, len(self.points)), workers=self.workers)
             idx = np.atleast_2d(idx)
             if idx.shape[0] != len(Q):
                 idx = idx.T

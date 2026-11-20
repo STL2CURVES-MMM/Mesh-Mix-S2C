@@ -951,8 +951,8 @@ def _generous_surface(feature, bound, mesh, exact=True):
     return _revolved_face(bound, lo, hi, u0, span, exact)
 
 
-THREAD_SAMPLES = 48     # points a turn on a thread's helices (a B-spline through them is
-                        # well under a micron off)
+THREAD_SAMPLES = 48     # points a turn on a thread's helices, at the least; past a radius of 26 mm the radius asks for
+                        # more (Helical.samples_per_turn, threads.HELIX_SURFACE_FIT)
 
 
 def thread_reach(feature):
@@ -972,9 +972,15 @@ def _thread_surface(feature, m):
     from OCP.Geom import Geom_BSplineSurface
     from OCP.collections import Array1_double, Array1_int, Array2_gp_Pnt, HArray1_double
     (u0, u1), (lo, hi) = thread_reach(feature)
-    if min(m.p[1] + lo * m.t[1], m.p[1] + hi * m.t[1]) <= 0:
+    rho_lo, rho_hi = float(m.at(lo)[1]), float(m.at(hi)[1])
+    if min(rho_lo, rho_hi) <= 0:
         return None                     # would cross the axis
-    U = np.linspace(u0, u1, max(8, int(math.ceil((u1 - u0) / TWO_PI * THREAD_SAMPLES)) + 1))
+    from .threads import ArcFlank, CurveFlank, HELIX_SURFACE_FIT
+    per_turn = max(THREAD_SAMPLES, m.thread.samples_per_turn(max(rho_lo, rho_hi), HELIX_SURFACE_FIT))
+    if isinstance(m, (ArcFlank, CurveFlank)):
+        # (a smooth piece of a screw sweep's profile as an arc is: helices across it, as many as its tightest bend asks)
+        return _arc_thread_surface(m, u0, u1, lo, hi, per_turn, HELIX_SURFACE_FIT)
+    U = np.linspace(u0, u1, max(8, int(math.ceil((u1 - u0) / TWO_PI * per_turn)) + 1))
     params = HArray1_double(1, len(U))
     for i, u in enumerate(U):
         params.SetValue(i + 1, float(u))
@@ -1003,6 +1009,57 @@ def _thread_surface(feature, m):
     vm.SetValue(1, 2)
     vm.SetValue(2, 2)
     return Geom_BSplineSurface(poles, uk, vk, um, vm, a.Degree(), 1)
+
+
+def _arc_thread_surface(m, u0, u1, lo, hi, per_turn, fit):
+    """A rounded piece of a thread's profile (or a smooth one of a screw sweep's, m.radius its tightest bend) swept along its helix: helices at positions across the arc, each a spline through the same angles and so with the same knots, then a spline across those through
+    their poles. How many helices across is set by the arc's radius the way a helix's points are by its own (Helical.samples_per_turn), a circle being a circle whichever way it runs."""
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.collections import Array1_double, Array1_int, Array2_gp_Pnt, HArray1_double
+    U = np.linspace(u0, u1, max(8, int(math.ceil((u1 - u0) / TWO_PI * per_turn)) + 1))
+    across = m.thread.samples_per_turn(m.radius, fit)
+    S = np.linspace(lo, hi, max(4, int(math.ceil((hi - lo) / m.radius / TWO_PI * across)) + 1))
+    params = HArray1_double(1, len(U))
+    for i, u in enumerate(U):
+        params.SetValue(i + 1, float(u))
+    rows = []
+    for s in S:
+        arr = HArray1_gp_Pnt(1, len(U))
+        for i, p in enumerate(m.point(np.full(len(U), float(s)), U)):
+            arr.SetValue(i + 1, _pnt(p))
+        interp = GeomAPI_Interpolate(arr, params, False, 1e-9)
+        interp.Perform()
+        if not interp.IsDone():
+            return None
+        rows.append(interp.Curve())
+    a = rows[0]
+    vparams = HArray1_double(1, len(S))
+    for j, s in enumerate(S):
+        vparams.SetValue(j + 1, float(s))
+    columns = []
+    for i in range(1, a.NbPoles() + 1):
+        arr = HArray1_gp_Pnt(1, len(S))
+        for j, row in enumerate(rows):
+            arr.SetValue(j + 1, row.Pole(i))
+        interp = GeomAPI_Interpolate(arr, vparams, False, 1e-9)
+        interp.Perform()
+        if not interp.IsDone():
+            return None
+        columns.append(interp.Curve())
+    b = columns[0]
+    poles = Array2_gp_Pnt(1, a.NbPoles(), 1, b.NbPoles())
+    for i, col in enumerate(columns):
+        for j in range(1, b.NbPoles() + 1):
+            poles.SetValue(i + 1, j, col.Pole(j))
+    uk, um = Array1_double(1, a.NbKnots()), Array1_int(1, a.NbKnots())
+    for i in range(1, a.NbKnots() + 1):
+        uk.SetValue(i, a.Knot(i))
+        um.SetValue(i, a.Multiplicity(i))
+    vk, vm = Array1_double(1, b.NbKnots()), Array1_int(1, b.NbKnots())
+    for i in range(1, b.NbKnots() + 1):
+        vk.SetValue(i, b.Knot(i))
+        vm.SetValue(i, b.Multiplicity(i))
+    return Geom_BSplineSurface(poles, uk, vk, um, vm, a.Degree(), b.Degree())
 
 
 def _thread_face(feature, k, mesh, owner, bounds, edge_tri, straight=False):

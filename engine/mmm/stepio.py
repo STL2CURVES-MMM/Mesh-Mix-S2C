@@ -1,5 +1,6 @@
 """STEP writing, validation and preview export."""
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-15 (design intent): the read-back check names each broken face (and which of its outlines, edges and corners fail; slivers called so, patch 97), where it is and why (_describe_bad_face; "bad_face_list" in the result).
 # Modified 2026-11-04: messages and file metadata users see name the current program (Mesh Mix-S2C).
 # Modified 2026-11-03 for the stl2curves merged engine: spindle tori and surfaces of revolution are saved
 # as B-spline surfaces (_readable_everywhere), because Fusion misreads what OCC's writer makes of them.
@@ -471,6 +472,93 @@ def open_up(shape):
     return out
 
 
+NAME_FACES = 5      # broken faces named one by one in the message (all of them go into "bad_face_list")
+SLIVER_AREA = 1e-4  # mm2: a face this small is a sliver (0.01 x 0.01 mm), whatever else is wrong with it
+STRAY_POINTS = 101  # points along an edge at which its curve on a face is checked against the edge
+
+
+def _describe_bad_face(face):
+    """What a broken face is, where it is and, as far as can be measured, why: {kind, area, centre, cause}."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d, BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.ShapeAnalysis import ShapeAnalysis_Wire
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_WIRE
+
+    S = BRepAdaptor_Surface(face, False)
+    kind = {"GeomAbs_Plane": "flat face", "GeomAbs_Cylinder": "cylinder", "GeomAbs_Cone": "cone",
+            "GeomAbs_Sphere": "sphere", "GeomAbs_Torus": "torus"}.get(str(S.GetType()).split(".")[-1], "freeform face")
+    g = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, g)
+    area = float(g.Mass())
+    c = g.CentreOfMass()
+    centre = [c.X(), c.Y(), c.Z()]
+    if abs(area) < 1e-9:
+        # (a face with no area has no centre of mass: the middle of its corners says where it is; tried on the
+        # rpi-5 slim-ports case, whose zero-area face was otherwise reported at (0, 0, 0))
+        from OCP.TopAbs import TopAbs_VERTEX
+
+        pts, exv = [], TopExp_Explorer(face, TopAbs_VERTEX)
+        while exv.More():
+            q = BRep_Tool.Pnt_s(TopoDS.Vertex(exv.Current()))
+            pts.append((q.X(), q.Y(), q.Z()))
+            exv.Next()
+        if pts:
+            centre = [float(v) for v in np.mean(np.asarray(pts), axis=0)]
+    causes = []
+    if abs(area) < 1e-9:
+        causes.append("it has no area")
+    elif abs(area) < SLIVER_AREA:
+        causes.append(f"it has almost no area ({abs(area):.2g} mm2: a sliver)")
+    if area < 0 and abs(area) >= 1e-9:
+        causes.append("it is inside out")
+    ex = TopExp_Explorer(face, TopAbs_WIRE)
+    while ex.More():
+        w = TopoDS.Wire(ex.Current())
+        ex.Next()
+        if ShapeAnalysis_Wire(w, face, 1e-6).CheckSelfIntersection():
+            causes.append("its outline crosses itself")
+            break
+    worst = 0.0
+    ex = TopExp_Explorer(face, TopAbs_EDGE)
+    while ex.More():
+        e = TopoDS.Edge(ex.Current())
+        ex.Next()
+        if BRep_Tool.Degenerated_s(e):
+            continue
+        c3, c2 = BRepAdaptor_Curve(e), BRepAdaptor_Curve2d(e, face)
+        a3, b3, a2, b2 = c3.FirstParameter(), c3.LastParameter(), c2.FirstParameter(), c2.LastParameter()
+        for k in range(STRAY_POINTS):
+            t = k / (STRAY_POINTS - 1)
+            q = c2.Value(a2 + t * (b2 - a2))
+            d = c3.Value(a3 + t * (b3 - a3)).Distance(S.Value(q.X(), q.Y()))
+            worst = max(worst, d - BRep_Tool.Tolerance_s(e))
+    if worst > 0:
+        causes.append(f"an edge's curve on it strays {worst:.3g} mm off the edge")
+    # (which of its sub-shapes fail the face's own check: the only reading of BRepCheck's verdicts OCP gives)
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_VERTEX
+
+    an = BRepCheck_Analyzer(face)
+    for typ, words in ((TopAbs_WIRE, "outline"), (TopAbs_EDGE, "edge"), (TopAbs_VERTEX, "corner")):
+        n = bad = 0
+        ex = TopExp_Explorer(face, typ)
+        while ex.More():
+            n += 1
+            bad += not an.IsValid(ex.Current())
+            ex.Next()
+        if bad:
+            causes.append(f"{bad} of its {n} {words}s fail{'s' if bad == 1 else ''} the check on this face"
+                          if n > 1 else f"its {words} fails the check on this face")
+    return {"kind": kind, "area": round(abs(area), 6), "centre": [round(v, 3) for v in centre],
+            "cause": "; ".join(causes) or "it fails OpenCascade's validity check for a reason not named here"}
+
+
+def _say_bad_face(d):
+    x, y, z = d["centre"]
+    return f"a {d['kind']} of {d['area']:.3g} mm2 at ({x}, {y}, {z}), where {d['cause']}"
+
+
 def verify_step(path, expected_solids=1, mesh_volume=0.0, open_parts=0):
     """Read a STEP file back the way a CAD program would and check it.
 
@@ -512,16 +600,25 @@ def verify_step(path, expected_solids=1, mesh_volume=0.0, open_parts=0):
         issues.append(_issue("missing_solids", "warning",
                              f"Only {st['solids']} of {expected_solids} parts came out as solids; the others are open surfaces."))
     bad = 0
+    named = []
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         if not BRepCheck_Analyzer(exp.Current()).IsValid():
             bad += 1
+            try:
+                named.append(_describe_bad_face(TopoDS.Face(exp.Current())))
+            except Exception as fault:
+                faults.caught(fault)
         exp.Next()
     out["bad_faces"] = bad
+    out["bad_face_list"] = named
     out["valid"] = not bad and is_valid(shape)
     if bad:
+        which = "; ".join(_say_bad_face(d) for d in named[:NAME_FACES])
+        more = f"; and {bad - NAME_FACES} more" if bad > NAME_FACES else ""
         issues.append(_issue("bad_faces", "warning",
-                             f"{bad} face{'s have' if bad > 1 else ' has'} small geometry errors. "
+                             f"{bad} face{'s have' if bad > 1 else ' has'} small geometry errors"
+                             + (f": {which}{more}" if which else "") + ". "
                              "Fusion and most CAD programs repair these automatically when importing."))
     elif not out["valid"]:
         issues.append(_issue("invalid", "warning",
