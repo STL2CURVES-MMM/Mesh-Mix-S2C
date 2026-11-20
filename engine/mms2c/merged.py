@@ -1,3 +1,4 @@
+# Modified 2026-11-15 (design intent): a sphere found round an axis keeps it (prim.axis, for patch 102).
 """
 The merged engine: stl2curves and Manifold Mesh Mix (MMM, mms2c/mmm, AGPL-3.0) as one
 pipeline, meeting on one labelling of each shell's triangles.
@@ -79,6 +80,7 @@ UNIT_NOTE = (1.0, 3000.0)
 FLAT = 1e-9         # a closed body enclosing less than this times the model's diagonal cubed: no volume
 INSIDE_OWN = 0.99   # share of a feature's own corners that must pass its surface's domain test to use it
 # our seeds against MMM's own segmentation where they are unsure (seeded_segmenter):
+SURE_AREA = 0.98        # share of an area held by surfaces the corners state for the first segmentation to be sure there
 PATCH_SEEDS = 3         # seeds of ours (threads aside) in one smooth area that call for the comparison
 PATCH_CREASE_DEG = 30.0  # deg: a smooth area ends where triangles meet at more than this (as MMM's _find_sweeps)
 SURE_SHARE = 0.99       # share of a seed's triangles MMM's own accept test must take for the seed to be sure
@@ -165,6 +167,9 @@ def mmm_surface(feature, mesh):
     m = feature.model
     if feature.kind == "blend" or m is None:
         return None
+    flat = _thread_flat(m)
+    if flat is not None:
+        return flat
     prim = None
     if isinstance(m, F.Sphere):
         prim = mfit.Sphere(m.c, m.r)
@@ -183,6 +188,7 @@ def mmm_surface(feature, mesh):
             centre = a + zc * d
             if rc == 0:
                 prim = mfit.Sphere(centre, r)
+                prim.axis = np.asarray(d, float)    # (the axis it was found round: cad._straight_where_two_rows, patch 102)
             elif rc > SPINDLE * r:
                 prim = mfit.Torus(centre, d, rc, r)
     if prim is not None:
@@ -193,6 +199,32 @@ def mmm_surface(feature, mesh):
     if geom is None:
         return None
     return OurSurface(m, geom, _orientation(m, geom, mesh, feature), _inside(feature, mesh))
+
+
+def _thread_flat(m):
+    """A thread's crest or root flat as the designer's surface: a locked cylinder (a cone when the thread tapers), or None.
+
+    A straight piece of a thread's profile whose two ends lie at one radius (threads._model_of makes a crest or root flat exactly
+    flat when it is flat to the file's rounding) sweeps a helical band round a cylinder. Swept as a B-spline like the thread's other
+    pieces (build._thread_surface), the designed cylinders the crests are (and a shank at the same radius) came out as B-splines:
+    the judge counted them lost, 12-19% of the metric bolts' detail (m6x1x20, m8x125x25: about 0% as cylinders). MMM builds a locked
+    cylinder through its own path, helical borders and all. The cost: a cylinder face can't wind past one turn, so a band of many
+    turns becomes one face per turn (341board 273 -> 518 faces, mppt 206 -> 627, voltagefilter 335 -> 675, measured on the 399's
+    50 threaded parts, 2026-11-09), which the owner accepted, with skittles-rotor's end face going freeform where its corner with the
+    first band can't be met exactly (lost 1.9% -> 2.6%: a fitted face that can't reach the corner its exact neighbours define)."""
+    from . import threads
+    if getattr(m, "kind", None) != "thread" or type(m) is not threads.Flank or float(m.p[1]) != float(m.q[1]):
+        return None
+    th = m.thread
+    a, d, rho = np.asarray(th.a, float), np.asarray(th.d, float), float(m.p[1])
+    if not th.k:
+        prim = mfit.Cylinder(a, d, rho)
+    else:
+        # (the profile's radii are reduced ones, at zref along the axis: the band's radius is rho + k (z - zref), nothing where it
+        # reaches zero)
+        prim = mfit.Cone(a + (th.zref - rho / th.k) * d, d if th.k > 0 else -d, math.atan(abs(th.k)))
+    prim.locked = True
+    return prim
 
 
 def _inside(feature, mesh):
@@ -494,7 +526,79 @@ def seeded_segmenter(shell, seeds, tol, quality, report=NULL):
     """_seeded_segmenter, then each recurrent radius brought to one value (_motifs)."""
     seg = _seeded_segmenter(shell, seeds, tol, quality, report)
     _motifs(seg, report)
+    if os.environ.get("DESIGN_TIERS") == "1" and os.environ.get("DESIGN_ROUND_RADII", "1") == "1":
+        _round_radii(seg, report)
     return seg
+
+
+def _round_radii(seg, report=NULL):
+    """A radius within a hair of a round value becomes it (the design-intent prototype; measured in
+    docs/design-intent/probes/patch_roundvalue86.py): the mesh's corners state a radius to about 1e-6 mm and
+    cannot tell values closer than 1e-5, and designers' radii lie on a 0.001 mm grid three times in four. The
+    surface keeps everything else it carries, and the change is kept only if it loses no triangle."""
+    import copy
+    grid = float(os.environ.get("DESIGN_ROUND_GRID", "0.001"))
+    near = float(os.environ.get("DESIGN_ROUND_NEAR", "1e-5"))
+    far = max(near, float(os.environ.get("DESIGN_ROUND_FAR", "1e-4")))
+    moved = 0
+
+    def round_of(v, reach):
+        g = round(v / grid) * grid
+        return g if 1e-12 < abs(g - v) <= reach and g > 0 else None
+
+    def offered(r, reach):
+        """The region's surface with its radii brought to the grid where they lie within `reach` of it (None: none
+        does), and the corners it was measured on."""
+        prim = r.prim
+        new = copy.copy(prim)
+        if r.kind == "torus":
+            gR, gr = round_of(float(prim.R), reach), round_of(float(prim.r), reach)
+            if gR is None and gr is None:
+                return None, None
+            new.R = float(prim.R) if gR is None else gR
+            new.r = float(prim.r) if gr is None else gr
+        else:
+            g = round_of(float(prim.r), reach)
+            if g is None:
+                return None, None
+            new.r = g
+        P = seg.region_points(np.asarray(r.faces, dtype=np.int64), True)[0]
+        if r.kind == "cylinder":
+            a_ = np.asarray(_axis_at_radius(P, prim.d, prim.a, new.r), float)
+            new.a = a_ - (a_ @ prim.d) * prim.d
+        return new, P
+
+    def same(x, y):
+        return all(abs(float(getattr(x, k)) - float(getattr(y, k))) <= 1e-12 for k in ("R", "r") if hasattr(x, k))
+
+    for r in seg.regions:
+        if r.kind not in ("cylinder", "sphere", "torus"):
+            continue
+        prim = r.prim
+        new, P = offered(r, far)
+        if new is None:
+            continue
+        close, _ = offered(r, near)
+        if close is None or not same(new, close):
+            # (a radius further off than the file's rounding: the corners must fit the round value no worse)
+            m_new = float(np.median(np.abs(new.distance(P)))) if len(P) >= 8 else np.inf
+            # (and the corners must state the round surface: on it within a quarter of the exact limit. A poorly
+            # solved surface fits any value near it equally badly, and 14.9990 for a designer's 15 is worse than 14.99895)
+            # (and they must TELL: twice as close to the round surface as to the solved one. On a short arc the axis
+            # takes up any change of radius and the corners fit 14.999 and 15 alike: no statement, no rounding)
+            tells_ = float(os.environ.get("DESIGN_ROUND_TELLS", "0.5"))
+            if not (m_new <= tells_ * float(np.median(np.abs(prim.distance(P)))) and m_new <= 0.25 * float(getattr(seg, "exact_lim", 0.0) or 0.0)):
+                new = close
+        if new is None:
+            continue
+        faces = np.asarray(r.faces, dtype=np.int64)
+        own_ok = seg.accept(prim, r.sense, faces)
+        if bool((seg.accept(new, r.sense, faces) | ~own_ok).all()):
+            r.prim = new
+            moved += 1
+    if moved:
+        report.log(f"{moved} surface(s) a hair off a round radius brought to it")
+    return moved
 
 
 def _seeded_segmenter(shell, seeds, tol, quality, report=NULL):
@@ -544,12 +648,37 @@ def _seeded_segmenter(shell, seeds, tol, quality, report=NULL):
     # has: a Raspberry Pi case's port frame, chamfer planes and corner cones, was one
     # freeform piece, and never compared)
     areas = {a for a in unsure if count[a] >= PATCH_SEEDS or a in loose or a in false}
+    if areas and os.environ.get("DESIGN_TIERS") == "1" and os.environ.get("DESIGN_SURE_A", "0") == "1":      # (tried: skipping costs quality; see below)
+        # (design-intent prototype: second checks only on demand. Where the first segmentation holds an area by
+        # surfaces the mesh's corners state, exact ones and the sketch step's, it is sure, and nothing is compared)
+        stated = np.zeros(len(A.F), dtype=bool)
+        for reg in A.regions:
+            if getattr(reg.prim, "exact", None) is not None or getattr(reg.prim, "stated", False):
+                stated[np.asarray(reg.faces, dtype=np.int64)] = True
+        sure = set()
+        for a in areas:
+            t = comp == a
+            if float(A.fa[t & stated].sum()) >= SURE_AREA * float(A.fa[t].sum()):
+                sure.add(a)
+        if sure:
+            report.log(f"In {len(sure)} of {len(areas)} smooth area(s) our first surfaces looked unsure, but the segmentation there "
+                       f"rests on surfaces the mesh's corners state, so no second one is tried")
+            areas -= sure
     if not areas:
         held.replay()
         return A
     mine = {i for i, (surf, _) in enumerate(seeds) if where[i] in areas and not _thread(surf)}
     held_b = _Held(report)
-    B = _segment(shell, [s for i, s in enumerate(seeds) if i not in mine], tol, quality, held_b)
+    seeds_b = [s for i, s in enumerate(seeds) if i not in mine]
+    if os.environ.get("DESIGN_TIERS") == "1" and os.environ.get("DESIGN_SEED_B", "1") == "1":
+        # (design-intent prototype: what the first segmentation proved, surfaces the mesh's corners state, the second
+        # starts from, and works only on the rest)
+        own = {id(surf) for surf, _ in seeds_b}
+        proved = [(reg.prim, np.asarray(reg.faces, dtype=np.int64)) for reg in A.regions
+                  if len(reg.faces) and id(reg.prim) not in own
+                  and (getattr(reg.prim, "exact", None) is not None or getattr(reg.prim, "stated", False))]
+        seeds_b = proved + seeds_b
+    B = _segment(shell, seeds_b, tol, quality, held_b)
     cluster, compared = _clusters(A, B, comp, areas)
     off_a, off_b = _off_design(A), _off_design(B)
     theirs = np.zeros(int(cluster.max()) + 1, dtype=bool)
@@ -636,6 +765,10 @@ def _motifs(seg, report=NULL):
         value = float(np.median(group))
         rounded = round(value / MOTIF_ROUND) * MOTIF_ROUND
         tries = ([rounded] if abs(rounded - value) <= MOTIF_ROUND_NEAR else []) + [value]
+        exact = getattr(r.prim, "exact", None)
+        if exact is not None and not (float(group.min()) <= rounded <= float(group.max())):
+            tries = [value]         # (a round value the copies' own readings do not reach is a guess)
+        own_ok = None
         faces = np.asarray(r.faces, dtype=np.int64)
         P = None
         for v in tries:
@@ -644,7 +777,14 @@ def _motifs(seg, report=NULL):
             if P is None:
                 P = seg.region_points(faces, True)[0]
             new = mfit.Cylinder(_axis_at_radius(P, r.prim.d, r.prim.a, v), r.prim.d, v)
-            if seg.accept(new, r.sense, faces).all():
+            if exact is not None:
+                new.exact = exact       # (so the test below asks its corners at the exact limit)
+                if own_ok is None:
+                    own_ok = seg.accept(r.prim, r.sense, faces)
+                took = bool((seg.accept(new, r.sense, faces) | ~own_ok).all())      # (it loses no triangle)
+            else:
+                took = bool(seg.accept(new, r.sense, faces).all())
+            if took:
                 r.prim = new
                 moved += 1
                 break
@@ -748,8 +888,20 @@ def _freeform(surf):
 
 
 def _exact(reg):
-    """A surface a designer draws, of MMM's own types (not a wrapped approximation of ours)."""
+    """A surface a designer draws, of MMM's own types (not a wrapped approximation of ours), or (design-intent
+    prototype, 2026-11-12) one the mesh's corners state, whatever its type: an extruded curve from the sketch step."""
+    if getattr(reg.prim, "stated", False):
+        return True
     return reg.kind in EXACT_KINDS and not isinstance(reg.prim, OurSurface)
+
+
+def _stated_limit(seg):
+    """Design-intent prototype. With the two tiers on, how near its surface a corner that states it lies: the
+    mesh's own measured accuracy. None otherwise (the fixed limits as before)."""
+    if os.environ.get("DESIGN_TIERS") != "1" or os.environ.get("DESIGN_CHOOSER_STATED", "1") != "1":
+        return None
+    lim = getattr(seg, "exact_lim", None)
+    return float(lim) if lim else None
 
 
 def _on_surfaces(seg, tris):
@@ -764,7 +916,11 @@ def _on_surfaces(seg, tris):
         if not _exact(reg):
             return False
         corners = seg.V[np.unique(seg.F[tris[labels == r]])]
-        if float(reg.prim.distance(corners).max()) > ON_SURFACE * seg.tol:
+        stated = _stated_limit(seg)
+        if stated is not None and not getattr(reg.prim, "stated", False):
+            if float(np.max(seg._stated_d(reg.prim, tris[labels == r], stated))) > stated:
+                return False
+        elif float(reg.prim.distance(corners).max()) > ON_SURFACE * seg.tol:
             return False
         found = True
     return found
@@ -782,11 +938,17 @@ def _off_design(seg):
     torus through head's three rings of corners holds every one of them."""
     off = np.ones(len(seg.F), dtype=bool)
     near = max(ON_DESIGN, ON_DESIGN_SIZE * float(np.linalg.norm(np.ptp(seg.V, axis=0))))
+    stated = _stated_limit(seg)
     for reg in seg.regions:
         faces = np.asarray(reg.faces, dtype=np.int64)
         if len(faces) and _exact(reg):
-            d = np.asarray(reg.prim.distance(seg.V[seg.F[faces].ravel()])).reshape(-1, 3)
-            off[faces] = (d.max(axis=1) > near) | ~np.isfinite(seg.face_error(reg.prim, reg.sense, faces)[0])
+            if stated is not None and not getattr(reg.prim, "stated", False):
+                # (the mesh's own accuracy, measured: a simple surface its corners don't state isn't the design)
+                far = np.asarray(seg._stated_d(reg.prim, faces, stated)) > stated
+            else:
+                d = np.asarray(reg.prim.distance(seg.V[seg.F[faces].ravel()])).reshape(-1, 3)
+                far = d.max(axis=1) > near
+            off[faces] = far | ~np.isfinite(seg.face_error(reg.prim, reg.sense, faces)[0])
     return off
 
 
@@ -797,6 +959,19 @@ def _sure(seg, surf, faces):
     if isinstance(surf, OurSurface):
         return False
     faces = np.asarray(faces, dtype=np.int64)
+    if (os.environ.get("DESIGN_TIERS") == "1" and os.environ.get("DESIGN_SURE_STATED", "1") == "1"
+            and getattr(seg, "exact_lim", None) and len(faces) >= 4
+            and getattr(surf, "kind", None) in ("cylinder", "cone", "sphere", "torus") and not hasattr(surf, "geom")):
+        # (design-intent prototype: on a mesh whose corners state its surfaces, a curved surface of ours that the
+        # exact claim did not take is not stated by them. The surface now holding most of the seed's triangles is
+        # asked, because the claim may have solved it again.)
+        lab = seg.label[faces]
+        lab = lab[lab >= 0]
+        if not lab.size:
+            return False
+        now = seg.regions[int(np.bincount(lab).argmax())].prim
+        if getattr(now, "kind", None) in ("cylinder", "cone", "sphere", "torus") and getattr(now, "exact", None) is None:
+            return False
     return float(seg.accept(surf, seg.sense_of(surf, faces), faces).mean()) >= SURE_SHARE
 
 

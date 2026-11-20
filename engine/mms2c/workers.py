@@ -96,6 +96,7 @@ def _start(n):
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     try:
         pool = _launching = ProcessPoolExecutor(n, initializer=_watch_parent)
+        _quiet_when_stopped(pool)
         # (on Windows a worker is only launched when a job finds none idle, one at a
         # time, in the middle of sending work out: they are all launched here instead,
         # one by one, minding stop() meanwhile. Each launch takes a second or so, however
@@ -207,7 +208,26 @@ def _stop_launching():
 threading._register_atexit(_stop_launching)
 
 
+def _quiet_when_stopped(pool):
+    """The pool's call queue says nothing when its pipe fails because the pool is being stopped on purpose: the
+    workers are terminated at once (_terminate), and the queue's feeder thread may still be writing a cancelled job
+    into a worker's pipe, which then fails with "handle is closed" and printed a traceback into the log (two parts
+    of 278 in a full run, results unharmed). Every other feeder error goes to the queue's own hook as before."""
+    q = getattr(pool, "_call_queue", None)
+    if q is None:
+        return
+    orig = q._on_queue_feeder_error
+
+    def on_error(e, obj):
+        if getattr(pool, "_stopping_on_purpose", False) and isinstance(e, OSError):
+            return
+        orig(e, obj)
+
+    q._on_queue_feeder_error = on_error
+
+
 def _terminate(pool):
+    pool._stopping_on_purpose = True
     for p in list((getattr(pool, "_processes", None) or {}).values()):
         p.terminate()
     pool.shutdown(wait=False, cancel_futures=True)

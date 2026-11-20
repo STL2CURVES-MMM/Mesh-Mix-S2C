@@ -1,3 +1,4 @@
+# Modified 2026-11-15 (design intent): each repair step is recorded in the fault file with its time and outcome (patch 101).
 """Automatic repair of a saved STEP file.
 
 CAD programs such as Fusion, SolidWorks and Onshape heal small errors when
@@ -138,9 +139,13 @@ def repair(items, path, check, write, verify, tol, report=NULL):
     tol = max(float(tol), 1e-6)
     tmpdir = tempfile.mkdtemp(prefix="mmm-repair-")
     try:
+        from . import faultlog
+        import time as _time
+
         for label, step in STEPS:
             if not needs_repair(check):
                 break
+            t0 = _time.time()
             try:
                 cand = step(items, path, tol)
                 cpath = os.path.join(tmpdir, "candidate.step")
@@ -149,7 +154,9 @@ def repair(items, path, check, write, verify, tol, report=NULL):
             except Exception as e:
                 faults.caught(e)
                 report.log(f"Repair step '{label}' didn't work ({e})")
+                faultlog.repair_step(label, f"failed: {type(e).__name__}: {e}", None, _time.time() - t0)
                 continue
+            faultlog.repair_step(label, "helped" if _better(c, check) else "didn't help", c, _time.time() - t0)
             if _better(c, check):
                 part = path + ".part"
                 shutil.copyfile(cpath, part)

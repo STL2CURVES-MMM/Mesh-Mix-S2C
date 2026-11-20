@@ -12,6 +12,9 @@ agree in place become one place, and a cylinder, torus or cone that nearly touch
 smoothly is moved to touch it exactly. (Constraint recovery after fitting, as in GlobFit, Li et al.
 2011, here only for relations found between neighbours and only within small limits.) A surface whose
 own triangles would no longer fit after the change keeps its fit."""
+# Modified 2026-11-14, night (design intent; only with DESIGN_TIERS=1): _touch_cylinder holds a radius that lies on the design grid and moves only the axis to touch the neighbours (patch 87; docs/design-intent/probes/patch_touchkeeps87.py).
+# Modified 2026-11-15 (design intent; with DESIGN_DIR_CONSENSUS=1): a group's direction is the one the most member area still fits, not the area-weighted mean (_directions).
+# Modified 2026-11-12 (design intent; with DESIGN_TIERS=1): a cone is settled in one move, its neighbour's axis, a whole-degree angle and its apex to suit, when its corners allow (_settle_cone).
 import copy
 
 import numpy as np
@@ -23,6 +26,7 @@ TOUCH = 0.3             # tolerances: a surface this far from touching its neigh
 TOUCH_DEG = 1.0         # degrees: a cone's angle may change this much to touch a plane smoothly
 RADIUS_COST = 0.1       # how much a radius gives way against an axis's position, when both must change to touch
 KEEP_FIT = 1.5          # tolerances: its own triangles' corners stay this close to a surface it changes
+DIR_CANDIDATES = 8      # members (largest first) whose own direction is tried as their group's (DESIGN_DIR_CONSENSUS)
 
 
 def _on_faces(seg, reg):
@@ -39,7 +43,18 @@ def _direction(prim):
 
 
 def _still_fits(seg, reg, prim, lim):
-    return float(prim.distance(_on_faces(seg, reg)).max()) <= lim
+    P = _on_faces(seg, reg)
+    # measurement switch, exact-joins step (2026-11-11), not for merging: a surface moves only as far as its own
+    # corners can't tell (NOISE_K times how far they stand off it now, NOISE_FLOOR at least), not up to the tolerance
+    import os
+    if os.environ.get("DESIGN_NOISE_VETO") == "1":
+        own = float(np.abs(reg.prim.distance(P)).max())
+        lim = min(lim, max(NOISE_K * own, NOISE_FLOOR))
+    return float(np.abs(prim.distance(P)).max()) <= lim
+
+
+NOISE_K = 3.0           # times its corners' present worst distance a changed surface may stand off them
+NOISE_FLOOR = 2e-5      # mm: ... and this much at least (a float32 file's rounding at 100 mm)
 
 
 def _with_axis(prim, d, pivot):
@@ -78,6 +93,8 @@ def _note_axis(p):
 
 def _set(seg, reg, prim, lim):
     if _still_fits(seg, reg, prim, lim):
+        if getattr(reg.prim, "exact", None) is not None and prim is not reg.prim:
+            prim.exact = reg.prim.exact      # measurement switch, two tiers: tier 1 stays tier 1 when tidied
         reg.prim = prim
         return True
     return False
@@ -103,21 +120,48 @@ def _directions(seg, regs, lim):
         else:
             groups.append({"d": d, "sum": area * d, "members": [reg]})
     sin_axis = np.sin(np.radians(AXIS_DEG))
-    for g in groups:
-        c = g["sum"] / np.linalg.norm(g["sum"])
+
+    def snapped(c):
+        c = c / np.linalg.norm(c)
         # (a wall drawn square to the floor has nothing along the floor's normal, whichever way it faces)
         c = np.where(np.abs(c) < sin_axis, 0.0, c)
-        c = c / np.linalg.norm(c)
-        for reg in g["members"]:
-            P = _on_faces(seg, reg)
-            mid = P.mean(0)
-            if reg.kind == "plane":
-                p = copy.copy(reg.prim)
-                p.n = c if float(c @ reg.prim.n) > 0 else -c
-                p.origin = mid
-                _set(seg, reg, p, lim)
-            else:
-                _set(seg, reg, _with_axis(reg.prim, c, mid), lim)
+        return c / np.linalg.norm(c)
+
+    def turned(reg, c, mid):
+        if reg.kind == "plane":
+            p = copy.copy(reg.prim)
+            p.n = c if float(c @ reg.prim.n) > 0 else -c
+            p.origin = mid
+            return p
+        return _with_axis(reg.prim, c, mid)
+
+    import os as _os_dir
+    consensus = _os_dir.environ.get("DESIGN_DIR_CONSENSUS") == "1"
+    area_of = {id(reg): area for area, reg, _ in items}
+    for g in groups:
+        c = snapped(g["sum"])
+        members = g["members"]
+        mids = [_on_faces(seg, reg).mean(0) for reg in members]
+        if consensus and len(members) > 1:
+            # (the direction the members' corners agree on: the candidate the most area still fits; see
+            # probes/patch_dirconsensus89.py for the trace on part 001)
+            ref = g["d"]
+            cands = [c]
+            for reg in members[:DIR_CANDIDATES]:
+                d = np.asarray(_direction(reg.prim), float)
+                d = d if float(d @ ref) > 0 else -d
+                cands.append(snapped(d))
+            best = None
+            for k, cand in enumerate(cands):
+                if any(float(abs(cand @ o)) > 1.0 - 1e-15 for o in cands[:k]):
+                    continue
+                score = sum(area_of[id(reg)] for reg, mid in zip(members, mids)
+                            if _still_fits(seg, reg, turned(reg, cand, mid), lim))
+                if best is None or score > best[0]:
+                    best = (score, cand)
+            c = best[1]
+        for reg, mid in zip(members, mids):
+            _set(seg, reg, turned(reg, c, mid), lim)
 
 
 def _places(seg, regs, tol, lim):
@@ -241,10 +285,18 @@ def _touch_cylinder(seg, labels, regions, r, done, tol, lim):
                     break
     if not rows:
         return _set(seg, reg, p, lim) if p is not reg.prim else False
-    x = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
+    rows_ = np.array(rows)
+    import os as _os
+    grid_ = float(_os.environ.get("DESIGN_ROUND_GRID", "0.001"))
+    held_ = (_os.environ.get("DESIGN_TIERS") == "1" and _os.environ.get("DESIGN_TOUCH_KEEPS", "1") == "1"
+             and abs(p.r - round(p.r / grid_) * grid_) <= 1e-12)
+    if held_:
+        # (a radius on the design grid is the designer's: the cylinder is moved to touch, at that radius)
+        rows_[:, 3] = 0.0
+    x = np.linalg.lstsq(rows_, np.array(rhs), rcond=None)[0]
     n = copy.copy(p)
     n.a = p.a + x[:3] - float(x[:3] @ p.d) * p.d
-    n.r = float(p.r + x[3] * RADIUS_COST)
+    n.r = float(p.r) if held_ else float(p.r + x[3] * RADIUS_COST)
     if n.r <= 0:
         return False
     _note_axis(n)
@@ -308,6 +360,60 @@ def _touch_cone(seg, labels, regions, r, tol, lim):
     return False
 
 
+def _settle_cone(seg, labels, regions, r, tol):
+    """Design-intent prototype. A cone in one move: on its own axis, or on a neighbour's that runs beside it, with
+    a whole-degree half-angle and its apex solved along the axis; the candidate its corners fit best is taken if
+    every corner lies on it within the mesh's stated accuracy. A chamfer's two rings of corners fix neither its
+    angle nor its axis to better than a few thousandths of a degree, and designers' cones are whole degrees on
+    the hole's own axis (211 of 228 in the reference sample)."""
+    import os
+    lim = getattr(seg, "exact_lim", None)
+    if lim is None or os.environ.get("DESIGN_TIERS") != "1" or os.environ.get("DESIGN_ROUND_CONE", "1") != "1":
+        return False
+    reg = regions[r]
+    prim = reg.prim
+    whole = float(np.radians(round(float(np.degrees(prim.alpha)))))
+    if not (0.0 < whole < np.pi / 2):
+        return False
+    P = _on_faces(seg, reg)
+    axes = [(prim.apex, prim.d)]
+    cos_same = np.cos(np.radians(SAME_DEG))
+    for q in _next_to(seg, labels, regions, r):
+        o = regions[q]
+        if not _plain(o) or o.kind not in ("cylinder", "cone", "torus"):
+            continue
+        od = np.asarray(o.prim.d, float)
+        c = float(od @ prim.d)
+        if abs(c) < cos_same:
+            continue
+        oa = np.asarray(_axis_point(o.prim), float)
+        off = (prim.apex - oa) - float((prim.apex - oa) @ od) * od
+        if float(np.linalg.norm(off)) <= SAME_PLACE * tol:
+            axes.append((oa, od if c > 0 else -od))
+    best = None
+    for a0, d0 in axes:
+        rel = P - a0
+        h = rel @ d0
+        rho = np.linalg.norm(rel - np.outer(h, d0), axis=1)
+        p = copy.copy(prim)
+        p.d = d0
+        p.alpha = whole
+        p.apex = a0 + float(np.mean(h - rho / np.tan(whole))) * d0
+        worst = float(np.abs(p.distance(P)).max())
+        if best is None or worst < best[0]:
+            best = (worst, p)
+    if best is None or best[0] > lim:
+        return False
+    p = best[1]
+    if abs(p.alpha - prim.alpha) < 1e-12 and float(np.abs(p.d - prim.d).max()) < 1e-15 and float(np.abs(p.apex - prim.apex).max()) < 1e-12:
+        return False
+    _note_axis(p)
+    if getattr(prim, "exact", None) is not None:
+        p.exact = prim.exact
+    reg.prim = p
+    return True
+
+
 def regularise(seg, labels, regions):
     """Settles the regions' simple surfaces with each other (see above). Regions' prims are replaced,
     never altered in place, so a surface shared with another pass stays as it was."""
@@ -336,6 +442,7 @@ def regularise(seg, labels, regions):
                 _touch_torus(seg, labels, regions, r, tol, lim)
             elif reg.kind == "cone":
                 _touch_cone(seg, labels, regions, r, tol, lim)
+                _settle_cone(seg, labels, regions, r, tol)
 
 
 def contact_rows(prims, x):

@@ -352,7 +352,9 @@ class _Packed:
 class Mesh:
     """Triangles grouped into flat facets, with which facets meet at a gentle bend."""
 
-    def __init__(self, pts, tris):
+    def __init__(self, pts, tris, facet_of=None):
+        """facet_of: the facet of each triangle, if known already (Mesh.parted); tris are then this mesh's own, with no
+        triangle of zero area."""
         a, b, c = (pts[tris[:, k]] for k in range(3))
         cross = np.cross(b - a, c - a)
         size = np.linalg.norm(cross, axis=1)
@@ -370,10 +372,12 @@ class Mesh:
         dot = np.einsum("ij,ij->i", self.tn[t1], self.tn[t2])
         flat = dot > math.cos(math.radians(COPLANAR_DEG))
 
-        self.facet_of = _labels(len(self.tris), t1[flat], t2[flat])
         self.noise = grid_noise(pts)
-        self.facet_of = _merge_flat(self.pts, self.tris, self.tn, self.tarea, self.facet_of,
-                                    t1[~flat], t2[~flat], self.noise, TOL + FLOAT_TOL * float(np.abs(pts).max()))
+        if facet_of is None:
+            facet_of = _labels(len(self.tris), t1[flat], t2[flat])
+            facet_of = _merge_flat(self.pts, self.tris, self.tn, self.tarea, facet_of,
+                                   t1[~flat], t2[~flat], self.noise, TOL + FLOAT_TOL * float(np.abs(pts).max()))
+        self.facet_of = facet_of
         nf = self.facet_of.max() + 1
         self.ftris = _groups(self.facet_of)
         self.farea = np.bincount(self.facet_of, self.tarea, nf)
@@ -441,6 +445,30 @@ class Mesh:
             value = self.__dict__[name] = lazy.pop(name).unpack()
             return value
         raise AttributeError(name)
+
+    def parted(self, apart):
+        """(mesh, old): this mesh with some of its facets parted, and for each facet of the new mesh the facet it came from.
+        apart: {facet: a label for each of its triangles, in the order of ftris}; a facet is cut between triangles sharing
+        an edge whose labels differ. Each facet keeps its number for the part holding its first triangle, and the other parts
+        are numbered after every facet, so no other facet's number changes."""
+        facet_of = self.facet_of.copy()
+        old = list(range(len(self.fn)))
+        for f in sorted(apart):
+            tris = np.asarray(self.ftris[f])
+            lab = np.asarray(apart[f])
+            e = _edges(self.tris[tris])
+            own = np.repeat(np.arange(len(tris)), 3)
+            order = np.lexsort((e[:, 1], e[:, 0]))
+            e, own = e[order], own[order]
+            sh = np.nonzero(np.all(e[1:] == e[:-1], axis=1))[0]
+            i, j = own[sh], own[sh + 1]
+            same = lab[i] == lab[j]
+            comp = _labels(len(tris), i[same], j[same])
+            for c in np.unique(comp):
+                if c != comp[0]:
+                    facet_of[tris[comp == c]] = len(old)
+                    old.append(f)
+        return Mesh(self.pts, self.tris, facet_of), np.array(old)
 
     def smooth_regions(self):
         nf = len(self.fn)
@@ -1207,51 +1235,75 @@ def analyze(pts, tris):
         if found:
             mesh.mirror = found[0][:2]
             mesh.mirror_skip = symmetry.mirrored(mesh, mesh.mirror)
-    regions = [Region(mesh, g) for g in mesh.smooth_regions()]
-    if mesh.mirror_skip is not None:
-        # (only smooth areas lying wholly on the far side, each a twin of one on the near
-        # side: one crossing the plane is searched as before, from every seed, or another
-        # seed's guess wins there. Skipping the far half of a ring's dome let a cone that
-        # fits it loosely be found first)
-        for region in regions:
-            if not mesh.mirror_skip[region.facets].all():
-                mesh.mirror_skip[region.facets] = False
-        if not mesh.mirror_skip.any():
-            mesh.mirror = mesh.mirror_skip = None
+
+    def regions_of(mesh):
+        regions = [Region(mesh, g) for g in mesh.smooth_regions()]
+        if mesh.mirror_skip is not None:
+            # (only smooth areas lying wholly on the far side, each a twin of one on the near
+            # side: one crossing the plane is searched as before, from every seed, or another
+            # seed's guess wins there. Skipping the far half of a ring's dome let a cone that
+            # fits it loosely be found first)
+            for region in regions:
+                if not mesh.mirror_skip[region.facets].all():
+                    mesh.mirror_skip[region.facets] = False
+            if not mesh.mirror_skip.any():
+                mesh.mirror = mesh.mirror_skip = None
+        return regions
+
+    regions = regions_of(mesh)
     features = []
+
+    # Screw threads first. A crest or root band alone lies on a cylinder, and a whole region
+    # fitted as one has to be cut at every turn, since a cylinder's face can't wind past one:
+    # a thread of 10 turns lost its two bands to 20 faces. Swept along the helix they are one
+    # face each. Only regions no thread has touched are then fitted whole.
+    from . import threads
+    progress.step("looking for screw threads")
+    # (every facet is offered, not only those of smooth regions: a thread is known by the motion
+    # of its whole surface, and a facet is its by lying on one piece of it (threads.patches), not
+    # by how it meets its neighbours. A thread made of pieces that don't quite meet, as OpenSCAD
+    # makes them, has each flank facet fenced off by a step 0.02 mm wide with sharp edges: in no
+    # smooth region, those flanks were never offered, and 2,200 of them on each of two such
+    # threads were left to be built as flat faces, 4,008 planes on one of them)
+    pool = np.arange(len(mesh.farea))
+    if mesh.mirror_skip is not None:
+        # (a facet mirroring onto the mesh is no thread's: mirrored, a thread turns the
+        # other way and lands off the mesh)
+        pool = pool[~mesh.mirror_skip[pool]]
+    found = threads.find(mesh, pool)
+    apart = {}
+    for thread, fids in found:
+        apart.update(threads.parting(mesh, thread, fids))
+    if apart:
+        # (a flat facet lying on a thread across pieces of its profile is parted along them,
+        # before anything else sees the facets: threads.parting)
+        mirror, skip = mesh.mirror, mesh.mirror_skip
+        mesh, old = mesh.parted(apart)
+        mesh.mirror, mesh.mirror_skip = mirror, (None if skip is None else skip[old])
+        regions = regions_of(mesh)
+        found = [(thread, np.nonzero(np.isin(old, fids))[0]) for thread, fids in found]
+    screws = []
+    for thread, fids in found:
+        screws += threads.patches(mesh, thread, fids)
+    claimed = [int(f) for x in screws for f in x.facets]
+    for region in regions:
+        region.free &= ~np.isin(region.facets, claimed)
 
     # Pass 0: smooth regions that are all one surface, fitted whole.
     progress.step("fitting whole smooth areas")
     for region in regions:
-        if len(region.facets) >= 6:
+        if len(region.facets) >= 6 and region.free.all():
             best = _whole_region(mesh, region)
             if best:
                 feature, idx, _ = best
                 region.free[idx] = False
                 features.append(feature)
 
-    # Screw threads, among the curved facets still unexplained: before any pass that
-    # tries surfaces round known axes (a thread's crest, root and flanks lie close to a
-    # cylinder or cone on its own axis, which is often a hole's too) or the loose pass
-    # (which would take pieces of them for cylinders and cones)
-    from . import threads
-    progress.step("looking for screw threads")
-    free = [region.facets[region.free] for region in regions]
-    if mesh.mirror_skip is not None:
-        # (a facet mirroring onto the mesh is no thread's: mirrored, a thread turns the
-        # other way and lands off the mesh)
-        free = [f[~mesh.mirror_skip[f]] for f in free]
-    screws = []
-    for thread, fids in threads.find(mesh, np.concatenate(free) if free else np.zeros(0, int)):
-        screws += threads.patches(mesh, thread, fids)
-    claimed = [int(f) for x in screws for f in x.facets]
-    for region in regions:
-        region.free &= ~np.isin(region.facets, claimed)
     # a thread usually ends in a countersink or chamfer round its own axis, and runs on
     # into a plain bore: tried on that axis before pass 1 can cut them into strips that
     # each fit a cylinder of their own. Held to the thread's own tolerance: the CAD
     # program drew them together, both a hundredth or so off true.
-    axes = [(t.a, t.d, 2 * float(t.profile[:, 1].max()) + 3) for t in {id(p.model.thread): p.model.thread for p in screws}.values()]
+    axes = [(t.a, t.d, 2 * t.outer + 3) for t in {id(p.model.thread): p.model.thread for p in screws}.values()]
     ends = _axis_pass(mesh, regions, axes, threads.ON_TOL + mesh.noise) if axes else []
     thread_axes = axes
 

@@ -1,5 +1,22 @@
+# Modified 2026-11-18 (design intent; with DESIGN_SIGNED_ALT=1): build_face's wrong-way-round check compares signed areas, so a face's inside-out twin is never kept by rounding (patch 117).
+# Modified 2026-11-16 (design intent; with DESIGN_CURL_CHECK=1): a fitted border curve that curls where its points don't turn is refused (fit_chain_curve, _curls, patch 112).
+# Modified 2026-11-14, later (design intent; behind the same switches): in _sketch_first a run whose corners lie at exactly two heights, every one of them on its curve within the curve's own tolerance, states its direction by its two end rows (patch 85; the freeform measurement, docs/design-intent/probes/patch_tworows85.py).
+# Modified 2026-11-13 and 14 (design intent; behind the same switches unless marked speed only): the claim asks the corners as they are whether to solve (patch 67) and solves on ordinary corners when crossings pull it off (70); the sketch step keeps a run one circle fits (68, 71), ends a long chord turning sharply at both ends in two corners (74), leaves a run two lines or circles pass (75), lays stated lines and arcs over its sorting (81, mmm/outline.py) and asks that a corner show at a point (82); the outline's whole-patch, chord, row and tangent rules (62 to 65); a border that still crosses at a cusp after being fitted is drawn through its points (77); speed only, same output: sense_of keeps the triangles' centres (83), _designed_run_hypothesis indexes its flat groups (84). Each change's trace is in docs/design-intent/probes/patch_*.py.
+# Modified 2026-11-12 (design intent; behind the same switches): in _sketch_first, corners weighed by how they are stated, bends measured over a span, Delaunay ordering, only surfaces standing along the direction, short arcs pooled into one cylinder; in the claim, _loose_corners and _stated_d (corners where two curved surfaces cross are loosely stated), _gather_then_solve, _solve_tight, _pool_locked (pieces of one surface solved together); traces (_trace_hit, DESIGN_AUDIT_TRACE). See docs/design-intent. 2026-11-12 morning: _loose_measured (DESIGN_LOOSE_MEASURE): the loose-corner rule only where the mesh shows it; does not separate the meshes yet. Later: a surface is solved on its well stated corners alone only when they reach far enough to fix it (_reach); the loose measurement solves on all corners first. Later still: the outline is first drawn through the fullest row of corners at one height, and a patch holding two outlines is taken apart (DESIGN_SKETCH_LEVEL, DESIGN_SKETCH_PEEL). 2026-11-13: the stated accuracy read at the lower quartile of the flat groups; a line that fades into the curve is curve; an extruded run needs six corners joined along the direction.
+# Modified 2026-11-11 (design intent; all behind environment switches, off by default): DESIGN_TIERS (surfaces the mesh states are claimed first and kept exact: _corner_limit, _stated_accuracy, _claim_locked, _over_determined, _fades_out, _keep_tier_one, _tier_restore), DESIGN_SKETCH (_sketch_first: the outline of everything standing along a design direction is found by its corners before cylinders are fitted there, and each run of curve becomes one extruded surface), DESIGN_EXTRUDE (_stated_extrusions, the earlier form of that, run last), DESIGN_CORNER_LIMIT without DESIGN_TIERS (the first prototype: _exact_audit), DESIGN_NO_TIDY. See docs/design-intent.
+# Modified 2026-11-15 (design intent; with DESIGN_PCURVE_CHECK=1): after SameParameter, an edge's curve on a face that strays from its 3D curve is redrawn point by point (_redraw_strays).
 """CAD preset: recognise analytic surfaces and build an editable B-rep."""
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-16 (design intent; with DESIGN_CORNER_JOIN=1 and DESIGN_CORNER_NOFOLD=1): a corner moved past the next point of a border mends the border (drops the points it passed, or joins two corners a short border holds apart) instead of giving up its move (patch 111).
+# Modified 2026-11-16 (design intent; with DESIGN_CORNER_NOFOLD=1): a corner moves to where its surfaces meet only if every border at it keeps its direction (solve_corners, patch 110).
+# Modified 2026-11-15 (design intent; with DESIGN_NO_SAME_RETRY=1): a broken freeform cell failing again from the same triangles among the same neighbours is made flat faces at once, as after the last round, not fitted again (patch 107).
+# Modified 2026-11-15 (design intent; with DESIGN_CLAIM_POOL=1): the tier-1 claim's solves of the seeds ahead are worked out in the worker processes on the labels as they were, and used only where none of the labels they read has changed (_claim_pass, patch 106; speed only).
+# Modified 2026-11-15 (design intent; with DESIGN_TWO_RINGS=1): a locked sphere or torus on two rows of corners becomes the cylinder or cone through them when its triangles say so (_straight_where_two_rows, patch 102).
+# Modified 2026-11-15 (design intent; with DESIGN_PCURVE_MORE=1): a refused redraw of an edge's curve is drawn again through more points (_redraw_through, patch 98).
+# Modified 2026-11-15 (design intent): the fault file, NAME.faults.json, records every face that fails, why, and what was done (faultlog.py; the build rounds and the off-mesh check).
+# Modified 2026-11-15 (threads): split_turns' cut prefers a meridian that leaves no piece holding under TURN_AREA_SHARE of a
+# full turn's area (_turn_pieces), after the angle sliver test and before the fewest triangles crossed: a thread's crest or root
+# band narrows to nothing at its runout, so a 23-degree end piece held 4% of a turn (mppt's M3 holes, a 0.017 mm2 face each).
 # Modified 2026-11-08: _cusp_crossing looks only at a border holding two circular arcs, all it looks for (_circular_edges),
 # and a crossing elsewhere no longer stops it (helical thread borders read back from a file cross themselves, f_long_d8_l12).
 # Modified 2026-11-07 (loose edges, step 2): a pooled surface merged with another by _merge_equal keeps its lineage (pooled, the union of the members' pieces), so a face that doesn't build goes back to the pieces instead of freeform cells.
@@ -11,6 +28,9 @@
 # fails only that face, not the conversion (_self_crossing_regions, _small_neighbours_crossing, _cusp_crossing).
 # Modified 2026-11-07: a face read back bigger than written is that face's, and broken, not a stop that leaves every later face
 # without its piece (_read_back_pieces grown): allen-key's one bad torus made 33 sound faces count as broken.
+# Modified 2026-11-05 (threads): the helix between two pieces takes its radius from the piece's own point (piece.at), so it holds for a rounded piece (threads.ArcFlank) too.
+# Modified 2026-11-05 (threads): the helix between two pieces knows a thread's taper (_helix_between, _thread_corners).
+# Modified 2026-11-04 (threads): the edge between two pieces of one thread's profile is the helix they meet in (_helix_between).
 # Modified 2026-11-04 (threads): a long border's curve takes more of the chain's points wherever it strays, with no limit on how many, and is measured
 # both ways at a cost that grows with the chain, not its square (_fit_long_chain, _ChainRuler); what's left goes through every point (_through_every_point).
 # Modified 2026-11-04: a flat piece the mesh shows to be a designed plane stays one (fidelity.designed_flats, _make_freeform), and the flat faces of the last resort may take in a neighbour they break (LAST_ROUNDS).
@@ -166,6 +186,10 @@ STRAIGHT_BETTER = 3.0   # times closer a straight piece's corners must lie than 
 STRAIGHT_SHARE = 0.7    # share of a straight piece's corners that must lie on its circle, the rest within the tolerance
 LEVEL_STEP = 0.1        # tolerances: neighbouring parallel planes this close in level are one
 FOLD_DEG = 1.0          # degrees: a border turning back on itself within this has folded
+TIER_STRIPS = int(__import__("os").environ.get("DESIGN_TIER_STRIPS", "4"))        # measurement switch: flat strips a curved tier 1 surface needs
+TIER_CORNERS = int(__import__("os").environ.get("DESIGN_TIER_CORNERS", "10"))     # ... and corners
+TIER_ZONE = float(__import__("os").environ.get("DESIGN_TIER_ZONE", "10"))     # ... times the limit: neighbours this close are "only just off"
+TIER_FADE = float(__import__("os").environ.get("DESIGN_TIER_FADE", "0.3"))     # ... and at most this share of its neighbours may be
 CHORD_KINDS = ("plane", "cylinder", "cone", "sphere", "torus")     # surfaces that can't bulge between a triangle's corners
 LAST_ROUNDS = 2         # times the last resort's flat faces may take in a neighbour they broke
 FLAT_FEW = 24           # triangles: a stray freeform surface of more than this is cut up and fitted again before any flat faces
@@ -421,6 +445,9 @@ class Segmenter:
             d = np.where(d <= near, d, np.inf)
         nrm = prim.normal(P.mean(1)) * sense
         cs = (self.fn[faces] * nrm).sum(1)
+        lim = self._corner_limit(prim)       # measurement switch, see _corner_limit
+        if prim.kind == "plane" and near is None and lim is not None:
+            d = np.where(d <= lim, d, np.inf)
         if prim.kind != "plane":
             M = np.concatenate([(P[:, 0] + P[:, 1]) / 2, (P[:, 1] + P[:, 2]) / 2, (P[:, 2] + P[:, 0]) / 2])
             dm = prim.distance(M).reshape(3, -1)
@@ -432,6 +459,10 @@ class Segmenter:
             # past the ordinary sag on a chord that also turns further than an ordinary one
             odd = (dm > self.tol_sag) & (np.stack([c01, c12, c20]) < self.cos_chord)
             d = np.where((dm.max(0) <= self.tol_mid) & ~odd.any(0), d, np.inf)
+            # measurement switch, exact-joins step (2026-11-11), not for merging: on a mesh whose corners state its
+            # surfaces, a simple curved surface takes only triangles whose corners lie on it, as a drawn plane does
+            if lim is not None and prim.kind in CHORD_KINDS:
+                d = np.where(self._stated_d(prim, faces, lim) <= lim, d, np.inf)
             span_ok = np.minimum(np.minimum(c01, c12), c20) >= self.cos_extent
             cs = np.where(span_ok, cs, -1.0)
         return d, cs
@@ -445,6 +476,1414 @@ class Segmenter:
         d = prim.distance(M).reshape(4, -1).max(0)
         w = self.fa[faces]
         return float((d * w).sum() / max(w.sum(), 1e-30))
+
+    def _loose_corners(self, sf_lab):
+        """Design-intent prototype. Per vertex: is it loosely stated? A corner where two different curved surfaces
+        meet at a crease lies on a cut curve that has no formula, and a CAD program places it only to its own curve
+        tolerance. Curved here: a triangle not in a flat face (an exactly flat group of two or more triangles that
+        isn't a thin strip). Two curved triangles are of one surface when joined through edges turning less than
+        10 degrees (a threshold, not a principle; 25 missed half the roller's flank-to-groove cut, 5 cost x-end-idler: two surfaces crossing more shallowly are missed, and a surface
+        meshed more coarsely than a 14-sided round reads as loose everywhere)."""
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+        nf = len(self.F)
+        rows = np.repeat(np.arange(nf), 3)
+        cols = self.nb.reshape(-1)
+        m = cols >= 0
+        m[m] = (self.fn[rows[m]] * self.fn[cols[m]]).sum(1) >= np.cos(np.radians(float(_os.environ.get("DESIGN_LOOSE_CREASE", "10"))))
+        _, comp = connected_components(sparse.coo_matrix((np.ones(int(m.sum()), np.int8), (rows[m], cols[m])), shape=(nf, nf)), directed=False)
+        # (a smooth patch that is a single exactly flat group is a flat face; every other patch is curved)
+        pg = np.unique(np.c_[comp, sf_lab], axis=0)
+        curved_patch = np.bincount(pg[:, 0], minlength=int(comp.max()) + 1) >= 2
+        flat = ~curved_patch[comp]
+        cf = np.nonzero(~flat)[0]
+        vv = self.F[cf].reshape(-1)
+        cc = np.repeat(comp[cf], 3)
+        pairs = np.unique(np.c_[vv, cc], axis=0)
+        loose = np.bincount(pairs[:, 0], minlength=len(self.V)) >= 2
+        self._dbg_flat, self._dbg_comp = flat, comp
+        return loose
+
+    def _loose_measured(self):
+        """Design-intent prototype. Does this mesh state the corners where two curved surfaces cross less exactly
+        than the rest? Each curved surface of ours with enough of both kinds is solved on all its corners. If one
+        surface holds them all to the exact limit, none of them is loose. If not, and its other corners lie on it,
+        the crossing corners that don't are counted. Returns (crossing corners measured, of them off)."""
+        lim = self.exact_lim
+        lv = self.loose_v
+        seen = off = 0
+        for reg in self.regions:
+            prim = reg.prim
+            if (not _locked(prim) or hasattr(prim, "geom") or prim.kind not in CHORD_KINDS or prim.kind == "plane"
+                    or not hasattr(type(prim), "fit") or len(reg.faces) < 8):
+                continue
+            faces = np.asarray(reg.faces, dtype=np.int64)
+            vid = np.unique(self.F[faces])
+            cand = lv[vid]
+            if int(cand.sum()) < 4 or int((~cand).sum()) < 8:
+                continue
+            p2 = prim
+            if float(np.abs(prim.distance(self.V[vid])).max()) > lim:
+                P, N, ok, W = self.region_points(faces, True)
+                if int(ok.sum()) < 8:
+                    continue
+                p2 = self._solve_tight(prim, P[ok], N[ok], W[ok])
+            if float(np.mean(np.abs(p2.distance(self.V[vid[~cand]])) <= lim)) < 0.9:
+                continue        # (the surface isn't solved, so it can't say anything about its crossing corners)
+            dc = np.abs(p2.distance(self.V[vid[cand]]))
+            if _os.environ.get("DESIGN_AUDIT_TRACE"):
+                print(f"LOOSETRACE {prim.kind} {len(faces)} tris: crossing corners {len(dc)}, off {int((dc > lim).sum())}; "
+                      f"p50 {float(np.median(dc)):.1e} p90 {float(np.percentile(dc, 90)):.1e} max {float(dc.max()):.1e}; "
+                      f"limit {lim:.1e}, mesh tolerance {self.tol_mid:.1e}", flush=True)
+            seen += len(dc)
+            off += int((dc > lim).sum())
+        return seen, off
+
+    def _loose_for(self, prim=None):
+        """The corners that count as loosely stated: the mesh's crossing corners when the mesh as a whole places
+        them loosely, or when this surface's own corners showed it does (prim.loose_x, _crossings_loose). With no
+        surface given: only the mesh-wide answer."""
+        lv = getattr(self, "loose_v", None)
+        if lv is None and prim is not None and getattr(prim, "loose_x", False):
+            lv = getattr(self, "loose_cand", None)
+        return lv
+
+    def _crossings_loose(self, prim, faces):
+        """Whether this surface's crossing corners are placed loosely, by its own corners: the ordinary ones reach
+        far enough to fix it, nine in ten of them lie on it within the exact limit, and a crossing corner doesn't.
+        Returns False, or how far (mm) such a corner may stand off it."""
+        lc = getattr(self, "loose_cand", None)
+        if lc is None or getattr(self, "loose_v", None) is not None or prim.kind == "plane":
+            return False
+        vid = np.unique(self.F[faces])
+        c = lc[vid]
+        if not c.any() or int((~c).sum()) < 8:
+            return False
+        dv = np.abs(prim.distance(self.V[vid]))
+        lim = self.exact_lim
+        if not (dv[c] > lim).any() or float(np.mean(dv[~c] <= lim)) < 0.9:
+            return False
+        if not self._reach(self.V[vid[~c]], self.V[vid]):
+            return False
+        # (how loosely: twice the worst crossing corner of the triangles an ordinary corner anchors on the surface)
+        tc = lc[self.F[faces]]
+        dt = np.abs(prim.distance(self.V[self.F[faces]].reshape(-1, 3))).reshape(-1, 3)
+        anchored = (~tc).any(1) & (np.where(tc, 0.0, dt).max(1) <= lim)
+        if not anchored.any():
+            return False
+        worst = float(np.where(tc, dt, 0.0)[anchored].max())
+        return min(2.0 * worst, self.tol_mid) if worst > lim else False
+
+    def _stated_d(self, prim, faces, lim):
+        """Design-intent prototype. Per triangle, how far its corners stand off the surface as the exact test reads
+        them: a loosely stated corner (_loose_corners) counts scaled, so that the mesh's own tolerance for it
+        (tol_mid) reads as the exact limit."""
+        dc = np.abs(prim.distance(self.V[self.F[faces]].reshape(-1, 3))).reshape(-1, 3)
+        lv = self._loose_for(prim)
+        if lv is None:
+            return dc.max(1)
+        lx = getattr(prim, "loose_x", False)
+        if getattr(self, "loose_v", None) is None and lx:
+            # (this surface's own crossings: loose by what its own corners showed)
+            return np.where(lv[self.F[faces]], dc * (lim / max(float(lx), lim)), dc).max(1)
+        return np.where(lv[self.F[faces]], dc * (lim / max(self.tol_mid, lim)), dc).max(1)
+
+    def _corner_limit(self, prim):
+        """Measurement switches, not for merging. How close (mm) a triangle's corners must lie to a simple surface for
+        it to take the triangle, or None for the tolerance as before. DESIGN_TIERS=1: a tier 1 surface (prim.exact)
+        always, and every simple surface while tier 1 is being claimed (_strict). Without it, DESIGN_CORNER_LIMIT
+        holds every simple surface to that limit (the first prototype)."""
+        if hasattr(prim, "geom") or prim.kind not in CHORD_KINDS:
+            return None
+        ex = getattr(prim, "exact", None)
+        if ex is not None:
+            return ex
+        if getattr(self, "_strict", False):
+            return self.exact_lim
+        if getattr(self, "tiers", False):
+            return None
+        lim = _os.environ.get("DESIGN_CORNER_LIMIT")
+        return float(lim) if lim else None
+
+    def _stated_accuracy(self, sf_lab):
+        """How closely this mesh's corners state its surfaces (mm): four times how far the corners of its exactly
+        flat groups of four or more triangles stand off their own best plane (the 90th percentile of the groups'
+        worst), and no less than a float32 file's rounding at the part's size."""
+        counts = np.bincount(sf_lab)
+        big = np.nonzero(counts >= 4)[0]
+        order = np.argsort(sf_lab, kind="stable")
+        starts = np.r_[0, np.cumsum(counts)]
+        worst = []
+        for g in big[np.argsort(-counts[big], kind="stable")][:400]:
+            gf = order[starts[g]:starts[g + 1]]
+            if self._strip_like(gf):
+                continue        # (a chord's strip on a round: flat only to the grouping's limit)
+            P = self.V[np.unique(self.F[gf])]
+            c = P - P.mean(0)
+            n = np.linalg.svd(c, full_matrices=False)[2][2]
+            worst.append(float(np.abs(c @ n).max()))
+        rounding = 4.0 * float(np.spacing(np.float32(np.abs(self.V).max())))
+        # (the lower quartile: the upper part of the groups is gently curved faces, flat only to the grouping's limit)
+        pct_ = float(_os.environ.get("DESIGN_ACC_PCT", "25"))
+        seen = 4.0 * float(np.percentile(worst, pct_)) if worst else 0.0
+        self.accuracy_seen = (float(np.percentile(worst, pct_)) if worst else None, rounding / 4.0)
+        return float(min(max(seen, rounding, 2e-5), 0.1 * self.tol))
+
+    def _claim_locked(self):
+        """Tier 1 among the surfaces stl2curves found: one whose corners state it keeps only the triangles on it."""
+        lim = self.exact_lim
+        n = 0
+        if _os.environ.get("DESIGN_LOCK_POOL", "1") == "1":
+            pooled = self._pool_locked(lim)
+            if pooled:
+                self.report.log(f"TIER1 {pooled[0]} of our surfaces, pieces of {pooled[1]} surface(s), solved together on all their corners")
+        for reg in self.regions:
+            prim = reg.prim
+            if not _locked(prim) or hasattr(prim, "geom") or prim.kind not in CHORD_KINDS or len(reg.faces) < 4:
+                continue
+            faces = np.asarray(reg.faces, dtype=np.int64)
+            if not getattr(prim, "loose_x", False):
+                lx_ = self._crossings_loose(prim, faces)
+                if lx_:
+                    prim.loose_x = lx_
+            d = self._stated_d(prim, faces, lim)
+            keep = d <= lim
+            # (asked of the corners as they are: an allowance for loose crossings must not hide the misfit that
+            # calls for the solve)
+            raw_n = int((np.abs(prim.distance(self.V[self.F[faces]].reshape(-1, 3))).reshape(-1, 3).max(1) <= lim).sum())
+            if raw_n < len(faces) and hasattr(type(prim), "fit") and _os.environ.get("DESIGN_LOCK_SOLVE", "1") == "1":
+                P_, N_, ok_, W_ = self.region_points(faces, True)
+                st_ = ok_ & ~self.loose_v[np.unique(self.F[faces])] if getattr(self, "loose_v", None) is not None else ok_
+                if self._reach(P_[st_], P_[ok_]):
+                    ok_ = st_
+                P_, N_, W_ = P_[ok_], N_[ok_], W_[ok_]
+                p2 = prim
+                thr = 2.0 * self.tol
+                while thr > lim:
+                    thr = max(0.25 * thr, lim)
+                    inl = p2.distance(P_) <= thr
+                    if inl.sum() < 8:
+                        break
+                    try:
+                        p3 = type(prim).fit(P_[inl], N_[inl], ext=self.ext, W=W_[inl])
+                    except Exception as fault:
+                        faults.caught(fault)
+                        break
+                    if p3 is None or p3.degenerate(self.ext):
+                        break
+                    p2 = p3
+                if p2 is not prim:
+                    p2.loose_x = self._crossings_loose(p2, faces)
+                d2 = self._stated_d(p2, faces, lim)
+                raw2_n = int((np.abs(p2.distance(self.V[self.F[faces]].reshape(-1, 3))).reshape(-1, 3).max(1) <= lim).sum())
+                if p2 is not prim and (int((d2 <= lim).sum()) > int(keep.sum())
+                                       or (int((d2 <= lim).sum()) == int(keep.sum()) and raw2_n > raw_n)):
+                    for k_, v_ in prim.__dict__.items():
+                        if k_ not in p2.__dict__:
+                            setattr(p2, k_, v_)
+                    p2.locked = True
+                    if self._trace_hit(faces):
+                        print(f"SEEDTRACE locked {prim.kind} solved on its corners: within the limit {int(keep.sum())} -> {int((d2 <= lim).sum())} of {len(faces)}; worst {float(d.max()):.1e} -> {float(d2.max()):.1e}", flush=True)
+                    # (adopted only if the feature is then claimed: a surface moved to where more of its corners agree,
+                    # on a feature that stays ours as it came, changed xlcd-cover's faces for nothing)
+                    if (int((d2 <= lim).sum()) >= max(4, float(_os.environ.get("DESIGN_LOCK_SHARE", "0.9")) * len(faces))
+                            and self._over_determined(p2, faces[d2 <= lim])):
+                        reg.prim = prim = p2
+                        d, keep = d2, d2 <= lim
+            if self._trace_hit(faces) and getattr(self, "loose_v", None) is not None:
+                vid_ = np.unique(self.F[faces])
+                dv_ = np.abs(prim.distance(self.V[vid_]))
+                inreg_ = np.zeros(len(self.F), dtype=bool)
+                inreg_[faces] = True
+                offv = vid_[dv_ > lim]
+                info = {}
+                for v_ in offv[:400].tolist():
+                    ot = np.nonzero((self.F == v_).any(1) & ~inreg_)[0]
+                    key = (bool(self.loose_v[v_]), len(ot), int(self._dbg_flat[ot].sum()), len(np.unique(self._dbg_comp[ot][~self._dbg_flat[ot]])),
+                           len(np.unique(self._dbg_comp[np.nonzero((self.F == v_).any(1) & inreg_)[0]])))
+                    info[key] = info.get(key, 0) + 1
+                print(f"SEEDTRACE    corners {len(vid_)}, loose {int(self.loose_v[vid_].sum())}, off the surface {len(offv)}; of those (loose, outside tris, of them flat, curved surfaces outside, curved surfaces inside): {info}", flush=True)
+            if self._trace_hit(faces):
+                print(f"SEEDTRACE locked {prim.kind} ({type(prim).__name__}, {prim.describe() if hasattr(prim, 'describe') else ''}): {len(faces)} tris, {int(self._trace_on[faces].sum())} traced; "
+                      f"corners off: median {float(np.median(d)):.1e} p90 {float(np.percentile(d, 90)):.1e} max {float(d.max()):.1e}; within the limit {lim:.1e}: {int(keep.sum())}", flush=True)
+            if _os.environ.get("DESIGN_AUDIT_TRACE") and len(faces) >= 30:
+                dr_ = np.abs(prim.distance(self.V[self.F[faces]].reshape(-1, 3))).reshape(-1, 3)
+                lv_ = self.loose_v[self.F[faces]] if getattr(self, "loose_v", None) is not None else np.zeros_like(dr_, dtype=bool)
+                print(f"LOCKTRACE {prim.kind}: {len(faces)} tris, within the limit {int(keep.sum())}; strong corners off: p50 {float(np.median(dr_[~lv_])) if (~lv_).any() else -1:.1e} "
+                      f"p90 {float(np.percentile(dr_[~lv_], 90)) if (~lv_).any() else -1:.1e} max {float(dr_[~lv_].max()) if (~lv_).any() else -1:.1e}; loose corners {int(lv_.sum())} of {lv_.size}, max {float(dr_[lv_].max()) if lv_.any() else -1:.1e}; "
+                      f"limit {lim:.1e}; over-determined {self._over_determined(prim, faces[keep]) if keep.sum() >= 4 else None}, fades {self._fades_out(prim, faces[keep]) if keep.sum() >= 4 and prim.kind != 'plane' else None}", flush=True)
+            if int(keep.sum()) < max(4, float(_os.environ.get("DESIGN_LOCK_SHARE", "0.9")) * len(faces)) or not self._over_determined(prim, faces[keep]):
+                continue
+            prim.exact = lim
+            self.label[faces[~keep]] = -1
+            reg.faces = faces[keep]
+            n += 1
+        return n
+
+    def _reach(self, S, A):
+        """Whether the points S reach far enough over the extent of all the points A to fix a surface through them.
+        Points placed to the mesh's accuracy e, reaching a share s of the extent, fix the surface at the far border
+        to about e / s; that must stay within the mesh's tolerance, which is what a loosely stated corner is allowed.
+        One ring of a cylinder reaches nothing along the axis, and any cylinder, cone or sphere passes through it."""
+        if len(S) < 8:
+            return False
+        c0 = A.mean(0)
+        ax = np.linalg.svd(A - c0, full_matrices=False)[2]
+        ea = np.ptp((A - c0) @ ax.T, axis=0)
+        es = np.ptp((S - c0) @ ax.T, axis=0)
+        real = ea > max(self.exact_lim, 1e-6 * float(ea.max()))
+        return bool((es[real] >= ea[real] * min(1.0, self.exact_lim / max(self.tol_mid, self.exact_lim))).all())
+
+    def _strong_points(self, faces):
+        """(points, normals, weights) of the faces' corners, the loosely stated ones left out when the others reach
+        far enough to fix the surface (_reach)."""
+        P, N, ok, W = self.region_points(faces, True)
+        lv = getattr(self, "loose_v", None)
+        if lv is not None:
+            st = ok & ~lv[np.unique(self.F[faces])]
+            if self._reach(P[st], P[ok]):
+                ok = st
+        return P[ok], N[ok], W[ok]
+
+    def _solve_tight(self, prim, P, N, W):
+        """The surface fitted again to the points that agree with it, at a limit tightened by four each round from
+        twice the tolerance down to the exact limit. With fewer than eight left the last good fit stands."""
+        lim = self.exact_lim
+        thr = 2.0 * self.tol
+        while thr > lim:
+            thr = max(0.25 * thr, lim)
+            inl = prim.distance(P) <= thr
+            if inl.sum() < 8:
+                break
+            try:
+                p2 = type(prim).fit(P[inl], N[inl], ext=self.ext, W=W[inl])
+            except Exception as fault:
+                faults.caught(fault)
+                break
+            if p2 is None or p2.degenerate(self.ext):
+                break
+            prim = p2
+        return prim
+
+    def _pool_locked(self, lim):
+        """Design-intent prototype. Features of ours of one curved kind that roughly agree (each within the mesh's
+        tolerance of the other's corners, by the median) are solved together; the joint surface replaces the separate
+        ones when it holds more of their triangles exactly. Returns (features joined, surfaces) or None."""
+        trace = _os.environ.get("DESIGN_AUDIT_TRACE")
+        groups = {}
+        for reg in self.regions:
+            prim = reg.prim
+            if (_locked(prim) and not hasattr(prim, "geom") and prim.kind in CHORD_KINDS and prim.kind != "plane"
+                    and len(reg.faces) >= 4 and hasattr(type(prim), "fit")):
+                groups.setdefault(prim.kind, []).append(reg)
+        joined = surfaces = 0
+        for kind, regs in groups.items():
+            regs = sorted(regs, key=lambda r: -len(r.faces))
+            pts = {id(r): self._strong_points(np.asarray(r.faces, dtype=np.int64)) for r in regs}
+            used = set()
+            for i, ri in enumerate(regs):
+                if id(ri) in used:
+                    continue
+                members = [ri]
+                for rj in regs[i + 1:]:
+                    if id(rj) in used or rj.prim is ri.prim:
+                        continue
+                    if (float(np.median(ri.prim.distance(pts[id(rj)][0]))) <= self.tol_mid
+                            and float(np.median(rj.prim.distance(pts[id(ri)][0]))) <= self.tol_mid):
+                        members.append(rj)
+                if len(members) < 2:
+                    continue
+                P = np.concatenate([pts[id(m)][0] for m in members])
+                N = np.concatenate([pts[id(m)][1] for m in members])
+                W = np.concatenate([pts[id(m)][2] for m in members])
+                p2 = self._solve_tight(ri.prim, P, N, W)
+                if p2 is ri.prim:
+                    continue
+                fm = [np.asarray(m.faces, dtype=np.int64) for m in members]
+                p2.loose_x = self._crossings_loose(p2, np.concatenate(fm))
+                new = [int((self._stated_d(p2, f, lim) <= lim).sum()) for f in fm]
+                old = [int((self._stated_d(m.prim, f, lim) <= lim).sum()) for m, f in zip(members, fm)]
+                take = [k for k in range(len(members)) if new[k] >= old[k] and new[k] >= 0.5 * len(fm[k])]
+                if trace:
+                    print(f"POOLTRACE {kind}: {len(members)} pieces, {sum(len(f) for f in fm)} tris; exact triangles separately {sum(old)}, together {sum(new)}; "
+                          f"{len(take)} pieces take the joint surface ({p2.describe()})", flush=True)
+                if len(take) < 2:
+                    continue
+                for k_, v_ in ri.prim.__dict__.items():
+                    if k_ not in p2.__dict__:
+                        setattr(p2, k_, v_)
+                p2.locked = True
+                for k in take:
+                    members[k].prim = p2
+                    used.add(id(members[k]))
+                joined += len(take)
+                surfaces += 1
+        return (joined, surfaces) if joined else None
+
+    def _over_determined(self, prim, faces):
+        """Whether the mesh gives more than enough to fix this surface: a curved one at least TIER_STRIPS flat strips
+        and TIER_CORNERS corners; a plane a flat group that isn't a chord's thin strip (or one found as drawn)."""
+        faces = np.asarray(faces, dtype=np.int64)
+        if prim.kind == "plane":
+            if getattr(prim, "on_design", None) is not None:
+                return True
+            return len(faces) >= 2 and not self._strip_like(faces)
+        return (len(np.unique(self.sf_lab[faces])) >= TIER_STRIPS
+                and len(np.unique(self.F[faces])) >= TIER_CORNERS and self._fades_out(prim, faces) <= TIER_FADE)
+
+    def _fades_out(self, prim, faces):
+        """The share of a curved region's outside neighbours that leave its surface only gradually: corners off it
+        by more than the limit but no more than TIER_ZONE times it (or a quarter of the mesh's chord sag). A surface a
+        designer drew ends at an edge, where the next triangles stand well off it; a torus or cylinder that merely
+        fits a patch of a freeform surface ends where the fit runs out, and its neighbours are only just off it."""
+        inside = np.zeros(len(self.F), dtype=bool)
+        inside[faces] = True
+        nb = self.nb[faces].reshape(-1)
+        out = np.unique(nb[(nb >= 0) & ~inside[np.maximum(nb, 0)]])
+        if not out.size:
+            return 0.0
+        e = np.abs(prim.distance(self.V[self.F[out]].reshape(-1, 3))).reshape(-1, 3).max(1)
+        zone = max(TIER_ZONE * self.exact_lim, 0.25 * self.deflection)
+        return float(((e > self.exact_lim) & (e <= zone)).mean())
+
+    def _keep_tier_one(self):
+        """After the claim pass: surfaces the mesh states and over-determines stay, exact from here on (they take only
+        triangles whose corners lie on them, and are never fitted again); every other region is let go, to be
+        segmented as before. Returns (surfaces kept, triangles kept)."""
+        lim = self.exact_lim
+        kept = tris = 0
+        for reg in self.regions:
+            prim = reg.prim
+            if _locked(prim):
+                continue
+            faces = np.asarray(reg.faces, dtype=np.int64)
+            ok = ((prim.kind == "plane" or not reg.weak) and not reg.facet and not hasattr(prim, "geom") and prim.kind in CHORD_KINDS
+                  and len(faces) and self._over_determined(prim, faces)
+                  and float(self._stated_d(prim, faces, lim).max()) <= lim)
+            if ok:
+                prim.exact = lim
+                kept += 1
+                tris += len(faces)
+            else:
+                self.label[faces] = -1
+                reg.faces = faces[:0]
+        self._drop_empty()
+        self.tier1 = np.zeros(len(self.F), dtype=bool)
+        for reg in self.regions:
+            if getattr(reg.prim, "exact", None) is not None:
+                self.tier1[np.asarray(reg.faces, dtype=np.int64)] = True
+        return kept, tris
+
+    def _sketch_first(self, sf_lab, along=0.05, sharp_deg=30.0, min_tris=6, zone=10.0, release=False):
+        """Measurement prototype (2026-11-11), not for merging. The sketch before any curved surface is fitted. For
+        each design direction (the file's axes, the normals of the biggest flat faces), the triangles standing nearly
+        along it that aren't part of a flat face are gathered into smooth patches. A patch whose corners, seen along
+        the direction, all fall on one curve is a piece of the designer's outline. The outline's points are put in
+        order and sorted: four or more in a row on one circle are an arc only if the arc ends at the patch's end or
+        the next point stands well off the circle (a fit that merely fades out is part of the curve); three or more
+        in a row on a line are a line. Arcs and lines are left alone, to be found as cylinders and planes. Each run
+        between them becomes one extruded surface, kept as it is from here on (locked). Triangles may be taken from
+        cylinders and freeform patches stl2curves found, not from its other surfaces.
+        Returns (surfaces made, triangles in them, arcs and lines left)."""
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+
+        from .sweep import Motion, fit_swept
+
+        V, F, fn, fa, nb = self.V, self.F, self.fn, self.fa, self.nb
+        nf = len(F)
+        lim = self.exact_lim
+        curve_tol = 4.0 * lim       # the curve is fitted this tightly
+        fit_tol = float(_os.environ.get("DESIGN_SKETCH_FIT", "12")) * lim      # (the curve is a smoothing spline: its own error, beside the corners')
+        trace = _os.environ.get("DESIGN_AUDIT_TRACE")
+        counts = np.bincount(sf_lab)
+        order_sf = np.argsort(sf_lab, kind="stable")
+        starts = np.r_[0, np.cumsum(counts)]
+        garea = np.bincount(sf_lab, weights=fa)
+        total = float(fa.sum())
+        bigflat = np.zeros(nf, dtype=bool)
+        dirs = [np.eye(3)[k] for k in range(3)]
+        for g in np.argsort(-garea, kind="stable"):
+            if counts[g] < 2:
+                continue
+            gf = order_sf[starts[g]:starts[g + 1]]
+            if self._strip_like(gf):
+                continue
+            if garea[g] > 0.002 * total:
+                bigflat[gf] = True
+            if len(dirs) < 11 and garea[g] > 0.002 * total:
+                d = fn[gf[int(np.argmax(fa[gf]))]]
+                if all(abs(float(d @ e)) < 1.0 - 1e-9 for e in dirs):
+                    dirs.append(d)
+        if release:
+            # (exact cylinders along a sketch direction go back into the pool: an arc of the outline is judged there)
+            let_go = 0
+            for r in self.regions:
+                if _locked(r.prim) or r.prim.kind == "plane" or not len(r.faces):
+                    continue
+                rf_ = np.asarray(r.faces, dtype=np.int64)
+                # (kept: a curved surface most of which stands across every sketch direction, a groove's torus or
+                # a chamfer's cone; anything mostly along one of them is a piece of an outline until the sketch says)
+                across = min(float(fa[rf_][np.abs(fn[rf_] @ e) < along].sum()) for e in dirs) / max(float(fa[rf_].sum()), 1e-30)
+                if any(float(fa[rf_][np.abs(fn[rf_] @ e) < along].sum()) > 0.5 * float(fa[rf_].sum()) for e in dirs) or across < 0:
+                    rf_ = np.asarray(r.faces, dtype=np.int64)
+                    self.label[rf_] = -1
+                    r.faces = rf_[:0]
+                    let_go += 1
+            if let_go:
+                self._drop_empty()
+        takeable = np.array([bool(_locked(r.prim)) and r.prim.kind in ("cylinder", "freeform") for r in self.regions] + [True])
+        cen = V[F].mean(1)
+        rows = np.repeat(np.arange(nf), 3)
+        cols = nb.reshape(-1)
+        ok_edge = cols >= 0
+        ok_edge[ok_edge] = (fn[rows[ok_edge]] * fn[cols[ok_edge]]).sum(1) >= np.cos(np.radians(sharp_deg))
+        taken = np.zeros(nf, dtype=bool)
+        made = tris = left = 0
+        why = {}
+        curved_at = np.bincount(F[~bigflat].reshape(-1), minlength=len(V))      # per corner: triangles not in a big flat face
+
+        def note(k):
+            why[k] = why.get(k, 0) + 1
+
+        def circle(P):
+            A = np.c_[2 * P, np.ones(len(P))]
+            sol = np.linalg.lstsq(A, (P * P).sum(1), rcond=None)[0]
+            c = sol[:2]
+            r = float(np.sqrt(max(sol[2] + c @ c, 0.0)))
+            return c, r, float(np.abs(np.linalg.norm(P - c, axis=1) - r).max())
+
+        def turn_signs(P):
+            e = P[1:] - P[:-1]
+            return e[:-1, 0] * e[1:, 1] - e[:-1, 1] * e[1:, 0]
+
+        def straight(P, i, j):
+            e = P[j] - P[i]
+            L = float(np.linalg.norm(e))
+            w = P[i:j + 1] - P[i]
+            return L > 0 and float(np.abs(w[:, 0] * e[1] - w[:, 1] * e[0]).max()) / L <= lim
+
+        def fit(mot, d, faces, Xr, use_level=True):
+            """The extruded surface through corners Xr, or None. Each point of the outline is taken once (a mesh laid
+            in rows has it at many heights). A first curve goes through a rough ordering of the points (the longest
+            path of their spanning tree, which leaves out any point beside it); every point is then put in order
+            along that curve and the curve fitted again through all of them."""
+            from scipy.sparse import coo_matrix
+            from scipy.sparse.csgraph import connected_components, dijkstra, minimum_spanning_tree
+            from scipy.spatial import cKDTree
+
+            from .sweep import ProfileCurve, SweptSurface, _is_loop, copy_motion, set_phi0
+
+            h = Xr @ d
+            base = Xr - np.outer(h, d)
+            _, idx = np.unique(np.round(base / (0.5 * lim)).astype(np.int64), axis=0, return_index=True)
+            m_ = set_phi0(copy_motion(mot), cen[faces])
+            Q, _t0 = m_.to_profile(base[idx] + d * float(h.mean()))
+            Q = np.asarray(Q, float)
+            if len(Q) < 4 or not np.isfinite(Q).all():
+                return None
+            # The fullest row: the corners at one height. A mesher lays such a row at each end of an extruded wall, and
+            # it is one section of one wall, so the curve is first drawn through it alone.
+            Q_all = Q
+            level = False
+            if use_level and _os.environ.get("DESIGN_SKETCH_LEVEL", "1") == "1":
+                oh_ = np.argsort(h, kind="stable")
+                gh_ = np.empty(len(h), dtype=np.int64)
+                gh_[oh_] = np.r_[0, np.cumsum(np.diff(h[oh_]) > 2.0 * lim)]
+                ch_ = np.bincount(gh_)
+                if int(ch_.max()) >= 8:
+                    Lm_ = gh_ == int(np.argmax(ch_))
+                    _, li_ = np.unique(np.round(base[Lm_] / (0.5 * lim)).astype(np.int64), axis=0, return_index=True)
+                    QL_, _tl = m_.to_profile(base[Lm_][li_] + d * float(h.mean()))
+                    QL_ = np.asarray(QL_, float)
+                    if len(QL_) >= 8 and np.isfinite(QL_).all():
+                        Q = QL_
+                        level = True
+            n = len(Q)
+            k = min(8, n - 1)
+            dd, jj = cKDTree(Q).query(Q, k + 1)
+            G = coo_matrix((dd[:, 1:].reshape(-1) + 1e-12, (np.repeat(np.arange(n), k), jj[:, 1:].reshape(-1))), shape=(n, n))
+            T = minimum_spanning_tree(G)
+            T = T + T.T
+            parts_ = connected_components(T, directed=False)[0]
+            if parts_ > 1:
+                # (points bunched more than eight to a group see only each other: the triangulation's edges join
+                # every point to its real neighbours, however they are spaced)
+                try:
+                    from scipy.spatial import Delaunay
+                    tri = Delaunay(Q[:, :2]).simplices
+                    ee = np.unique(np.sort(np.r_[tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]], axis=1), axis=0)
+                    G = coo_matrix((np.linalg.norm(Q[ee[:, 0]] - Q[ee[:, 1]], axis=1) + 1e-12, (ee[:, 0], ee[:, 1])), shape=(n, n))
+                    T = minimum_spanning_tree(G)
+                    T = T + T.T
+                except Exception as fault:
+                    faults.caught(fault)
+                    return None
+                if trace and n > 200:
+                    print(f"SKETCH1 fit: {n} points, nearest-neighbour graph in {parts_} parts, triangulation gives {connected_components(T, directed=False)[0]}", flush=True)
+                if connected_components(T, directed=False)[0] > 1:
+                    return None
+            a_ = int(np.argmax(dijkstra(T, indices=0)))
+            da, pred = dijkstra(T, indices=a_, return_predecessors=True)
+            path = [int(np.argmax(da))]
+            while path[-1] != a_:
+                path.append(int(pred[path[-1]]))
+            if trace and n > 200 and len(path) < 0.5 * n:
+                print(f"SKETCH1 fit: {n} points, longest path through {len(path)}", flush=True)
+            if len(path) < 4:
+                return None
+            try:
+                first = ProfileCurve(Q[path], curve_tol, closed=_is_loop(Q[path], Q, curve_tol), spots=False)
+                if level and (first.closed or len(path) < 0.9 * n or getattr(first, "spl", None) is None or first.spl.k != 3):
+                    return fit(mot, d, faces, Xr, False)        # (a loop, or a row that isn't one run of curve: as before)
+                if level:
+                    Lp_ = Q[path]
+                    # (what the row leaves open between its points: how far its chords stand off the curve through it)
+                    sag_ = float(first.nearest(0.5 * (Lp_[1:] + Lp_[:-1]))[0].max())
+                    band_ = max(curve_tol, sag_)
+                    _d0, s0 = first.nearest(Q_all)
+                    inl = _d0 <= band_
+                    # Corners off the row's curve: past its ends they are more of this outline, which the row didn't
+                    # reach (the whole outline is then fitted as before); beside it they are another outline, another
+                    # wall at other heights, and stay out.
+                    past_ = ~inl & ((s0 <= 1e-9) | (s0 >= 1.0 - 1e-9))
+                    beside_ = ~inl & ~past_
+                    if trace and len(Q_all) > 50:
+                        print(f"SKETCH1 row: {len(faces)} tris, {len(Q_all)} outline points, the fullest row has {n}; within {band_:.1e} of its curve "
+                              f"{int(inl.sum())}, past its ends {int(past_.sum())}, beside it {int(beside_.sum())}", flush=True)
+                    if past_.any() and int(beside_.sum()) <= 0.02 * len(Q_all):
+                        return fit(mot, d, faces, Xr, False)
+                    if beside_.any():
+                        fit.peel = (first, band_, m_, float(h.mean()))
+                    if int(inl.sum()) < 4:
+                        return None
+                    O = Q_all[inl][np.argsort(s0[inl], kind="stable")]
+                    keep = np.r_[True, np.linalg.norm(O[1:] - O[:-1], axis=1) > 0.5 * lim]
+                    O = O[keep]
+                    if len(O) < 4:
+                        return None
+                    closed = False
+                    # (the final curve as before, through the corners of this outline only. Solving it by least squares
+                    # on the row's knots, with knots added where corners stood off, was tried and threw out the mid and
+                    # Fusion rollers' flanks: placing 1,000 corners by their foot on a 32-point curve is too rough)
+                    curve = ProfileCurve(O, curve_tol, closed=False, spots=False)
+                else:
+                    _d0, s0 = first.nearest(Q)
+                    inl = _d0 <= self.tol_mid       # (what stands well off the first curve isn't part of this outline)
+                    if int(inl.sum()) < 4:
+                        return None
+                    O = Q[inl][np.argsort(s0[inl], kind="stable")]
+                    keep = np.r_[True, np.linalg.norm(O[1:] - O[:-1], axis=1) > 0.5 * lim]
+                    O = O[keep]
+                    if len(O) < 4:
+                        return None
+                    closed = bool(first.closed)
+                    curve = ProfileCurve(O, curve_tol, closed=closed, spots=False)
+            except Exception as fault:
+                faults.caught(fault)
+                return None
+            Qr, tt = m_.to_profile(Xr)
+            _d1, sr = curve.nearest(np.asarray(Qr, float))
+            dt = max(float(tt.max() - tt.min()), 1e-9)
+            t_range = (float(tt.min()) - 0.05 * dt, float(tt.max()) + 0.05 * dt)
+            if closed:
+                return SweptSurface(m_, curve, (0.0, 1.0), (float(tt.min()), float(tt.max())), curve_tol)
+            ds = max(float(sr.max() - sr.min()), 1e-6)
+            return SweptSurface(m_, curve, (float(sr.min()) - 0.05 * ds, float(sr.max()) + 0.05 * ds), t_range, curve_tol)
+
+        from .fitting import Cylinder, perp_basis
+        pooled_n = pooled_t = 0
+        for d in dirs:
+            pending = []
+            free = takeable[self.label] & ~taken & ~bigflat & (np.abs(fn @ d) < along) & ~self.tiny
+            if _os.environ.get("DESIGN_SKETCH_STANDS", "1") == "1":
+                # Seen edge-on, any round surface shows a thin band of triangles standing nearly along the direction
+                # (its silhouette), and that band's corners can fall on one curve. It is no outline. What tells a
+                # wall from such a band is how the surface's area is spread over the angle to the direction: evenly
+                # for a round surface (as much between one and two times the gathering angle as under it), piled up
+                # at square for a wall. Judged per surface: each feature already found, and each smooth stretch of
+                # free triangles (measured: the axle, 22 bands cut out of a true cylinder and of pieces on cones).
+                ad = np.abs(fn @ d)
+                wide = ad < 2.0 * along
+                pool = takeable[self.label] & ~taken & ~bigflat & ~self.tiny
+                grp = self.label.copy()
+                fr = pool & (self.label < 0) & wide
+                mfr = ok_edge & fr[rows] & fr[np.maximum(cols, 0)]
+                _, cfr = connected_components(sparse.coo_matrix((np.ones(int(mfr.sum()), np.int8), (rows[mfr], cols[mfr])), shape=(nf, nf)), directed=False)
+                grp = np.where(self.label < 0, len(self.regions) + cfr, self.label)
+                a1 = np.bincount(grp[pool & (ad < along)], weights=fa[pool & (ad < along)], minlength=int(grp.max()) + 1)
+                a2 = np.bincount(grp[pool & wide], weights=fa[pool & wide], minlength=int(grp.max()) + 1)
+                stands = a1 >= float(_os.environ.get("DESIGN_SKETCH_STANDS_SHARE", "0.8")) * a2
+                if trace:
+                    print(f"SKETCH1 along {np.round(d, 3).tolist()}: {int(free.sum())} triangles gathered, {int((free & ~stands[grp]).sum())} of them in surfaces only seen edge-on (left alone)", flush=True)
+                free &= stands[grp]
+            m = ok_edge & free[rows] & free[np.maximum(cols, 0)]
+            G = sparse.coo_matrix((np.ones(int(m.sum()), np.int8), (rows[m], cols[m])), shape=(nf, nf))
+            _, comp = connected_components(G, directed=False)
+            comp = np.where(free, comp, -1)
+            order = np.argsort(comp, kind="stable")
+            order = order[comp[order] >= 0]
+            if not order.size:
+                continue
+            cs = np.r_[0, np.nonzero(np.diff(comp[order]))[0] + 1, order.size]
+            todo = [order[cs[k]:cs[k + 1]] for k in range(len(cs) - 1)]
+            while todo:
+                faces = todo.pop(0)
+                if len(faces) < min_tris:
+                    note("small")
+                    continue
+                vid = np.unique(F[faces])
+                X = V[vid]
+                c0 = X - X.mean(0)
+                if float(np.linalg.svd(c0, compute_uv=False)[-1]) <= lim * np.sqrt(len(X)):
+                    note("flat")
+                    continue
+                mot = Motion("extrusion", cen[faces].mean(0), d)
+                # How each corner is stated. Inside a face, and on an edge that has a formula (a line, a circle), a
+                # mesh's corners are exact to the file's rounding. Along a cut curve with no formula, where two
+                # curved faces cross, a CAD program places them only to its own curve tolerance (measured: Fusion
+                # export, 5e-6 mm inside faces, up to 9e-3 on cut curves; OpenCascade meshes exact everywhere). So a
+                # corner on a border with another curved surface is loosely stated, unless the same outline point
+                # is seen at another height (a straight edge along the direction). Loose corners don't draw the
+                # curve: they only have to be near it.
+                hX = X @ d
+                bX = X - np.outer(hX, d)
+                _, ginv = np.unique(np.round(bX / (4.0 * lim)).astype(np.int64), axis=0, return_inverse=True)
+                ginv = ginv.ravel()
+                gmin = np.full(int(ginv.max()) + 1, np.inf)
+                gmax = np.full(int(ginv.max()) + 1, -np.inf)
+                np.minimum.at(gmin, ginv, hX)
+                np.maximum.at(gmax, ginv, hX)
+                on_cut = curved_at[vid] > np.bincount(F[faces].reshape(-1), minlength=len(V))[vid]
+                ruled_span = (gmax - gmin)[ginv] > max(100.0 * lim, 1e-3 * float(hX.max() - hX.min()))
+                # (seen at another height: a mesh edge joins it to a corner over the same outline point. Two corners
+                # over one point with no edge between them prove nothing: a groove's two cut curves mirror each other)
+                fi0 = np.searchsorted(vid, F[faces])
+                ruled = np.zeros(len(X), dtype=bool)
+                for e0, e1 in ((0, 1), (1, 2), (2, 0)):
+                    same = ginv[fi0[:, e0]] == ginv[fi0[:, e1]]
+                    ruled[fi0[same, e0]] = True
+                    ruled[fi0[same, e1]] = True
+                if trace and len(faces) > 200:
+                    print(f"SKETCH1 stated: {len(faces)} tris, {len(X)} corners, on a cut {int(on_cut.sum())}, of those joined by an edge along the direction "
+                          f"{int((on_cut & ruled).sum())}, over another corner without an edge {int((on_cut & ruled_span & ~ruled).sum())}", flush=True)
+                if _os.environ.get("DESIGN_SKETCH_RULED") == "span":
+                    ruled = ruled_span
+                strong = ~on_cut | ruled
+                # (the well stated corners must span the patch's outline, or there is nothing better than all of them)
+                span_all = float(np.linalg.norm(bX.max(0) - bX.min(0)))
+                span_s = float(np.linalg.norm(bX[strong].max(0) - bX[strong].min(0))) if int(strong.sum()) >= 4 else 0.0
+                rows_mode = _os.environ.get("DESIGN_SKETCH_ROWS", "1") == "1" and span_s >= 0.9 * span_all
+                strong0 = strong
+                if not rows_mode:
+                    strong = np.ones(len(X), dtype=bool)
+                Xall, X = X, X[strong]
+                try:
+                    fit.peel = None
+                    surf = fit(mot, d, faces, X)
+                except Exception as fault:
+                    faults.caught(fault)
+                    continue
+                if fit.peel is not None and _os.environ.get("DESIGN_SKETCH_PEEL", "1") == "1":
+                    # (well stated corners beside the row's curve are another wall's: the triangles that have one are
+                    # split off, to be looked at as a patch of their own, and the rest is fitted again as one outline)
+                    first_, band_, mm_, hm_ = fit.peel
+                    Qv_, _tv = mm_.to_profile(Xall - np.outer(Xall @ d, d) + d * hm_)
+                    dv_, sv_ = first_.nearest(np.asarray(Qv_, float))
+                    v_off = strong & (dv_ > band_) & (sv_ > 1e-9) & (sv_ < 1.0 - 1e-9)
+                    t_off = v_off[fi0].any(1)
+                    if 0 < int(t_off.sum()) < len(faces):
+                        note("two outlines: taken apart")
+                        if trace and len(faces) > 200:
+                            print(f"SKETCH1 taken apart: {len(faces)} tris, {int(t_off.sum())} with a corner beside the row's curve", flush=True)
+                        todo.insert(0, faces[~t_off])
+                        todo.append(faces[t_off])
+                        continue
+                if surf is None:
+                    note("no curve")
+                    if trace:
+                        hh = X @ d
+                        print(f"SKETCH1 no curve: {len(faces)} tris, {len(X)} corners, height {float(hh.max() - hh.min()):.2f}, exact share {float(fa[faces][np.abs(fn[faces] @ d) < 1e-6].sum() / fa[faces].sum()):.2f}", flush=True)
+                    continue
+                whole_loop = bool(surf.curve.closed)
+                dX = np.abs(surf.distance(X))
+                # (a corner well off the curve is part of something else caught up in the patch, a groove's floor: it
+                # is set aside, and the triangles it belongs to with it; if many are, this isn't one outline)
+                stray = dX > self.tol_mid
+                if stray.any():
+                    if float(stray.mean()) > 0.1:
+                        note("corners off")
+                        continue
+                    strong[np.nonzero(strong)[0][stray]] = False
+                    rows_mode = True
+                    X, dX = X[~stray], dX[~stray]
+                off = float(dX.max())
+                if float(np.percentile(dX, 99)) > fit_tol or off > 4.0 * fit_tol:
+                    # (one smooth curve can't turn where a line meets a curve: this curve only puts the outline's
+                    # points in order, and each run between lines, arcs and corners is fitted and judged on its own)
+                    note("corners off the whole outline's curve: sorted into runs all the same")
+                    if trace:
+                        print(f"SKETCH1 off: {len(faces)} tris, {len(X)} corners, worst {off:.2e}, limit {fit_tol:.2e}", flush=True)
+                    if _os.environ.get("DESIGN_SKETCH_WHOLE", "0") != "0":
+                        continue
+                # the outline's points, in order along the curve, the same point at several heights taken once
+                Q, _t = surf.motion.to_profile(X)
+                Q = np.asarray(Q, float)[:, :2]
+                _d, sp = surf.curve.nearest(Q)
+                o = np.argsort(sp, kind="stable")
+                Qo = Q[o]
+                new = np.r_[True, np.linalg.norm(Qo[1:] - Qo[:-1], axis=1) > 2.0 * lim]
+                pid_sorted = np.cumsum(new) - 1
+                P = np.array([Qo[pid_sorted == i].mean(0) for i in range(int(pid_sorted[-1]) + 1)])
+                pid_s = np.empty(len(X), dtype=np.int64)
+                pid_s[o] = pid_sorted
+                pid = np.empty(len(Xall), dtype=np.int64)
+                pid[strong] = pid_s
+                far = np.zeros(len(Xall), dtype=bool)
+                if rows_mode and not strong.all():
+                    # (a loosely stated corner goes with the row point nearest along the curve; one that stands off
+                    # the surface by more than the mesh's tolerance belongs to something else, a groove's floor)
+                    Ql, _tl = surf.motion.to_profile(Xall[~strong])
+                    _dl, spl = surf.curve.nearest(np.asarray(Ql, float)[:, :2])
+                    so = sp[o]
+                    kk = np.clip(np.searchsorted(so, spl), 1, len(so) - 1)
+                    kk = np.where(np.abs(so[kk - 1] - spl) <= np.abs(so[kk] - spl), kk - 1, kk)
+                    pid[~strong] = pid_sorted[kk]
+                    far[~strong] = np.abs(surf.distance(Xall[~strong])) > self.tol_mid
+                # The outline is judged at a spacing where a bend can be told. Two points this close say nothing about
+                # direction: each may sit fit_tol to the side, so the chord between them points anywhere. A chord of
+                # fit_tol / TELL has its direction known to about TELL radians (2 degrees). The curve itself was fitted
+                # through every point; only the sorting into corners, lines and arcs uses the thinned ones.
+                cmin = fit_tol / np.radians(float(_os.environ.get("DESIGN_SKETCH_TELL", "2")))
+                if len(P) > 4 and _os.environ.get("DESIGN_SKETCH_THIN") == "1":      # (tried: can drop the corner point itself)
+                    keep_i = [0]
+                    for i_ in range(1, len(P) - 1):
+                        if float(np.linalg.norm(P[i_] - P[keep_i[-1]])) >= cmin:
+                            keep_i.append(i_)
+                    if len(keep_i) > 1 and float(np.linalg.norm(P[-1] - P[keep_i[-1]])) < cmin:
+                        keep_i[-1] = len(P) - 1
+                    else:
+                        keep_i.append(len(P) - 1)
+                    keep_i = np.array(keep_i)
+                    if len(keep_i) >= 4 and len(keep_i) < len(P):
+                        # (each point left out goes with the kept one nearest to it)
+                        allp = np.arange(len(P))
+                        kk = np.clip(np.searchsorted(keep_i, allp), 1, len(keep_i) - 1)
+                        dl = np.linalg.norm(P[allp] - P[keep_i[kk - 1]], axis=1)
+                        dr = np.linalg.norm(P[allp] - P[keep_i[kk]], axis=1)
+                        remap = np.where(dl <= dr, kk - 1, kk)
+                        pid = remap[pid]
+                        P = P[keep_i]
+                mp = len(P)
+                kind = np.zeros(max(mp - 1, 0), dtype=np.int8)       # per chord: 0 curve, 1 arc, 2 line
+                if _os.environ.get("DESIGN_SKETCH_DUMP") and mp > 20:
+                    np.save(_os.path.join(_os.environ["DESIGN_SKETCH_DUMP"], f"P_{len(faces)}_{mp}_{int(abs(d[2]) > 0.5)}.npy"), P)
+                    np.save(_os.path.join(_os.environ["DESIGN_SKETCH_DUMP"], f"X_{len(faces)}_{mp}_{int(abs(d[2]) > 0.5)}.npy"), np.c_[Q, X @ d, dX])
+                # (a few points close together lie on a line or a circle whatever curve they are from: a line or an
+                # arc counts only over a stretch long enough for the outline's own bending to show against it)
+                chord = np.linalg.norm(P[1:] - P[:-1], axis=1) if mp > 1 else np.zeros(0)
+                e_ = (P[1:] - P[:-1]) / np.maximum(chord, 1e-30)[:, None] if mp > 1 else np.zeros((0, 2))
+                bend = np.abs(np.arctan2(e_[:-1, 0] * e_[1:, 1] - e_[:-1, 1] * e_[1:, 0], (e_[:-1] * e_[1:]).sum(1))) if mp > 2 else np.zeros(0)
+                kref = float(bend.sum()) / max(float(chord.sum()), 1e-30)
+                il = np.maximum(np.arange(mp) - 1, 0)
+                ir = np.minimum(np.arange(mp) + 1, mp - 1)
+                if mp > 4 and _os.environ.get("DESIGN_SKETCH_TELL", "2") != "0":
+                    # (a bend is measured over chords of at least cmin: the direction from the point a span behind,
+                    # and to the point a span ahead. Between points closer than that, direction is noise.)
+                    arc_s = np.r_[0.0, np.cumsum(chord)]
+                    il = np.clip(np.minimum(np.searchsorted(arc_s, arc_s - cmin, side="right") - 1, np.arange(mp) - 1), 0, mp - 1)
+                    ir = np.clip(np.maximum(np.searchsorted(arc_s, arc_s + cmin, side="left"), np.arange(mp) + 1), 0, mp - 1)
+                    a_v, b_v = P - P[il], P[ir] - P
+                    bfull = np.abs(np.arctan2(a_v[:, 0] * b_v[:, 1] - a_v[:, 1] * b_v[:, 0], (a_v * b_v).sum(1)))
+                    bfull[0] = bfull[-1] = 0.0
+                    bend = bfull[1:-1]
+                    sub = np.unique(np.r_[np.searchsorted(arc_s, np.arange(0.0, float(arc_s[-1]), cmin)), mp - 1])
+                    if len(sub) > 2:
+                        es = P[sub[1:]] - P[sub[:-1]]
+                        turn = np.abs(np.arctan2(es[:-1, 0] * es[1:, 1] - es[:-1, 1] * es[1:, 0], (es[:-1] * es[1:]).sum(1)))
+                        kref = float(turn.sum()) / max(float(arc_s[-1]), 1e-30)
+                lmin = 2.0 * np.sqrt(8.0 * zone * lim / max(kref, 1e-9))
+                tangent_on = _os.environ.get("DESIGN_SKETCH_TANGENT", "1") == "1"
+
+                def seg_tangent(i_, j_, side):
+                    """Whether the straight stretch from point i_ to point j_ is tangent to the curve beyond its end
+                    on that side: a chord of a curve is not (the circle through the points beyond stands off its
+                    line by the chord's own sag), a line that runs into the curve is."""
+                    c0_ = float(np.linalg.norm(P[j_] - P[i_]))
+                    # (three points beyond the end, spread until they show their circle: the middle one off the
+                    # others' chord by `zone` times the accuracy. Close together they show nothing.)
+                    at = j_ if side > 0 else i_
+                    trio = None
+                    for m_ in range(1, mp):
+                        t_ = (at, at + side * m_, at + 2 * side * m_)
+                        if t_[2] < 0 or t_[2] >= mp or kind[min(at, t_[2]):max(at, t_[2])].any():
+                            break
+                        ch_ = P[t_[2]] - P[t_[0]]
+                        wm_ = P[t_[1]] - P[t_[0]]
+                        if abs(float(wm_[0] * ch_[1] - wm_[1] * ch_[0])) >= zone * lim * max(float(np.linalg.norm(ch_)), 1e-30):
+                            trio = t_
+                            break
+                    if c0_ <= 0.0 or trio is None:
+                        return False
+                    cc_, rr_, _res = circle(P[list(trio)])
+                    if not np.isfinite(rr_) or rr_ <= 0.0 or rr_ > 1e4 * c0_:
+                        return False
+                    e_t = (P[j_] - P[i_]) / c0_
+                    w_t = cc_ - P[at]
+                    off_ = abs(abs(float(w_t[0] * e_t[1] - w_t[1] * e_t[0])) - rr_)
+                    sag_ = rr_ * (1.0 - np.cos(min(float(np.arcsin(min(1.0, 0.5 * c0_ / rr_))), 1.5)))
+                    return off_ <= lim and sag_ >= zone * lim
+
+                i = 0
+                while i + 2 < mp:           # lines: three or more points in a row
+                    j = i + 2
+                    if not straight(P, i, j):
+                        i += 1
+                        continue
+                    while j + 1 < mp and straight(P, i, j + 1):
+                        j += 1
+                    if float(np.linalg.norm(P[j] - P[i])) < lmin or (j - i + 1 < 4 and (i > 0 or j < mp - 1)):
+                        i += 1
+                        continue
+                    if _os.environ.get("DESIGN_SKETCH_LINE_FADE", "1") == "1":
+                        # (a spline is straight to within the accuracy around its inflection: a line whose neighbours
+                        # leave it only gradually is part of the curve, as an arc that fades is)
+                        e_l = (P[j] - P[i]) / max(float(np.linalg.norm(P[j] - P[i])), 1e-30)
+                        fades_l = False
+                        for q in (i - 1, j + 1):
+                            if 0 <= q < mp:
+                                w_ = P[q] - P[i]
+                                fades_l = fades_l or abs(float(w_[0] * e_l[1] - w_[1] * e_l[0])) <= zone * lim
+                        if fades_l and tangent_on and (seg_tangent(i, j, 1) or seg_tangent(i, j, -1)):
+                            fades_l = False     # (tangent to a curve it would stand well off: a line, no inflection)
+                            note("a fading line tangent to the curve beside it: a line")
+                        if fades_l:
+                            note("line fades")
+                            i += 1
+                            continue
+                    kind[i:j] = 2
+                    left += 1
+                    i = j
+                if mp >= 4 and tangent_on:
+                    def ends_there(k_, side):
+                        # (the chord's other end, if this is a line: the outline's end, or more of the same straight
+                        # line. A bend into the next chord is a vertex of a coarse curve, or two outlines mixed.)
+                        nbc = k_ + 1 if side > 0 else k_ - 1
+                        if nbc < 0 or nbc >= mp - 1:
+                            return True
+                        return kind[nbc] == 2 and straight(P, min(k_, nbc), max(k_, nbc) + 1)
+
+                    tang = []
+                    for k_ in range(mp - 1):
+                        if kind[k_]:
+                            continue
+                        tr_, tl_ = seg_tangent(k_, k_ + 1, 1), seg_tangent(k_, k_ + 1, -1)
+                        if (tr_ and (tl_ or ends_there(k_, -1))) or (tl_ and ends_there(k_, 1)):
+                            tang.append(k_)
+                    for k_ in tang:
+                        kind[k_] = 2
+                        left += 1
+                        note("a chord tangent to the curve beside it: a line")
+                i = 0
+                while i + 3 < mp:           # arcs: four or more points on a circle, ending at an edge
+                    if kind[i]:
+                        i += 1
+                        continue
+                    j = i + 3
+                    best = None
+                    while j < mp and not kind[j - 1]:
+                        c, r, res = circle(P[i:j + 1])
+                        ts = turn_signs(P[i:j + 1])
+                        if res > lim or (ts > 0).any() == (ts < 0).any() or r > 1e4 * float(np.linalg.norm(P[j] - P[i])):
+                            break
+                        best = (j, c, r)
+                        j += 1
+                    if best is None:
+                        i += 1
+                        continue
+                    j, c, r = best
+                    swept = 2.0 * float(np.arcsin(min(1.0, float(np.linalg.norm(P[j] - P[i])) / max(2.0 * r, 1e-30))))
+                    if float(np.linalg.norm(P[j] - P[i])) < lmin or swept < np.radians(15.0):
+                        note("arc too short to tell")
+                        i += 1
+                        continue
+                    # (an arc with more of the curve going on beside it needs more to show for itself than one that
+                    # is all there is between two walls: any short stretch of a smooth curve is nearly a circle)
+                    inside = (i > 0 and not kind[i - 1]) or (j < mp - 1 and not kind[j])
+                    # (five points whose chords' sag is many times their accuracy fix a circle and check it twice)
+                    seg_a = float(np.median(np.linalg.norm(P[i + 1:j + 1] - P[i:j], axis=1)))
+                    told = (j - i + 1 >= 5 and r * (1.0 - np.cos(min(0.5 * seg_a / r, 1.5))) >= zone * lim
+                            and _os.environ.get("DESIGN_SKETCH_ARC_TOLD", "1") == "1")
+                    if inside and not told and (j - i + 1 < 6 or swept < np.radians(30.0)):
+                        note("arc inside a curve, too little to tell")
+                        i += 1
+                        continue
+                    seg = float(np.median(np.linalg.norm(P[i + 1:j + 1] - P[i:j], axis=1)))
+                    zn = max(zone * lim, 0.25 * r * (1.0 - np.cos(min(0.5 * seg / r, 1.5))))
+                    fades = False
+                    for q, ch in ((i - 1, i - 1), (j + 1, j)):
+                        if 0 <= q < mp and 0 <= ch < mp - 1 and not kind[ch]:
+                            fades = fades or abs(float(np.linalg.norm(P[q] - c)) - r) <= zn
+                    if fades and _os.environ.get("DESIGN_SKETCH_FADE", "1") == "1":
+                        note("arc fades")
+                        i += 1
+                        continue
+                    kind[i:j] = 1
+                    left += 1
+                    i = j
+                # a corner of the sketch inside the patch (the outline turns there far more than on either side) ends a
+                # run: one smooth curve carried through a corner swings off the outline beside it
+                corner = np.zeros(mp, dtype=bool)
+                if mp > 4:
+                    bf_ = np.r_[0.0, bend, 0.0]
+                    prev_ = bf_[il][1:-1]
+                    next_ = bf_[ir][1:-1]
+                    corner[1:-1] = (bend > np.radians(10.0)) & (bend > 2.5 * np.maximum(prev_, next_))
+                    for c_ in np.nonzero(corner)[0]:        # (one corner per span: the sharpest point in it)
+                        if bf_[c_] < bf_[il[c_]:ir[c_] + 1].max() or (corner[il[c_]:c_].any() and bf_[c_] <= bf_[il[c_]:c_].max()):
+                            corner[c_] = False
+                if mp > 4 and corner.any() and _os.environ.get("DESIGN_SKETCH_CORNER_POINT", "1") == "1":
+                    # (a corner is a point: the outline must turn there, or at the point either side, by the
+                    # rule's own least bend; a bend that is only small turns summed over a span is a curve bending)
+                    ev_ = P[1:] - P[:-1]
+                    tv_ = np.zeros(mp)
+                    tv_[1:-1] = np.abs(np.arctan2(ev_[:-1, 0] * ev_[1:, 1] - ev_[:-1, 1] * ev_[1:, 0], (ev_[:-1] * ev_[1:]).sum(1)))
+                    for c_ in np.nonzero(corner)[0]:
+                        if float(tv_[max(c_ - 1, 0):c_ + 2].max()) < np.radians(10.0):
+                            corner[c_] = False
+                            note("a bend no single point shows: no corner")
+                if mp > 4 and _os.environ.get("DESIGN_SKETCH_TWO_CORNERS", "1") == "1":
+                    # (a longer chord on a smooth curve turns less than its neighbours, never more: a chord three
+                    # times as long as those beside it that turns sharply at both ends is a line between two corners)
+                    for c_ in range(1, mp - 2):
+                        if corner[c_] and corner[c_ + 1]:
+                            continue
+                        if (chord[c_] >= 3.0 * max(chord[c_ - 1], chord[c_ + 1])
+                                and min(bf_[c_], bf_[c_ + 1]) > np.radians(10.0)
+                                and bf_[c_] > 2.5 * bf_[c_ - 1] and bf_[c_ + 1] > 2.5 * bf_[c_ + 2]):
+                            corner[c_] = corner[c_ + 1] = True
+                            note("a long chord turning sharply at both ends: a line between two corners")
+                if _os.environ.get("DESIGN_OUTLINE_STATED", "1") == "1" and mp >= 3:
+                    # (a line or an arc that the outline's points state, quietly and up to a jump, is a line or an
+                    # arc whatever the rules above made of its chords: see mmm/outline.py)
+                    from . import outline as _outline
+                    kind, n_arc_, n_line_ = _outline.overlay(P, kind, lim)
+                    for _ in range(n_arc_):
+                        note("a chord of a stated arc: an arc")
+                    for _ in range(n_line_):
+                        note("a chord of a stated line: a line")
+                # each run of curve chords: one extruded surface over the triangles wholly inside it
+                fidx = np.searchsorted(vid, F[faces])
+                fp = pid[fidx]
+                lo, hi = fp.min(1), fp.max(1)
+                near_all = ~far[fidx].any(1)
+                if trace and len(faces) > 200:
+                    made0, tris0 = made, tris
+                    print(f"SKETCH1 patch: {len(faces)} tris, {mp} outline points, corners at {np.nonzero(corner)[0].tolist()} "
+                          f"(bends {np.round(np.degrees(np.r_[0.0, bend, 0.0][corner]), 0).tolist()}), arc chords {int((kind == 1).sum())}, line chords {int((kind == 2).sum())}, "
+                          f"triangles with a far corner {int((~near_all).sum())}, spanning more than 3 points {int((hi - lo > 3).sum())}", flush=True)
+                a = 0
+                while a < mp - 1:
+                    if kind[a]:
+                        a += 1
+                        continue
+                    b = a
+                    while b < mp - 1 and not kind[b] and not (b > a and corner[b]):
+                        b += 1
+                    rf = faces[(lo >= a) & (hi <= b) & near_all]
+                    a0, a = a, b
+                    if len(rf) < min_tris or b - a0 < 2:
+                        note("short run")
+                        continue
+                    if straight(P, a0, b):
+                        note("a straight run: a flat face, not a curve")
+                        continue
+                    rv = np.unique(F[rf])
+                    rv_loose = None
+                    if not rows_mode and _os.environ.get("DESIGN_SKETCH_RUN_ROWS", "1") == "1":
+                        # (whether the well stated corners span the outline is a question for each run: a patch that
+                        # holds flat walls too has ends that aren't, and its curve's loose corners then drew the curve)
+                        pos_r = np.searchsorted(vid, rv)
+                        st_r = strong0[pos_r] & strong[pos_r]
+                        if int(st_r.sum()) >= 4 and not st_r.all():
+                            bR_ = bX[pos_r]
+                            if float(np.linalg.norm(bR_[st_r].max(0) - bR_[st_r].min(0))) >= 0.9 * float(np.linalg.norm(bR_.max(0) - bR_.min(0))):
+                                rv_loose = rv[~st_r]
+                                rv = rv[st_r]
+                                note("a run's loosely stated corners left out of its curve")
+                    if rv_loose is None:
+                        rv = rv[strong[np.searchsorted(vid, rv)]]
+                    if len(rv) < 4:
+                        note("short run")
+                        continue
+                    if b - a0 >= 3 and _os.environ.get("DESIGN_SKETCH_POOL", "1") == "1":
+                        c_, r_, res_ = circle(P[a0:b + 1])
+                        ts_ = turn_signs(P[a0:b + 1])
+                        if res_ <= lim and (ts_ > 0).any() != (ts_ < 0).any():
+                            note("a run all on one circle: set aside to be pooled")
+                            pending.append((rf, rv))
+                            continue
+                    if b - a0 >= 3 and len(rv) >= 5 and _os.environ.get("DESIGN_SKETCH_RUN_CIRCLE", "1") == "1":
+                        # (the same corners and the same tolerance the spline below would get; the simpler curve
+                        # wins the tie)
+                        uc_, vc_ = perp_basis(d)
+                        Qc_ = np.c_[V[rv] @ uc_, V[rv] @ vc_]
+                        cc2_, rc2_, res2_ = circle(Qc_)
+                        tsc_ = turn_signs(P[a0:b + 1])
+                        near_c = True
+                        if rv_loose is not None and len(rv_loose):
+                            Ql_ = np.c_[V[rv_loose] @ uc_, V[rv_loose] @ vc_]
+                            near_c = float(np.abs(np.linalg.norm(Ql_ - cc2_, axis=1) - rc2_).max()) <= self.tol_mid
+                        if res2_ <= fit_tol and near_c and 0.0 < rc2_ <= 1e4 * float(np.linalg.norm(Qc_.max(0) - Qc_.min(0))):
+                            if res2_ <= lim and _os.environ.get("DESIGN_SKETCH_POOL", "1") == "1":
+                                note("a run on one circle by the corners its curve would use: set aside to be pooled")
+                                pending.append((rf, rv))
+                            else:
+                                note("a run one circle fits as well as a spline would: not told apart, left as it was")
+                            continue
+                    if _os.environ.get("DESIGN_SKETCH_TWO_PIECES", "1") == "1":
+                        def simple_(Pp):
+                            """Whether one line or one circle passes these outline points within the exact limit."""
+                            if len(Pp) <= 2:
+                                return True
+                            c0_ = Pp - Pp.mean(0)
+                            if float(np.abs(c0_ @ np.linalg.svd(c0_, full_matrices=False)[2][1]).max()) <= lim:
+                                return True
+                            cc_, rr_, _res = circle(Pp)
+                            return bool(np.isfinite(rr_) and float(np.abs(np.linalg.norm(Pp - cc_, axis=1) - rr_).max()) <= lim)
+
+                        def two_(Pp):
+                            k_ = 2
+                            while k_ < len(Pp) and simple_(Pp[:k_ + 1]):
+                                k_ += 1
+                            return simple_(Pp[k_ - 1:])
+
+                        Pr_ = np.asarray(P[a0:b + 1], dtype=float)
+                        if two_(Pr_) or two_(Pr_[::-1]):
+                            note("a run two lines or circles pass through: not told apart, left as it was")
+                            continue
+                    if b - a0 == mp - 1 and whole_loop:
+                        note("a whole loop with no arc or line in it")
+                        continue
+                    if b - a0 == mp - 1:
+                        s2 = surf
+                    else:
+                        try:
+                            s2 = fit(mot, d, rf, V[rv])
+                        except Exception as fault:
+                            faults.caught(fault)
+                            continue
+                    if s2 is not None and not s2.curve.closed and _os.environ.get("DESIGN_SKETCH_CHORDS", "1") == "1":
+                        # A chord the curve stands off: the mesh says the wall is flat between these two outline
+                        # points (a mesher leaves no chord further from its surface than its tolerance), and the curve
+                        # drawn through the run's points bulges away from it. So the chord is not part of this curve:
+                        # it is a line of the sketch stated by its two ends only, which the three-point test above
+                        # can't see. It is marked a line, and the runs either side of it are fitted on their own.
+                        # (each outline point where it stands, at the run's middle height; a chord's middle between)
+                        bA_ = Xall - np.outer(Xall @ d, d)
+                        rep_ = np.zeros((mp, 3))
+                        cnt_ = np.bincount(pid, minlength=mp).astype(float)
+                        for k_ in range(3):
+                            rep_[:, k_] = np.bincount(pid, weights=bA_[:, k_], minlength=mp) / np.maximum(cnt_, 1.0)
+                        mid_ = 0.5 * (rep_[a0:b] + rep_[a0 + 1:b + 1]) + d * float((V[rv] @ d).mean())
+                        dm_ = np.abs(s2.distance(mid_))
+                        tb_ = np.nonzero((dm_ > self.tol_mid) & (cnt_[a0:b] > 0) & (cnt_[a0 + 1:b + 1] > 0))[0]
+                        if tb_.size:
+                            # (only a chord the mesh has as an edge says the wall is flat there: two outline points
+                            # next to each other with no edge between them are a gap in what was gathered)
+                            in_ = np.zeros(len(V) + 1, dtype=np.int64) - 1
+                            in_[vid] = pid
+                            pe_ = in_[F[(in_[F] >= 0).sum(1) >= 2]]
+                            is_edge = np.zeros(mp, dtype=bool)
+                            for e0_, e1_ in ((0, 1), (1, 2), (2, 0)):
+                                u_, w_ = pe_[:, e0_], pe_[:, e1_]
+                                ok_e = (u_ >= 0) & (w_ >= 0) & (np.abs(u_ - w_) == 1)
+                                is_edge[np.minimum(u_, w_)[ok_e]] = True
+                            tb_ = tb_[is_edge[a0 + tb_]]
+                        if tb_.size and bool((kind[a0 + tb_] != 2).any()):
+                            kind[a0 + tb_] = 2
+                            note("a chord the curve stands off: a line stated by its two ends")
+                            if trace:
+                                print(f"SKETCH1 chords: {len(rf)} tris, run {a0}-{b} of {mp} points; {tb_.size} chord(s) with a middle off (worst {float(dm_.max()):.2e}), line chords now {np.nonzero(kind == 2)[0].tolist()}", flush=True)
+                            left += 1
+                            a = a0
+                            continue
+                    d2 = np.abs(s2.distance(V[rv])) if s2 is not None and not s2.curve.closed else None
+                    if d2 is None or float(np.percentile(d2, 99)) > fit_tol or float(d2.max()) > 4.0 * fit_tol:
+                        note("run off")
+                        if trace:
+                            if d2 is not None and len(rv) > 20:
+                                wi = np.argsort(-d2)[:4]
+                                for w_ in wi:
+                                    pos = int(np.searchsorted(vid, rv[w_]))
+                                    nbt = np.nonzero((F == rv[w_]).any(1))[0]
+                                    print(f"SKETCH1    worst corner {rv[w_]} off {d2[w_]:.2e} height {float(V[rv[w_]] @ d):.3f} on_cut {bool(on_cut[pos])} ruled {bool(ruled[pos])} "
+                                          f"group size {int((ginv == ginv[pos]).sum())} span {float((gmax - gmin)[ginv[pos]]):.3f}; its triangles: {len(nbt)}, in patch {int(np.isin(nbt, faces).sum())}, "
+                                          f"in run {int(np.isin(nbt, rf).sum())}, big flat {int(bigflat[nbt].sum())}, tiny {int(self.tiny[nbt].sum())}, |n.d| {np.round(np.abs(fn[nbt] @ d), 3).tolist()}", flush=True)
+                            print(f"SKETCH1 run off: {len(rf)} tris, {b - a0 + 1} outline points of {mp}, none {s2 is None}, closed {s2 is not None and s2.curve.closed}, "
+                                  f"p99 {float(np.percentile(d2, 99)) if d2 is not None else -1:.2e} max {float(d2.max()) if d2 is not None else -1:.2e} limit {fit_tol:.2e}", flush=True)
+                        continue
+                    if rv_loose is not None and len(rv_loose) and float(np.abs(s2.distance(V[rv_loose])).max()) > self.tol_mid:
+                        note("run off")     # (a loosely stated corner only has to be near, and this one isn't)
+                        continue
+                    T = V[F[rf]]
+                    M = ((T + np.roll(T, -1, axis=1)) / 2).reshape(-1, 3)
+                    if float(np.abs(s2.distance(M)).max()) > self.tol_mid:
+                        note("middles off")
+                        if trace:
+                            dm_ = np.abs(s2.distance(M))
+                            ch_ = np.linalg.norm(P[a0 + 1:b + 1] - P[a0:b], axis=1)
+                            print(f"SKETCH1 middles off: {len(rf)} tris, {b - a0 + 1} outline points, worst middle {float(dm_.max()):.2e} p90 {float(np.percentile(dm_, 90)):.2e} "
+                                  f"limit {self.tol_mid:.2e} tol {self.tol:.2e}; chords {float(ch_.min()):.3f}-{float(ch_.max()):.3f}, bend max {float(np.degrees(bend[a0:max(b - 1, a0 + 1)].max())):.1f} deg", flush=True)
+                        continue
+                    need_ = int(_os.environ.get("DESIGN_SKETCH_RULED_MIN", str(TIER_CORNERS)))
+                    if need_ and _os.environ.get("DESIGN_SKETCH_TWO_ROWS", "1") == "1":
+                        # (a wall between two cuts square to the direction states it by its two end loops: both lie
+                        # on the one curve, though no edge of the mesh runs from one to the other along it)
+                        hc_ = V[np.unique(F[rf])] @ d
+                        if (len(np.unique(np.round(hc_ / max(lim, 1e-12)))) == 2
+                                and float(np.abs(s2.distance(V[np.unique(F[rf])])).max()) <= fit_tol):
+                            need_ = 0
+                            note("stated by its two end rows")
+                    if need_ and int(ruled[np.searchsorted(vid, np.unique(F[rf]))].sum()) < need_:
+                        # (the direction is stated by edges along it: a cone's sliver or a leaning cylinder has none)
+                        note("the direction isn't stated: too few edges along it")
+                        continue
+                    s2.locked = True
+                    s2.stated = True        # (drawn through corners that lie on it: the design, whatever its type)
+                    sense2 = self.sense_of(s2, rf)
+                    # The surface then takes in the free triangles beside it whose corners lie on it, whichever way
+                    # they were cut: beside a curved cut a mesher lays no rows along the direction, and such triangles
+                    # stand too far off it to have been gathered above. A band of a torus's waist stays out: its
+                    # corners at other heights lie off the outline.
+                    grown = [rf]
+                    seen = np.zeros(nf, dtype=bool)
+                    seen[rf] = True
+                    front = rf
+                    while front.size:
+                        cand = np.unique(nb[front].reshape(-1))
+                        cand = cand[cand >= 0]
+                        cand = cand[~seen[cand] & takeable[self.label[cand]] & ~taken[cand] & ~bigflat[cand] & ~self.tiny[cand]]
+                        if not cand.size:
+                            break
+                        seen[cand] = True
+                        dc = np.abs(s2.distance(V[F[cand]].reshape(-1, 3))).reshape(-1, 3).max(1)
+                        cs_ = (s2.normal(cen[cand]) * fn[cand]).sum(1) * sense2
+                        Tm = V[F[cand]]
+                        dm = np.abs(s2.distance(((Tm + np.roll(Tm, -1, axis=1)) / 2).reshape(-1, 3))).reshape(-1, 3).max(1)
+                        if rows_mode:
+                            d3 = np.abs(s2.distance(V[F[cand]].reshape(-1, 3))).reshape(-1, 3)
+                            okc = (d3.min(1) <= fit_tol) & (dc <= self.tol_mid) & (cs_ >= self.cos_ok[cand]) & (dm <= self.tol_mid)
+                        else:
+                            okc = (dc <= fit_tol) & (cs_ >= self.cos_ok[cand]) & (dm <= self.tol_mid)
+                        front = cand[okc]
+                        if front.size:
+                            grown.append(front)
+                    rf = np.concatenate(grown)
+                    if trace:
+                        was = {}
+                        for l_ in self.label[rf].tolist():
+                            k_ = "free" if l_ < 0 else f"{self.regions[l_].prim.kind}{' locked' if _locked(self.regions[l_].prim) else ''}{' exact' if getattr(self.regions[l_].prim, 'exact', None) is not None else ''}"
+                            was[k_] = was.get(k_, 0) + 1
+                        nbl = np.unique(self.label[nb[rf].reshape(-1)[nb[rf].reshape(-1) >= 0]])
+                        near_ = []
+                        cv_ = V[np.unique(F[rf])]
+                        for l_ in nbl.tolist():
+                            if l_ >= 0 and l_ < len(self.regions) and getattr(self.regions[l_].prim, "exact", None) is not None:
+                                dd_ = np.abs(self.regions[l_].prim.distance(cv_))
+                                near_.append(f"{self.regions[l_].prim.kind}({len(self.regions[l_].faces)} tris): corners median {float(np.median(dd_)):.1e} max {float(dd_.max()):.1e}")
+                        print(f"SKETCH1 made: {len(rf)} tris along {np.round(d, 3).tolist()}, were {was}; exact neighbours: {near_}; limit {lim:.1e}; |n.d| max {float(np.abs(fn[rf] @ d).max()):.4f}", flush=True)
+                    self.label[rf] = len(self.regions)
+                    self.regions.append(Region(s2, rf, sense2))
+                    takeable = np.r_[takeable[:-1], False, True]
+                    taken[rf] = True
+                    made += 1
+                    tris += len(rf)
+                    if _os.environ.get("DESIGN_SKETCH_DUMP"):
+                        np.save(_os.path.join(_os.environ["DESIGN_SKETCH_DUMP"], f"R_{made:03d}_{len(rf)}.npy"), np.r_[d[None], cen[rf]])
+                    if trace and len(faces) > 200:
+                        print(f"SKETCH1    run {a0}-{b}: {len(rf)} triangles after growing", flush=True)
+            # The runs set aside along this direction: those whose corners together lie on one circle to the stated
+            # accuracy are one cylinder. One short arc gives its radius only roughly; several, apart from each other,
+            # that agree to the last digit are no accident. A run that agrees with no other is left free.
+            if pending:
+                u_, v_ = perp_basis(d)
+                pts_ = [np.c_[V[rv_] @ u_, V[rv_] @ v_] for _rf, rv_ in pending[:500]]
+                left_ = sorted(range(len(pts_)), key=lambda i_: -len(pts_[i_]))
+                while left_:
+                    S_ = [left_.pop(0)]
+                    Qs = pts_[S_[0]]
+                    grew = True
+                    while grew:
+                        grew = False
+                        for j_ in list(left_):
+                            Qj = np.r_[Qs, pts_[j_]]
+                            if circle(Qj)[2] <= lim:
+                                S_.append(j_)
+                                left_.remove(j_)
+                                Qs = Qj
+                                grew = True
+                    c_, r_, res_ = circle(Qs)
+                    ang_ = np.degrees(np.arctan2(Qs[:, 1] - c_[1], Qs[:, 0] - c_[0]))
+                    spread = 2.0 * len(np.unique(np.floor(ang_ / 2.0)))        # degrees of the circle with corners on it
+                    if len(S_) < 2 or spread < 15.0:
+                        note("a lone short arc: left free")
+                        continue
+                    prim = Cylinder(u_ * c_[0] + v_ * c_[1], d, r_)
+                    prim.exact = lim
+                    prim.locked = True
+                    rf = np.concatenate([pending[i_][0] for i_ in S_])
+                    sense2 = self.sense_of(prim, rf)
+                    grown = [rf]
+                    seen = np.zeros(nf, dtype=bool)
+                    seen[rf] = True
+                    front = rf
+                    while front.size:
+                        cand = np.unique(nb[front].reshape(-1))
+                        cand = cand[cand >= 0]
+                        cand = cand[~seen[cand] & takeable[self.label[cand]] & ~taken[cand] & ~bigflat[cand] & ~self.tiny[cand]]
+                        if not cand.size:
+                            break
+                        seen[cand] = True
+                        dc = np.abs(prim.distance(V[F[cand]].reshape(-1, 3))).reshape(-1, 3).max(1)
+                        cs_ = (prim.normal(cen[cand]) * fn[cand]).sum(1) * sense2
+                        front = cand[(dc <= fit_tol) & (cs_ >= self.cos_ok[cand])]
+                        if front.size:
+                            grown.append(front)
+                    rf = np.concatenate(grown)
+                    if trace:
+                        print(f"SKETCH1 pooled cylinder: {len(S_)} short arcs, {len(Qs)} corners, radius {r_:.5f}, worst corner {res_:.1e} (limit {lim:.1e}), "
+                              f"{spread:.0f} degrees of the circle seen, {len(rf)} triangles", flush=True)
+                    self.label[rf] = len(self.regions)
+                    self.regions.append(Region(prim, rf, sense2))
+                    takeable = np.r_[takeable[:-1], False, True]
+                    taken[rf] = True
+                    pooled_n += 1
+                    pooled_t += len(rf)
+        if pooled_n:
+            self.report.log(f"SKETCH pooled: {pooled_n} cylinder(s) from short arcs that agree, {pooled_t} triangles") if hasattr(self, "report") else None
+        if trace:
+            print("SKETCH1 dirs", len(dirs), "triangles", nf, "made", made, "holding", tris, "arcs/lines left", left, "why not:", why, flush=True)
+        if made or pooled_n:
+            self._faces_from_labels()
+        return made, tris, left
+
+    def _stated_extrusions(self, along=0.05, sharp_deg=30.0, min_tris=6):
+        """Measurement prototype (2026-11-11), not for merging. A profile pushed along a design direction, found by
+        its corners. For each direction (the file's axes, the biggest exact planes' normals), the triangles no exact
+        or locked surface holds and that stand nearly along it are gathered into smooth patches. A patch is an
+        extrusion when, seen along the direction, every one of its corners falls on one curve (within four times the
+        mesh's stated accuracy): the curve through them, pushed along the direction, is then its one surface, in
+        place of the pieces fitted there. A band at a torus's waist fails: its corners at other heights lie off the
+        curve. Returns (surfaces made, triangles in them)."""
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+
+        from .sweep import Motion, fit_swept
+
+        V, F, fn, fa, nb = self.V, self.F, self.fn, self.fa, self.nb
+        lim = self.exact_lim
+        fit_tol = 4.0 * lim
+        dirs = [np.eye(3)[k] for k in range(3)]
+        planes = [r for r in self.regions if r.kind == "plane" and getattr(r.prim, "exact", None) is not None and len(r.faces)]
+        for r in sorted(planes, key=lambda r: -float(fa[np.asarray(r.faces, dtype=np.int64)].sum()))[:8]:
+            d = fn[int(np.asarray(r.faces)[0])]
+            if all(abs(float(d @ e)) < 1.0 - 1e-9 for e in dirs):
+                dirs.append(d)
+        held = np.array([getattr(r.prim, "exact", None) is not None or bool(_locked(r.prim)) for r in self.regions] + [False])
+        cen = V[F].mean(1)
+        nf = len(F)
+        rows = np.repeat(np.arange(nf), 3)
+        cols = nb.reshape(-1)
+        ok_edge = cols >= 0
+        ok_edge[ok_edge] = (fn[rows[ok_edge]] * fn[cols[ok_edge]]).sum(1) >= np.cos(np.radians(sharp_deg))
+        made = tris = 0
+        why = {}
+        taken = np.zeros(nf, dtype=bool)
+        for d in dirs:
+            free = ~held[self.label] & ~taken & (np.abs(fn @ d) < along) & ~self.tiny
+            m = ok_edge & free[rows] & free[np.maximum(cols, 0)]
+            G = sparse.coo_matrix((np.ones(int(m.sum()), np.int8), (rows[m], cols[m])), shape=(nf, nf))
+            _, comp = connected_components(G, directed=False)
+            comp = np.where(free, comp, -1)
+            order = np.argsort(comp, kind="stable")
+            order = order[comp[order] >= 0]
+            if not order.size:
+                continue
+            starts = np.r_[0, np.nonzero(np.diff(comp[order]))[0] + 1, order.size]
+            for k in range(len(starts) - 1):
+                faces = order[starts[k]:starts[k + 1]]
+                if len(faces) < min_tris:
+                    why['small'] = why.get('small', 0) + 1
+                    continue
+                vid = np.unique(F[faces])
+                X = V[vid]
+                # (a flat wall is a plane, not a curve)
+                c = X - X.mean(0)
+                if float(np.linalg.svd(c, compute_uv=False)[-1]) <= lim * np.sqrt(len(X)):
+                    why['flat'] = why.get('flat', 0) + 1
+                    continue
+                mot = Motion("extrusion", cen[faces].mean(0), d)
+                try:
+                    surf, dev = fit_swept(cen[faces], fn[faces], fa[faces], fit_tol, X=X, motion=mot)
+                except Exception as fault:
+                    faults.caught(fault)
+                    continue
+                if surf is None or surf.curve.closed:
+                    why['no curve' if surf is None else 'closed'] = why.get('no curve' if surf is None else 'closed', 0) + 1
+                    continue
+                if float(np.abs(surf.distance(X)).max()) > fit_tol:
+                    why['corners off'] = why.get('corners off', 0) + 1
+                    if _os.environ.get('DESIGN_AUDIT_TRACE'):
+                        print(f'SKETCH off: {len(faces)} tris, corners {len(X)}, worst {float(np.abs(surf.distance(X)).max()):.2e}, p99 {dev:.2e}, limit {fit_tol:.2e}', flush=True)
+                    continue
+                T = V[F[faces]]
+                M = ((T + np.roll(T, -1, axis=1)) / 2).reshape(-1, 3)
+                if float(np.abs(surf.distance(M)).max()) > self.tol_mid:
+                    why['middles off'] = why.get('middles off', 0) + 1
+                    continue
+                self.label[faces] = len(self.regions)
+                self.regions.append(Region(surf, faces, self.sense_of(surf, faces)))
+                held = np.r_[held[:-1], True, False]      # (the new surface holds its triangles; the last entry stays for label -1)
+                taken[faces] = True
+                made += 1
+                tris += len(faces)
+        if _os.environ.get('DESIGN_AUDIT_TRACE'):
+            print('SKETCH dirs', len(dirs), 'triangles', nf, 'why not:', why, 'made', made, 'holding', tris, flush=True)
+        if made:
+            self._faces_from_labels()
+            self._rebuild_regions(refit=False, merge=False)
+        return made, tris
+
+    def _tier_restore(self):
+        """Before the leftovers are made freeform: a tier 1 triangle a later step gave to another surface goes back
+        to a neighbouring tier 1 surface its corners lie on. Returns how many went back."""
+        back = 0
+        for _pass in range(200):
+            exact = np.array([getattr(r.prim, "exact", None) is not None for r in self.regions] + [False])
+            stray = np.nonzero(self.tier1 & ~exact[self.label])[0]
+            if not stray.size:
+                break
+            nbl = np.where(self.nb[stray] >= 0, self.label[np.maximum(self.nb[stray], 0)], -1)
+            took = 0
+            for q in np.unique(nbl[nbl >= 0]):
+                if not exact[q]:
+                    continue
+                o = self.regions[int(q)]
+                cand = stray[(nbl == q).any(1)]
+                cand = cand[~exact[self.label[cand]]]
+                if not cand.size:
+                    continue
+                ok = self.accept(o.prim, o.sense, cand)
+                self.label[cand[ok]] = int(q)
+                took += int(ok.sum())
+            if not took:
+                break
+            back += took
+        if back:
+            self._faces_from_labels()
+            self._rebuild_regions(refit=False)
+        return back
 
     def accept(self, prim, sense, faces, tol=None):
         tol = self.tol if tol is None else tol
@@ -476,7 +1915,12 @@ class Segmenter:
         return self.V[vid], N, ok, W
 
     def sense_of(self, prim, faces):
-        P = self.V[self.F[faces]].mean(1)
+        # (the triangles' centres, worked out once per mesh: the same numbers as V[F[faces]].mean(1))
+        cen = getattr(self, "_cen_all", None)
+        if cen is None or len(cen) != len(self.F) or self._cen_of is not self.V:
+            cen = self._cen_all = self.V[self.F].mean(1)
+            self._cen_of = self.V
+        P = cen[faces]
         s = (prim.normal(P) * self.fn[faces]).sum(1) @ self.fa[faces]
         return 1.0 if s >= 0 else -1.0
 
@@ -489,12 +1933,15 @@ class Segmenter:
         total = len(seed)
         refit_at = max(2 * total, 24)
         label = self.label
+        reads = self.__dict__.get("_reads")
         while frontier.size:
             cand = self.nb[frontier].reshape(-1)
             cand = cand[cand >= 0]
             if not cand.size:
                 break
             cand = np.unique(cand)
+            if reads is not None:
+                reads.append(cand)
             cand = cand[(label[cand] < 0) & (st[cand] != stamp)]
             if not cand.size:
                 break
@@ -505,7 +1952,8 @@ class Segmenter:
                 region.append(new)
             frontier = new
             total += new.size
-            if refit and (prim.kind != "plane" or self.refit_planes) and total >= refit_at:
+            if (refit and (prim.kind != "plane" or self.refit_planes) and total >= refit_at
+                    and getattr(prim, "exact", None) is None):
                 allf = np.concatenate(region)
                 P, N, _, W = self.region_points(allf, True)
                 p2 = prim.refit(P, N, W)
@@ -534,12 +1982,15 @@ class Segmenter:
         nref = self.fn[seed[np.argmax(self.fa[seed])]]
         min_cos = 1.0
         cos_spread = np.cos(np.radians(min_spread_deg))
+        reads = self.__dict__.get("_reads")
         while frontier.size and layers < max_layers and total < max_faces:
             layers += 1
             src = np.repeat(frontier, 3)
             cand = self.nb[frontier].reshape(-1)
             m = cand >= 0
             src, cand = src[m], cand[m]
+            if reads is not None:
+                reads.append(cand)
             m = (self.label[cand] < 0) & (st[cand] != stamp)
             src, cand = src[m], cand[m]
             if not cand.size:
@@ -575,6 +2026,55 @@ class Segmenter:
         seeds = np.argsort(-sf_area, kind="stable")
         n_sf = len(seeds)
         rep = self.report
+        self.tiers = _os.environ.get("DESIGN_TIERS") == "1"      # measurement switch, two tiers (2026-11-11), not for merging
+        if self.tiers:
+            self.exact_lim = float(_os.environ.get("DESIGN_CORNER_LIMIT") or self._stated_accuracy(sf_lab))
+            self.loose_v = self._loose_corners(sf_lab) if _os.environ.get("DESIGN_LOOSE", "1") == "1" else None
+            self.loose_cand = self.loose_v if _os.environ.get("DESIGN_LOOSE_SURFACE", "1") == "1" else None
+            if self.loose_v is not None and _os.environ.get("DESIGN_LOOSE_MEASURE", "1") == "1":
+                n_cross = int(self.loose_v.sum())
+                seen_l, off_l = self._loose_measured()
+                # (a tenth of them off the solved surfaces, on twenty or more measured: this mesh places them loosely)
+                if seen_l >= 20 and off_l > 0.1 * seen_l:
+                    rep.log(f"TIER1 {n_cross} of {len(V)} corners lie where two curved surfaces cross; {off_l} of {seen_l} "
+                            f"measured stand off their surfaces: loosely stated")
+                else:
+                    self.loose_v = None
+                    rep.log(f"TIER1 {n_cross} of {len(V)} corners lie where two curved surfaces cross; {off_l} of {seen_l} "
+                            f"measured stand off their surfaces: stated like the rest")
+            elif self.loose_v is not None:
+                rep.log(f"TIER1 {int(self.loose_v.sum())} of {len(V)} corners lie where two curved surfaces cross: loosely stated")
+            if _os.environ.get("DESIGN_SKETCH") == "1":
+                n_sk, t_sk, n_arc = self._sketch_first(sf_lab)
+                rep.log(f"SKETCH first: {n_sk} extruded curve(s) hold {t_sk} triangles; {n_arc} arc(s) and line(s) in "
+                        f"their outlines left to be cylinders and planes")
+            n_locked = self._claim_locked()
+            self._strict = True
+            if not (_CLAIM_POOL and self._claim_pass(seeds, order_sf, starts)):
+                for k, s in enumerate(seeds):
+                    faces = order_sf[starts[s]:starts[s + 1]]
+                    faces = faces[self.label[faces] < 0]
+                    if faces.size:
+                        self._process_seed(faces, allow_defer=False)
+            self._strict = False
+            kept, tris = self._keep_tier_one()
+            if _os.environ.get("DESIGN_SKETCH") == "2":
+                # (after the first claim: tori, cones, spheres and planes are known, so a band at a torus's waist can't
+                # pass for a wall; the cylinders along a sketch direction are let go and judged in the sketch, then
+                # whatever the sketch leaves is claimed again)
+                n_sk, t_sk, n_arc = self._sketch_first(sf_lab, release=True)
+                rep.log(f"SKETCH after the first claim: {n_sk} extruded curve(s) hold {t_sk} triangles; {n_arc} arc(s) and "
+                        f"line(s) in their outlines left to be cylinders and planes")
+                self._strict = True
+                for k, s in enumerate(seeds):
+                    faces = order_sf[starts[s]:starts[s + 1]]
+                    faces = faces[self.label[faces] < 0]
+                    if faces.size:
+                        self._process_seed(faces, allow_defer=False)
+                self._strict = False
+                kept, tris = self._keep_tier_one()
+            rep.log(f"TIER1 limit {self.exact_lim:.2e} mm (seen {getattr(self, 'accuracy_seen', None)}); {kept} surface(s) stated and "
+                    f"over-determined hold {tris} of {len(F)} triangles; {n_locked} of ours exact")
         deferred = []
         for k, s in enumerate(seeds):
             if k % 200 == 0:
@@ -618,6 +2118,17 @@ class Segmenter:
         if POOLING and self._pool_pieces():
             # (the joined surfaces settled with their neighbours, and equal ones merged, as after any change)
             self._rebuild_regions()
+        if self.tiers:
+            back = self._tier_restore()
+            if back:
+                rep.log(f"TIER1 {back} triangle(s) went back to the exact surface they lie on")
+            if _os.environ.get("DESIGN_EXTRUDE") == "1":
+                n_ex, t_ex = self._stated_extrusions()
+                rep.log(f"SKETCH {n_ex} extruded curve(s) hold {t_ex} triangles: their corners, seen along a design "
+                        f"direction, fall on one curve")
+        elif _os.environ.get("DESIGN_CORNER_LIMIT"):     # measurement switch, see _exact_audit
+            if self._exact_audit(float(_os.environ["DESIGN_CORNER_LIMIT"])):
+                rep.log(f"{getattr(self, 'audited', 0)} triangle(s) left surfaces their corners don't lie on")
         self._make_freeform()
         self._fix_apex_cones()
         if getattr(self, "pooled", 0):
@@ -670,9 +2181,198 @@ class Segmenter:
         self.regions = new_regs
         self.label = new_lab
 
+    def _gather_then_solve(self, cls, faces, nbh, Pn, Nn, Wn, tr_=False):
+        """Design-intent prototype. One hypothesis while tier 1 is claimed: (area, rank, surface, sense, triangles)
+        or None. The surface is grown at the ordinary tolerance from the seed, solved on every corner gathered (the
+        corners that agree, at a limit tightened by four each round down to the exact one), then grown again from
+        the seed taking only triangles whose corners lie on it. A few triangles can't fix a cone or a torus: solved
+        from a seed's own surroundings it passes through them exactly and is wrong."""
+        fa = self.fa
+        lim = self.exact_lim
+        self._strict = False
+        try:
+            prim = self._robust_fit(cls, Pn, Nn, Wn)
+            if prim is None:
+                return None
+            sense = self.sense_of(prim, nbh)
+            ok = self.accept(prim, sense, nbh)
+            if ok.mean() < 0.3 or not ok[: faces.size].all():
+                return None
+            wide, prim = self.grow(prim, sense, faces)
+        finally:
+            self._strict = True
+        if wide.size <= faces.size:
+            return None
+        P0, N0, okp, W0 = self.region_points(wide, True)
+        stp = okp & ~self.loose_v[np.unique(self.F[wide])] if getattr(self, "loose_v", None) is not None else okp
+        if self._reach(P0[stp], P0[okp]):
+            okp = stp
+        prim0 = prim
+
+        def solved(pick):
+            prim = prim0
+            P, N, W = P0[pick], N0[pick], W0[pick]
+            thr = 2.0 * self.tol
+            while thr > lim:
+                thr = max(0.25 * thr, lim)
+                inl = prim.distance(P) <= thr
+                if inl.sum() < 8:
+                    break
+                try:
+                    p2 = cls.fit(P[inl], N[inl], ext=self.ext, W=W[inl])
+                except Exception as fault:
+                    faults.caught(fault)
+                    break
+                if p2 is None or p2.degenerate(self.ext):
+                    break
+                prim = p2
+            prim.loose_x = self._crossings_loose(prim, wide)
+            sense = self.sense_of(prim, wide)
+            if not self.accept(prim, sense, faces).all():
+                if tr_:
+                    print(f"SEEDTRACE    {cls.kind}: gathered {wide.size} tris, solved {prim.describe()}, but the seed's corners are off it by {float(np.abs(prim.distance(self.V[np.unique(self.F[faces])])).max()):.1e} (limit {lim:.1e})", flush=True)
+                return None
+            reg, prim = self.grow(prim, sense, faces, refit=False)
+            if tr_:
+                print(f"SEEDTRACE    {cls.kind}: gathered {wide.size} tris, solved {prim.describe()}, exact region {reg.size} tris, {fa[reg].sum() / max(fa[wide].sum(), 1e-30):.0%} of the gathered area", flush=True)
+            if reg.size <= faces.size or fa[reg].sum() < 0.5 * fa[wide].sum():
+                return None
+            return (fa[reg].sum(), prim.rank, prim, sense, reg)
+        out = solved(okp)
+        lc = getattr(self, "loose_cand", None)
+        if (out is None and lc is not None and getattr(self, "loose_v", None) is None
+                and _os.environ.get("DESIGN_ORD_SOLVE", "1") == "1"):
+            # (the crossings pulled the surface off its ordinary corners: solved once more without them)
+            ordp = okp & ~lc[np.unique(self.F[wide])]
+            if 8 <= int(ordp.sum()) < int(okp.sum()) and self._reach(P0[ordp], P0[okp]):
+                out = solved(ordp)
+                if tr_ and out is not None:
+                    print(f"SEEDTRACE    {cls.kind}: solved again on its {int(ordp.sum())} ordinary corners of {int(okp.sum())}: {out[2].describe()}, exact region {out[4].size} tris", flush=True)
+        return out
+
+    def _claim_solves(self, faces):
+        """The strict claim's solves for one seed's open triangles: (neighbourhood, hypotheses), as _process_seed
+        works them out (in a worker, see _claim_pass)."""
+        fa = self.fa
+        seed_area = fa[faces].sum()
+        nbh = self.neighbourhood(faces)
+        hyps = []
+        if nbh.size > faces.size and seed_area < 0.5 * fa[nbh].sum():
+            Pn, Nn, okn, Wn = self.region_points(nbh, True)
+            Pn_ok, Nn_ok, Wn_ok = Pn[okn], Nn[okn], Wn[okn]
+            for cls in CURVED:
+                got = self._gather_then_solve(cls, faces, nbh, Pn_ok, Nn_ok, Wn_ok, False)
+                if got is not None:
+                    hyps.append(got)
+        return nbh, hyps
+
+    def _claim_pass(self, seeds, order_sf, starts):
+        """The strict claim over the seeds in order, as the plain loop does it, with the solves of the seeds ahead
+        worked out meanwhile in the worker processes (see patch 106's notes in this file's header). False, having done
+        nothing, when the claim is small or there are no workers: the plain loop runs."""
+        if (_os.environ.get("DESIGN_CLAIM_GATHER", "1") != "1" or _os.environ.get("DESIGN_TRACE_PTS")
+                or _os.environ.get("DESIGN_AUDIT_TRACE")):
+            return False
+        label = self.label
+        open_ = [s for s in seeds if (label[order_sf[starts[s]:starts[s + 1]]] < 0).any()]
+        if len(open_) < CLAIM_POOL_SEEDS:
+            return False
+        from mms2c import workers
+        # (merged.py stops the workers before segmenting, as each would hold a copy of the mesh: those started here
+        # for the claim are stopped after it, holding a copy of the segmenter)
+        ours = workers.get(wait=False) is None
+        workers.start(len(self.F))
+        pool = workers.get()
+        if pool is None:
+            return False
+        ctx = copy.copy(self)
+        ctx.__dict__ = {k: v for k, v in self.__dict__.items() if k not in _CLAIM_NOT_SHARED}
+        ctx.regions = []
+        ctx.label = None
+        ctx._strict = True
+        key = workers.share(ctx)
+        sent = {}               # position in open_ -> (job, which triangles were labelled when it was sent)
+        nxt = 1                 # next position to send (the first seed is solved here at once)
+        used = again = 0
+        # How far ahead: a seed solved further ahead is likelier to have read a label that has changed by its turn
+        # (knob, 949 seeds solved: 304 good 192 seeds ahead, 716 at 32, 887 at 8), and nearer, fewer workers have work.
+        # So it follows the share of good answers lately. Which seeds go ahead never changes an answer, only the time.
+        fixed = int(_os.environ.get("DESIGN_CLAIM_AHEAD", "0"))
+        reach = fixed or workers.WORKERS
+        recent = collections.deque(maxlen=CLAIM_WINDOW)
+        for i, s in enumerate(open_):
+            # (keep the workers busy: jobs for the seeds ahead, on the labels as they are now; the workers only ask
+            # whether a triangle is labelled, so that is all they are sent)
+            while pool is not None and nxt < len(open_) and nxt - i <= reach:
+                done = label >= 0
+                try:
+                    job = pool.submit(_claim_job, key, np.packbits(done), len(done),
+                                      order_sf[starts[open_[nxt]]:starts[open_[nxt] + 1]])
+                except Exception as fault:
+                    faults.caught(fault)
+                    workers.broken()
+                    pool = None
+                    break
+                sent[nxt] = (job, done)
+                nxt += 1
+            faces = order_sf[starts[s]:starts[s + 1]]
+            faces = faces[label[faces] < 0]
+            got = sent.pop(i, None)
+            if got is not None and not faces.size:
+                got[0].cancel()         # (taken by a surface meanwhile: nothing to solve; if not started, not started)
+            elif got is not None:
+                job, done = got
+                out = None
+                try:
+                    if faults.clean(job):
+                        out = job.result()
+                except Exception as fault:
+                    faults.caught(fault)
+                    workers.broken()
+                    pool = None
+                if out is not None and out[1] is not None:
+                    f_, res, fp = out
+                    ok = bool(np.array_equal(f_, faces) and np.array_equal(label[fp] >= 0, done[fp]))
+                    if ok:
+                        self._spec = (faces, res[0], res[1])
+                        used += 1
+                    else:
+                        again += 1
+                    recent.append(ok)
+                    if not fixed and len(recent) == CLAIM_WINDOW:
+                        share = sum(recent) / CLAIM_WINDOW
+                        if share >= CLAIM_GOOD and reach < CLAIM_REACH_MAX * workers.WORKERS:
+                            reach += max(1, workers.WORKERS // 4)
+                        elif share < CLAIM_POOR and reach > max(2, workers.WORKERS // 2):
+                            reach -= max(1, workers.WORKERS // 4)
+            if faces.size:
+                self._process_seed(faces, allow_defer=False)
+            self.__dict__.pop("_spec", None)
+        for job, _ in sent.values():
+            job.cancel()
+        if ours:
+            workers.stop()
+        if _os.environ.get("DESIGN_CLAIM_POOL_LOG"):
+            self.report.log(f"TIER1 claim on the worker processes: {len(open_)} seeds, {used} solved ahead, "
+                            f"{again} solved again here (their labels changed); reach at the end {reach}")
+        return True
+
+    def _trace_hit(self, faces):
+        pts = _os.environ.get("DESIGN_TRACE_PTS")
+        if not pts:
+            return False
+        if not hasattr(self, "_trace_tree"):
+            from scipy.spatial import cKDTree
+            self._trace_tree = cKDTree(np.load(pts))
+            self._trace_on = self._trace_tree.query(self.V[self.F].mean(1))[0] < 1e-6
+        return bool(self._trace_on[faces].any())
+
     def _process_seed(self, faces, allow_defer=False):
         fa = self.fa
         seed_area = fa[faces].sum()
+        tr_ = self._trace_hit(faces)
+        if tr_:
+            print(f"SEEDTRACE seed of {len(faces)} tris (strict {getattr(self, '_strict', False)}), area {seed_area:.3f}, {int(self._trace_on[faces].sum())} on the traced surface", flush=True)
         P, N, _, W = self.region_points(faces, True)
         pl = Plane.fit(P, (self.fn[faces] * fa[faces, None]), W=W)
         best = None
@@ -694,18 +2394,36 @@ class Segmenter:
         area_p = fa[reg_p].sum()
         best = (area_p, 0, pl, 1.0, reg_p)
 
-        nbh = self.neighbourhood(faces)
+        spec = self.__dict__.pop("_spec", None)
+        ahead = spec is not None and np.array_equal(spec[0], faces)
+        if ahead:
+            # (the strict claim's solves for this seed, worked out in a worker on labels that are still the same
+            # wherever they were read: the answer solving here gives, see _claim_pass)
+            nbh, hyps = spec[1], list(spec[2])
+        else:
+            nbh = self.neighbourhood(faces)
+            hyps = []
         nbh_area = fa[nbh].sum()
-        hyps = []
-        if nbh.size > faces.size and seed_area < 0.5 * nbh_area:
+        if not ahead and nbh.size > faces.size and seed_area < 0.5 * nbh_area:
             Pn, Nn, okn, Wn = self.region_points(nbh, True)
             Pn_ok, Nn_ok, Wn_ok = Pn[okn], Nn[okn], Wn[okn]
             for cls in CURVED:
+                if getattr(self, "_strict", False) and _os.environ.get("DESIGN_CLAIM_GATHER", "1") == "1":
+                    got = self._gather_then_solve(cls, faces, nbh, Pn_ok, Nn_ok, Wn_ok, tr_)
+                    if got is not None:
+                        hyps.append(got)
+                    continue
                 prim = self._robust_fit(cls, Pn_ok, Nn_ok, Wn_ok)
                 if prim is None:
+                    if tr_:
+                        print(f"SEEDTRACE    {cls.kind}: no fit from {len(Pn_ok)} points of {nbh.size} neighbourhood tris", flush=True)
                     continue
                 sense = self.sense_of(prim, nbh)
                 ok = self.accept(prim, sense, nbh)
+                if tr_:
+                    dn_ = np.abs(prim.distance(self.V[self.F[nbh]].reshape(-1, 3))).reshape(-1, 3).max(1)
+                    print(f"SEEDTRACE    {cls.kind}: {prim.describe()}; neighbourhood {nbh.size} tris ({int(self._trace_on[nbh].sum())} on the traced surface), accepted {ok.mean():.2f}, seed all {bool(ok[: faces.size].all())}; "
+                          f"corner distance seed max {dn_[: faces.size].max():.1e}, traced tris max {dn_[self._trace_on[nbh]].max() if self._trace_on[nbh].any() else -1:.1e}, limit {self._corner_limit(prim)}", flush=True)
                 if ok.mean() < 0.3 or not ok[: faces.size].all():
                     continue
                 explains_all = False
@@ -737,6 +2455,8 @@ class Segmenter:
         if run_h is not None:
             hyps.append(run_h)
         hyps += self._axis_hypotheses(faces)
+        if tr_:
+            print(f"SEEDTRACE    plane grew to {reg_p.size} tris; hypotheses: {[(h[2].kind, int(h[4].size), round(float(h[0]), 3)) for h in hyps]}", flush=True)
         if hyps and len(faces) >= 2 and not self._strip_like(faces):
             # an exactly flat facet of two or more triangles, not a thin strip,
             # is a plane the designer drew unless its own corners lie on the
@@ -993,8 +2713,20 @@ class Segmenter:
         turn_cos = np.cos(np.radians(max_turn))
         thr = SEED_ON_CURVE * self.tol
 
+        # (an index of the groups' triangles, made once per label array: np.nonzero(sf == g) passed over the whole
+        # mesh for every group asked, 56 s on a 13,000-triangle screw)
+        idx_ = getattr(self, "_sf_index", None)
+        if idx_ is None or idx_[0] is not sf:
+            order_ = np.argsort(sf, kind="stable")
+            vals_, start_ = np.unique(sf[order_], return_index=True)
+            idx_ = self._sf_index = (sf, order_, vals_, np.r_[start_, len(order_)])
+        _, order_, vals_, start_ = idx_
+
         def group_faces(g):
-            return np.nonzero(sf == g)[0]
+            k_ = int(np.searchsorted(vals_, g))
+            if k_ >= len(vals_) or vals_[k_] != g:
+                return np.zeros(0, dtype=order_.dtype)
+            return order_[start_[k_]:start_[k_ + 1]]
 
         def long_neighbours(g):
             # groups across this group's longest outline edges (its rulings)
@@ -1207,7 +2939,7 @@ class Segmenter:
         """Replace a surface by a simpler kind when that fits the same faces
         (a torus with a huge ring radius is really a cylinder, etc.)."""
         kinds = self.SIMPLER.get(prim.kind, ())
-        if not kinds or _locked(prim):
+        if not kinds or _locked(prim) or getattr(prim, "exact", None) is not None:
             return prim, sense
         P, N, ok, W = self.region_points(faces, True)
         if isinstance(prim, _OnAxis):
@@ -1263,6 +2995,25 @@ class Segmenter:
             if p2 is None or p2.degenerate(self.ext):
                 break
             prim = p2
+        if getattr(self, "_strict", False) and cls.kind in CHORD_KINDS and _os.environ.get("DESIGN_CLAIM_POLISH", "1") == "1":
+            # (design-intent prototype: the surface is solved from the corners that state it. The points that agree
+            # with the fit at a limit, tightened by four each round down to the exact one, are fitted again; with too
+            # few left the last good fit stands, and the exact test that follows decides)
+            lim = self.exact_lim
+            thr = 2.0 * self.tol
+            while thr > lim:
+                thr = max(0.25 * thr, lim)
+                inl = prim.distance(P) <= thr
+                if inl.sum() < 8:
+                    break
+                try:
+                    p2 = cls.fit(P[inl], N[inl], ext=self.ext, W=None if W is None else W[inl])
+                except Exception as fault:
+                    faults.caught(fault)
+                    break
+                if p2 is None or p2.degenerate(self.ext):
+                    break
+                prim = p2
         return prim
 
     # --- refinement -----------------------------------------------------
@@ -1622,6 +3373,115 @@ class Segmenter:
         m = self.label >= 0
         self.label[m] = new[self.label[m]]
         self.regions = [self.regions[r] for r in keep]
+
+    def _exact_audit(self, lim, rounds=3):
+        """Measurement prototype, exact-joins step (2026-11-11), not for merging. On a mesh whose corners state its
+        surfaces, a plane, cylinder, cone, sphere or torus holds only triangles whose corners lie on it within lim (mm).
+        A surface re-fitted while it grew drifts and creeps over its neighbours' triangles (the axle: one loose cone
+        of 44.996 degrees over two drawn cones and a chamfer plane, corners 0.004 to 0.03 mm off). Each such region is
+        shrunk to the core its corners do lie on, re-fitted on that core alone; the triangles it lets go join a
+        neighbour they lie on exactly, and what is left is seeded again."""
+        changed = False
+        if _os.environ.get("DESIGN_AUDIT_TRACE"):
+            import collections as _c
+            print("AUDIT start", len(self.regions), dict(_c.Counter((r.kind, bool(_locked(r.prim)), bool(r.weak), bool(r.facet)) for r in self.regions)), flush=True)
+        for _ in range(rounds):
+            moved = 0
+            for reg in self.regions:
+                prim = reg.prim
+                if (reg.facet or reg.weak or prim.kind not in CHORD_KINDS or hasattr(prim, "geom")
+                        or len(reg.faces) < 4):
+                    continue
+                faces = np.asarray(reg.faces, dtype=np.int64)
+                T = self.V[self.F[faces]].reshape(-1, 3)
+                if _locked(prim):
+                    # (a locked surface keeps its numbers, and lets go of triangles that aren't on it)
+                    dl = np.abs(prim.distance(T)).reshape(-1, 3).max(1)
+                    keep = dl <= lim
+                    if not keep.all() and int(keep.sum()) >= max(4, 0.25 * len(faces)):
+                        self.label[faces[~keep]] = -1
+                        reg.faces = faces[keep]
+                        moved += int((~keep).sum())
+                        changed = True
+                    continue
+
+                def off(q):
+                    return np.abs(q.distance(T)).reshape(-1, 3).max(1)
+
+                d = off(prim)
+                if _os.environ.get("DESIGN_AUDIT_TRACE") and prim.kind != "plane":
+                    print(f"AUDIT {prim.kind} {type(prim).__name__} tris {len(faces)} worst {float(d.max()):.2e} p60 {float(np.percentile(d, 60)):.2e}", flush=True)
+                if float(d.max()) <= lim:
+                    continue
+                p = prim
+                for _it in range(8):
+                    cut = max(lim, float(np.percentile(d, 60)))
+                    core = faces[d <= cut]
+                    if len(core) < 4:
+                        break
+                    P, N, ok, W = self.region_points(core, True)
+                    try:
+                        p2 = p.refit(P, None, W) if p.kind == "plane" else p.refit(P[ok], N[ok], W[ok])
+                    except Exception as fault:
+                        faults.caught(fault)
+                        p2 = None
+                    if p2 is None or getattr(p2, "degenerate", lambda e: False)(self.ext):
+                        break
+                    d2 = off(p2)
+                    if cut <= lim and int((d2 <= lim).sum()) < int((d <= lim).sum()):
+                        break
+                    done = cut <= lim
+                    p, d = p2, d2
+                    if done:
+                        break
+                keep = d <= lim
+                if int(keep.sum()) < max(4, 0.25 * len(faces)):
+                    continue        # (no exact core: a surface that only fits, left as it was)
+                if getattr(prim, "on_design", None) is not None and p is not prim:
+                    p.on_design = prim.on_design
+                reg.prim = p
+                changed = True
+                if keep.all():
+                    continue
+                self.label[faces[~keep]] = -1
+                reg.faces = faces[keep]
+                moved += int((~keep).sum())
+            if not moved:
+                break
+            self.audited = getattr(self, "audited", 0) + moved
+            for _pass in range(200):
+                free = np.nonzero(self.label < 0)[0]
+                if not free.size:
+                    break
+                nbl = np.where(self.nb[free] >= 0, self.label[np.maximum(self.nb[free], 0)], -1)
+                took = 0
+                for q in np.unique(nbl[nbl >= 0]):
+                    o = self.regions[int(q)]
+                    if o.facet or o.weak or o.prim.kind not in CHORD_KINDS or hasattr(o.prim, "geom"):
+                        continue
+                    cand = free[(nbl == q).any(1)]
+                    cand = cand[self.label[cand] < 0]
+                    if not cand.size:
+                        continue
+                    dd = np.abs(o.prim.distance(self.V[self.F[cand]].reshape(-1, 3))).reshape(-1, 3).max(1)
+                    ok = (dd <= lim) & self.accept(o.prim, o.sense, cand)
+                    self.label[cand[ok]] = int(q)
+                    took += int(ok.sum())
+                if not took:
+                    break
+            self._faces_from_labels()
+            free = np.nonzero(self.label < 0)[0]
+            if free.size:
+                groups = {}
+                for f in free:
+                    groups.setdefault(int(self.sf_lab[f]), []).append(int(f))
+                for g in sorted(groups, key=lambda g: -float(self.fa[groups[g]].sum())):
+                    faces = np.asarray(groups[g], dtype=np.int64)
+                    faces = faces[self.label[faces] < 0]
+                    if faces.size:
+                        self._process_seed(faces, allow_defer=False)
+            self._rebuild_regions(refit=False)
+        return changed
 
     def _bands_on_axes(self):
         """A chamfer's narrow band round a rounded corner is a cone on the corner's axis, but
@@ -2692,7 +4552,7 @@ class Segmenter:
             faces = order[starts[k]:starts[k + 1]]
             r = old[lab[faces[0]]]
             prim, sense = r.prim, r.sense
-            if not refit or _locked(prim):
+            if not refit or _locked(prim) or getattr(prim, "exact", None) is not None:
                 pass
             elif prim.kind not in ("plane", "freeform") and faces.size >= 3:
                 P, N, ok, W = self.region_points(faces, True)
@@ -2763,7 +4623,9 @@ class Segmenter:
             if f not in roots:
                 roots[f] = len(out)
                 out.append(Region(regs[f].prim, [], regs[f].sense, regs[f].weak))
-            elif _locked(r.prim) and not _locked(out[roots[f]].prim):
+            elif ((_locked(r.prim) and not _locked(out[roots[f]].prim))
+                  or (getattr(r.prim, "exact", None) is not None and not _locked(out[roots[f]].prim)
+                      and getattr(out[roots[f]].prim, "exact", None) is None)):
                 # (a surface stl2curves found, locked, outlives an equal fitted one)
                 out[roots[f]].prim, out[roots[f]].sense = r.prim, r.sense
             out[roots[f]].faces.append(r.faces)
@@ -3321,9 +5183,13 @@ class CADAssembler(BRepAssembler):
         self.ext = float(np.linalg.norm(V.max(0) - V.min(0)))
         self.worked_out = {}
         self.fit_instead = set()
+        self.curve_instead = set()      # borders drawn through their own points: fitted circles still crossed at a cusp
 
     # --- edges ----------------------------------------------------------
     def build_chain_edges(self, chain):
+        if len(chain.verts) < 2:
+            chain.edges = []        # (a border joined away: patch 111)
+            return
         L = self.regions[chain.left]
         R = self.regions[chain.right] if chain.right >= 0 else None
         both_planar = L.kind == "plane" and (R is None or R.kind == "plane")
@@ -3368,6 +5234,8 @@ class CADAssembler(BRepAssembler):
         P = self.V[chain.verts]
         # circle?
         circ = _fit_circle_3d(P[:-1] if chain.closed else P)
+        if (chain.verts[0], chain.verts[-1]) in self.curve_instead:
+            circ = None         # (as a fitted circle it still crossed its neighbour at a cusp)
         if circ is not None and circ[3] <= self.tol:
             c, n, r, _ = circ
             c, n, r = self._snap_circle(chain, c, n, r)
@@ -3421,8 +5289,107 @@ class CADAssembler(BRepAssembler):
             if np.linalg.norm(pa - pb) <= 10 * MIN_TOL:
                 moved.pop(a, None)
                 moved.pop(b, None)
+        if _CORNER_NOFOLD and _CORNER_JOIN and moved:
+            self._mend_folding_borders(moved, at, reach)
+        if _CORNER_NOFOLD and moved:
+            # (patch 110: a move that turns a border at the corner back folds the face's outline across itself: the
+            # corner stays on its mesh corner instead)
+            firsts = []
+            for c in rg.chains:
+                if len(c.verts) >= 2:
+                    firsts.append((c.verts[0], c.verts[1]))
+                    firsts.append((c.verts[-1], c.verts[-2]))
+            for _ in range(4):
+                back = set()
+                for vi, nx in firsts:
+                    if vi not in moved and nx not in moved:
+                        continue
+                    d0 = self.V[nx] - self.V[vi]
+                    d1 = moved.get(nx, self.V[nx]) - moved.get(vi, self.V[vi])
+                    if float(d0 @ d1) <= 0.0:
+                        back.update(v for v in (vi, nx) if v in moved)
+                if not back:
+                    break
+                for vi in back:
+                    moved.pop(vi, None)
+                self.corners_kept = getattr(self, "corners_kept", 0) + len(back)
         for vi, x in moved.items():
             self.V[vi] = x
+
+    def _mend_folding_borders(self, moved, at, reach):
+        """Patch 111: where a corner's move turns the first piece of a border at it back, mend the border (see the
+        patch's notes): drop the points inside the border that the corner passed, or join two corners a short border
+        holds apart. Changes the region graph's chains and loops and the moves in place; what it can't mend is left to
+        patch 110's refusal."""
+        rg = self.rg
+        ends = collections.Counter()
+        for c in rg.chains:
+            if not c.closed and len(c.verts) >= 2:
+                ends[c.verts[0]] += 1
+                ends[c.verts[-1]] += 1
+
+        def pos(v):
+            return moved.get(v, self.V[v])
+
+        def back(v0, v1):
+            return float((self.V[v1] - self.V[v0]) @ (pos(v1) - pos(v0))) <= 0.0
+
+        joined = dropped = 0
+        for c in list(rg.chains):
+            if c.closed or len(c.verts) < 2:
+                continue
+            for first in (True, False):
+                vs = c.verts if first else c.verts[::-1]
+                vi = vs[0]
+                if vi not in moved:
+                    continue
+                # (points inside the border that the corner passed: dropped while the piece still turns back)
+                k = 1
+                while k < len(vs) - 1 and back(vi, vs[k]):
+                    k += 1
+                if k > 1:
+                    keep = [vi] + vs[k:]
+                    c.verts = keep if first else keep[::-1]
+                    dropped += k - 1
+            vs = c.verts
+            if len(vs) != 2 or not back(vs[0], vs[1]):
+                continue
+            a, b = vs
+            if a == b or ends[a] < 1 or ends[b] < 1:
+                continue
+            # (another border joining the same two corners: joining them would close it on itself)
+            if any(o is not c and not o.closed and {o.verts[0], o.verts[-1]} == {a, b} for o in rg.chains):
+                continue
+            seen = []
+            for q in list(at.get(a, [])) + list(at.get(b, [])):
+                if not any(q is s_ or getattr(s_, "twin", None) is q for s_ in seen):
+                    seen.append(q)
+            x = _meet(0.5 * (pos(a) + pos(b)), seen, reach)
+            if x is None or float(np.linalg.norm(x - self.V[a])) > reach or float(np.linalg.norm(x - self.V[b])) > reach:
+                continue
+            # join b into a: every border ending at b now ends at a; this border goes from both regions' loops
+            for o in rg.chains:
+                if o is c:
+                    continue
+                if o.verts[0] == b:
+                    o.verts[0] = a
+                if o.verts[-1] == b:
+                    o.verts[-1] = a
+                o.closed = o.verts[0] == o.verts[-1] and len(o.verts) > 2
+            for r in (c.left, c.right):
+                if r < 0:
+                    continue
+                for loop in rg.region_loops[r]:
+                    loop[:] = [(cc, fw) for cc, fw in loop if cc != c.id]
+            c.verts = [a]
+            c.closed = False
+            c.left = c.right = -1       # (no face holds it any more; build_chain_edges makes it no edge)
+            moved[a] = x
+            moved.pop(b, None)
+            joined += 1
+        if joined or dropped:
+            self.corners_joined = getattr(self, "corners_joined", 0) + joined
+            self.border_points_dropped = getattr(self, "border_points_dropped", 0) + dropped
 
     def _exact_chain_edge(self, chain):
         """The edge between two surfaces as the line, circle or smooth curve where they meet,
@@ -3439,7 +5406,7 @@ class CADAssembler(BRepAssembler):
         # (a freeform surface is only fitted to within the tolerance, and a designer's own edges stand
         # off theirs too: working these out gains nothing, cost 300 of test14's 520 s in this pass, and a
         # narrow band laid this way broke on read-back and went to 44 flat pieces on main plate)
-        if any(hasattr(q, "geom") for q in prims):
+        if any(hasattr(q, "geom") for q in prims) and not _thread_corners(prims):
             return False
         P = self.V[chain.verts]
         P = P[np.r_[True, np.linalg.norm(np.diff(P, axis=0), axis=1) > MIN_TOL]]
@@ -3531,6 +5498,9 @@ class CADAssembler(BRepAssembler):
         """What the border between two surfaces is: ("line",), ("circle", c, n, r), ("curve", curve)
         or ("none",) when it isn't a sharp meeting line (see _exact_chain_edge)."""
         reach = CORNER_REACH * self.tol
+        if _thread_corners(prims):
+            curve = _helix_between(prims, P, reach)
+            return ("none",) if curve is None else ("curve", curve)
         touch = contact(prims[0], prims[1])
         if touch is not None:
             if touch[0] == "line" and not chain.closed:
@@ -4531,10 +6501,11 @@ class CADAssembler(BRepAssembler):
             # trims the complementary part of it: valid, but wrong. The
             # mesh area of the region tells which way is right.
             want = self.region_area(r)
-            got = _face_area(face)
+            _area = _face_area_signed if __import__("os").environ.get("DESIGN_SIGNED_ALT") == "1" else _face_area
+            got = _area(face)
             if abs(got - want) > 0.15 * want:
                 alt = self._bounded_face(r, surf, [_reverse_loop(l) for l in nat], reg.sense > 0, tol)
-                if abs(_face_area(alt) - want) < abs(got - want):
+                if abs(_area(alt) - want) < abs(got - want):
                     face = alt
         return face
 
@@ -4953,6 +6924,80 @@ _FOOTERS = {}           # a freeform surface's point finder, by the surface, see
 FOOTERS_KEPT = 500      # surfaces whose finders are kept
 
 
+def _thread_corners(prims):
+    """The helices two pieces of one thread's profile can meet in, as (piece, s along it): one corner of the profile, or
+    two when a profile has only two pieces. Empty for any other two surfaces. A profile closes over a lead, so the last
+    piece meets the first a lead along."""
+    if len(prims) != 2:
+        return []
+    a, b = (getattr(q, "model", None) for q in prims)
+    if not hasattr(a, "thread") or not hasattr(b, "thread"):
+        return []
+    ha, hb = a.thread, b.thread
+    if not (ha is hb or (ha.pitch == hb.pitch and ha.k == hb.k and ha.zref == hb.zref and np.array_equal(ha.a, hb.a) and np.array_equal(ha.d, hb.d))):
+        return []
+    # (two stretches of one piece, parted by something else, have no corner between them)
+    if np.array_equal(a.p, b.p) and np.array_equal(a.q, b.q):
+        return []
+    out = []
+    for s, x in ((0.0, a.p), (a.length, a.q)):
+        for y in (b.p, b.q):
+            dz = float(x[0] - y[0])
+            if abs(float(x[1] - y[1])) < 1e-9 and abs(dz - round(dz / ha.lead) * ha.lead) < 1e-9:
+                out.append((a, s))
+                break
+    return out
+
+
+def _helix_between(prims, P, reach):
+    """The helix two pieces of one thread's profile meet in, as a curve from the chain P's first corner to its last: the
+    thread knows this line exactly, and a curve fitted to the mesh's corners can only come near it. A long thread's border
+    has thousands of them, and the fit stood 0.02 mm off a tolerance of 0.016 on clamp-screw, so it was refused.
+
+    The chain has to be that helix, though: every corner within reach of the line, and going one way round. Where something
+    else took a bite out of a piece, its border leaves the line and the helix would cut across it. The corners decide, not the
+    chords between them, which on a coarse mesh stand far off a helix they follow correctly. None for anything else."""
+    shared = _thread_corners(prims)
+    P = np.asarray(P, dtype=np.float64)
+    if not shared or len(P) < 2:
+        return None
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    from OCP.collections import HArray1_gp_Pnt
+    from OCP.gp import gp_Vec
+
+    piece = shared[0][0]
+    along, off, U = piece.place(P)
+    gap, s = min(((float(np.hypot(along - c, off).max()), c) for _, c in shared), key=lambda x: x[0])
+    if gap > reach:
+        return None
+    span = float(U[-1] - U[0])
+    rho = float(piece.at(s)[1])
+    if span == 0.0 or rho <= 0.0 or float((np.diff(U) * np.sign(span)).min()) < -reach / rho:
+        return None
+    # (the largest radius it reaches: a taper's grows along it)
+    n = max(8, int(np.ceil(abs(span) / (2 * np.pi) * piece.thread.samples_per_turn(max(rho, float(np.linalg.norm(P - piece.thread.a - np.outer((P - piece.thread.a) @ piece.thread.d, piece.thread.d), axis=1).max()))))) + 1)
+    Q = piece.point(np.full(n, float(s)), np.linspace(U[0], U[-1], n))
+    Q[0], Q[-1] = P[0], P[-1]
+    if float(np.linalg.norm(np.diff(Q, axis=0), axis=1).min()) <= MIN_TOL:
+        return None
+    h = HArray1_gp_Pnt(1, n)
+    for i, p in enumerate(Q):
+        h.SetValue(i + 1, _pnt(p))
+    # (its own direction at each end: left free, the last span stood 8e-5 off the helix, against 5e-6 elsewhere. Unit
+    # length, unscaled: the curve's parameter runs by chord length, which on so many points is arc length)
+    def tangent(u):
+        rate = piece.along_helix(float(s), float(u)) * np.sign(span)
+        return gp_Vec(*(rate / np.linalg.norm(rate)).tolist())
+    try:
+        it = GeomAPI_Interpolate(h, False, 1e-9)
+        it.Load(tangent(float(U[0])), tangent(float(U[-1])), False)
+        it.Perform()
+        return it.Curve() if it.IsDone() else None
+    except Exception as fault:
+        faults.caught(fault)
+        return None
+
+
 def _known_curve(prims, P):
     """The curve two surfaces meet in where that is a circle or an ellipse with known axes:
     ("circle", centre, normal, radius) or ("ellipse", centre, normal, major direction, major, minor);
@@ -5168,6 +7213,20 @@ def _meeting_angle(Q, prims):
         c = min(1.0, abs(float(a[1] @ b[1])))
         worst = min(worst, float(np.degrees(np.arccos(c))))
     return worst
+
+
+def _face_area_signed(face):
+    # (patch 117: with its sign, so that a face and its inside-out twin are told apart)
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    try:
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, g, 1e-4)
+        return float(g.Mass())
+    except Exception as fault:
+        faults.caught(fault)
+        return 0.0
 
 
 def _face_area(face):
@@ -5697,6 +7756,162 @@ def _small_neighbours_crossing(seg, asm, r):
     return out
 
 
+_TWO_RINGS = _os.environ.get("DESIGN_TWO_RINGS") == "1"     # design-intent switch (patch 102)
+RING_MM = 0.002         # mm: corners this near one height along the axis are one row
+CIRCLE_MM = 2e-4        # mm: and this near one circle are on it: a designer's circle, exported, holds its corners to the
+                        # export's precision (heatsink's, 063's, the Pi case's: 0.0000); allen's 0.0023 is a spline wall
+TWO_RINGS_OFF = 0.01    # mm: the round surface must stand at least this far (RMS) from its triangles' middles
+TWO_RINGS_WINS = 0.5    # and the straight one at most this share as far (measured 0.00-0.18 where straight, 0.95-1.27 round)
+
+
+def _straight_where_two_rows(seg, regions, report=NULL):
+    """Each region of a locked torus or sphere whose corners lie on two rows only: the cylinder or cone through them,
+    when its triangles lie on that (see patch 102). Changes the regions' surfaces in place."""
+    n = 0
+    for reg in regions:
+        prim = reg.prim
+        if not getattr(prim, "locked", False) or prim.kind not in ("torus", "sphere") or len(reg.faces) < 2:
+            continue
+        faces = np.asarray(reg.faces, dtype=np.int64)
+        d = prim.d if prim.kind == "torus" else getattr(prim, "axis", None)
+        if d is None:
+            # (a sphere found without an axis: the plane of its fullest row of corners is square to it; the rows' test
+            # below checks it. Not the direction they vary least: the Pi case's countersinks are half rings, and that
+            # leans 14 degrees off)
+            d = _row_axis(seg.V[np.unique(seg.F[faces])])
+            if d is None:
+                continue
+        new = _straight_through_rows(prim, np.asarray(d, float), seg.V[seg.F[faces]])
+        if new is None:
+            continue
+        new.locked = True
+        reg.prim = new
+        reg.sense = seg.sense_of(new, faces)
+        n += 1
+    if n:
+        report.log(f"{n} sphere(s) or torus(es) whose corners lie on two rows only are the cylinder or cone through "
+                   "them, which their triangles lie on")
+
+
+ROW_TRIES = 200         # planes through three corners tried for a row's plane (_row_axis)
+
+
+def _row_axis(P):
+    """The normal of the plane holding the most of the corners P (to RING_MM), from planes through three of them; None if
+    no plane holds more than three. Seeded, so the same corners give the same axis."""
+    if len(P) < 4:
+        return None
+    rng = np.random.default_rng(0)
+    best, axis = 3, None
+    for _ in range(ROW_TRIES):
+        i = rng.choice(len(P), 3, replace=False)
+        n = np.cross(P[i[1]] - P[i[0]], P[i[2]] - P[i[0]])
+        L = float(np.linalg.norm(n))
+        if L < 1e-12:
+            continue
+        n = n / L
+        k = int((np.abs((P - P[i[0]]) @ n) <= RING_MM).sum())
+        if k > best:
+            best, axis = k, n
+    return axis
+
+
+def _straight_through_rows(prim, d, T):
+    """The cylinder or cone through the two rows of corners of the triangles T (n, 3, xyz) of a sphere or torus, or None
+    (more rows, rows that aren't circles round the axis nor one circle along it, or triangles that don't say so)."""
+    d = d / float(np.linalg.norm(d))
+    c = prim.c
+    P = T.reshape(-1, 3) - c
+    h = P @ d
+    lo, hi = float(h.min()), float(h.max())
+    if hi - lo <= RING_MM:
+        return None
+    low, high = np.abs(h - lo) <= RING_MM, np.abs(h - hi) <= RING_MM
+    if not (low | high).all():
+        return None
+    rad = P - np.outer(h, d)
+    rho = np.linalg.norm(rad, axis=1)
+    if float(np.ptp(rho[low])) <= CIRCLE_MM and float(np.ptp(rho[high])) <= CIRCLE_MM:
+        r0, r1 = float(rho[low].mean()), float(rho[high].mean())
+        if abs(r1 - r0) <= CIRCLE_MM:
+            straight = Cylinder(c, d, 0.5 * (r0 + r1))
+        else:
+            k = (r1 - r0) / (hi - lo)
+            z = lo - r0 / k                         # the apex, where the profile reaches the axis
+            straight = Cone(c + z * d, d if k > 0 else -d, float(np.arctan(abs(k))))
+    else:
+        e1, e2 = perp_basis(d)
+        got = fit_circle_2d(np.column_stack([P @ e1, P @ e2]), refine=True)
+        if got is None:
+            return None
+        (cx, cy), rr = got
+        if float(np.abs(np.hypot(P @ e1 - cx, P @ e2 - cy) - rr).max()) > CIRCLE_MM:
+            return None
+        straight = Cylinder(c + cx * e1 + cy * e2, d, rr)
+    if straight.kind == "cylinder":
+        # (third form: on the designers' grid as merged._round_radii's near tier does, which these surfaces, made after
+        # it, miss: heatsink's came out 3.75000004 and 4.49999996 from its corners, and the designer drew 3.75 and 4.5)
+        grid = float(_os.environ.get("DESIGN_ROUND_GRID", "0.001"))
+        g = round(straight.r / grid) * grid
+        if g > 0 and abs(g - straight.r) <= float(_os.environ.get("DESIGN_ROUND_NEAR", "1e-5")):
+            straight.r = g
+    C = T.mean(axis=1)
+    on_round = float(np.sqrt(np.mean(np.asarray(prim.distance(C)) ** 2)))
+    on_straight = float(np.sqrt(np.mean(np.asarray(straight.distance(C)) ** 2)))
+    if on_round < TWO_RINGS_OFF or on_straight > TWO_RINGS_WINS * on_round:
+        return None
+    return straight
+
+
+_CLAIM_POOL = _os.environ.get("DESIGN_CLAIM_POOL") == "1"     # design-intent switch (patch 106): speed only
+CLAIM_POOL_SEEDS = 300  # open seeds at the claim's start from which its solves go to the worker processes too
+CLAIM_WINDOW = 32       # seeds solved ahead over which the share of good answers is judged
+CLAIM_GOOD = 0.9        # at least this share good: solve further ahead (by a quarter of the workers)
+CLAIM_POOR = 0.7        # under this share: less far
+CLAIM_REACH_MAX = 4     # seeds ahead at most, per worker
+# (what a worker's copy of the segmenter goes without: the regions, report and topology aren't read by the solves, and
+# the trace's and debug's leftovers aren't needed)
+_CLAIM_NOT_SHARED = ("report", "regions", "topo", "label", "_spec", "_reads", "_trace_tree", "_trace_on",
+                     "_dbg_flat", "_dbg_comp", "_gs_cover", "_gs_wide")
+
+
+def _claim_job(key, done, n, faces):
+    """In a worker: the strict claim's solves for one seed (Segmenter._claim_pass), with the triangles labelled as
+    `done` says (packed bits of n). Returns (its open triangles, (neighbourhood, hypotheses) or None, the triangles
+    whose labels the solves read)."""
+    from mms2c import workers
+    seg = workers.load(key)
+    seg.report = NULL         # (the real one, with its stream, stays in the main process)
+    # (the solves only ask whether a triangle is labelled: label < 0)
+    seg.label = np.where(np.unpackbits(done, count=n).astype(bool), 0, -1).astype(np.int64)
+    seg._strict = True
+    seg._reads = reads = [faces]
+    f = faces[seg.label[faces] < 0]
+    try:
+        res = seg._claim_solves(f) if f.size else None
+    finally:
+        seg._reads = None
+    return f, res, np.unique(np.concatenate(reads))
+
+
+_NO_SAME_RETRY = _os.environ.get("DESIGN_NO_SAME_RETRY") == "1"     # design-intent switch (patch 107)
+
+
+def _cell_key(seg, labels, regions, r):
+    """What a region's face is built from, as far as a rebuild can tell: its triangles, and its neighbours' triangles
+    and kinds (patch 107)."""
+    f = np.asarray(regions[r].faces, dtype=np.int64)
+    nb = seg.nb[f].reshape(-1)
+    nb = np.unique(labels[nb[nb >= 0]])
+    nb = [int(n) for n in nb if 0 <= n < len(regions) and n != r]
+    return (frozenset(f.tolist()),
+            frozenset((frozenset(np.asarray(regions[n].faces, dtype=np.int64).tolist()), regions[n].kind) for n in nb))
+
+
+_CORNER_JOIN = _os.environ.get("DESIGN_CORNER_JOIN") == "1"     # design-intent switch (patch 111)
+_CORNER_NOFOLD = _os.environ.get("DESIGN_CORNER_NOFOLD") == "1"     # design-intent switch (patch 110)
+
+
 def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=0.6, seg=None, tidy=True, tidied=None):
     """Segment + build. Analytic faces that cannot be built validly, or that
     don't follow the mesh (checked in the first ``fit_rounds`` rounds), are
@@ -5714,18 +7929,23 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         regions = seg.run()
     else:
         regions = seg.regions
+    if _TWO_RINGS:
+        _straight_where_two_rows(seg, regions, report)
     labels = seg.label.copy()
     replaced = 0
     inaccurate = 0
     crossed_this_round = False
     fit_instead = set()  # borders (first and last vertex) fitted to the mesh, as exact arcs they crossed at a cusp
+    curve_instead = set()  # of those, the ones that still crossed as fitted circles: drawn through their own points
     worked_out = {}     # what each border between two surfaces came to, for the later rounds (_exact_chain_edge)
+    from . import faultlog as _fl
+    _fl.build_begin(0, len(shell.F), tol)
 
     def build(labels, regions):
         # (first, so a plane joined here is cut where it pinches, and the pieces of one cut keep one surface)
         if EXACT_EDGES:
             # (tidied, if given, is told when this changed a surface; tidy=False: see pipeline, _attempt_untidied)
-            if tidy:
+            if tidy and _os.environ.get("DESIGN_NO_TIDY") != "1":     # measurement switch, experiment E1 (2026-11-11), not for merging
                 before = [r.prim for r in regions]
                 regularise(seg, labels, regions)
                 if tidied is not None and any(a is not r.prim for a, r in zip(before, regions)):
@@ -5760,6 +7980,7 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         asm = CADAssembler(shell.V, rg, regions, tol, report)
         asm.worked_out = worked_out
         asm.fit_instead = fit_instead
+        asm.curve_instead = curve_instead
         faces = asm.build(lambda f: report.progress(0.6 + 0.35 * f))
         _settle_tolerances(asm.shell_from_faces(faces), tol)
         bad = set(r for r, _ in asm.failed_regions)
@@ -5780,7 +8001,13 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # whole mount fell back to smooth surfaces)
         broken = _broken_when_saved(asm) - bad
         # (once for each such cusp, up to CUSP_ROUNDS, before the face is given up)
-        fresh = {c for r in broken for c in _cusp_crossing(asm, r)} - fit_instead
+        cusps = {c for r in broken for c in _cusp_crossing(asm, r)}
+        fresh = cusps - fit_instead
+        again = (cusps & fit_instead) - curve_instead
+        if not fresh and again and len(curve_instead) < 2 * CUSP_ROUNDS and _os.environ.get("DESIGN_CUSP_CURVE", "1") == "1":
+            curve_instead.update(again)
+            report.log(f"{len(again)} border(s) still crossing at a cusp are drawn through their own points")
+            return build(labels, regions)
         if fresh and len(fit_instead) < 2 * CUSP_ROUNDS:
             fit_instead.update(fresh)
             report.log(f"{len(fresh)} exact edges crossing at a cusp are fitted to the mesh instead")
@@ -5788,9 +8015,15 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         if broken:
             report.log(f"{len(broken)} face(s) that would be broken in the saved file are built again")
             bad |= broken
+        _failed = {r for r, _ in asm.failed_regions}
+        _fl.failures("failed", asm, regions, _failed, seg, tol, reasons=dict(asm.failed_regions))
+        _fl.failures("invalid", asm, regions, bad - _failed - broken, seg, tol)
+        _fl.failures("broken_saved", asm, regions, broken, seg, tol)
         return labels, regions, asm, faces, bad
 
+    failed_before = set()   # (patch 107) the broken freeform cells fitted again last round, as (triangles, neighbours)
     for rnd in range(max_rounds):
+        _fl.phase(f"round {rnd}")
         labels, regions, asm, faces, bad = build(labels, regions)
         # A wire crossing is proof that a face boundary is not representable;
         # before turning that whole face into freeform cells, try a local
@@ -5798,12 +8031,15 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # is retained only when rebuilding proves it removed a crossing and
         # did not add invalid faces.
         crossing = _self_crossing_regions(asm)
+        _fl.failures("crossing", asm, regions, crossing, seg, tol)
         if crossing and not crossed_this_round:
             crossed_this_round = True
             old_label, old_regions = seg.label, seg.regions
             seg.label, seg.regions = labels.copy(), list(regions)
             if seg._absorb_self_crossing_strips(crossing):
+                _fl.phase(f"trial in round {rnd}: the border strips that made outlines cross given to their neighbours")
                 trial_labels, trial_regions, trial_asm, trial_faces, trial_bad = build(seg.label.copy(), seg.regions)
+                _fl.phase(f"round {rnd}")
                 # Accept if crossings decreased and no *new* faces went invalid.
                 # Faces already in bad are going to be replaced anyway, so only
                 # newly-invalid faces count against the trial.
@@ -5812,6 +8048,8 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
                         and not new_bad):
                     labels, regions, asm, faces, bad = trial_labels, trial_regions, trial_asm, trial_faces, trial_bad
                     report.log("Removed border strips that caused a self-crossing CAD wire")
+                    _fl.action("its border strips that made its outline cross were given to its neighbours (the trial "
+                               "kept: fewer crossings, no new invalid faces)", crossing)
                 else:
                     seg.label, seg.regions = old_label, old_regions
             else:
@@ -5825,12 +8063,14 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
                 bad.discard(r)
                 bad |= small
                 spared.add(r)
+        _fl.action("spared: its small neighbours that cross it are rebuilt instead", spared, regions)
         if rnd < min(fit_rounds, max_rounds - 1):
             # valid faces that still don't follow their part of the mesh (a
             # surface that bulges between the mesh's vertices, a face whose
             # edges tear it away from the mesh) are replaced the same way
             # (a face that crosses itself can't be meshed to compare: it gets its chance next round)
             off = _inaccurate_regions(seg, labels, asm, tol, skip=bad | spared) - bad - spared
+            _fl.failures("off", asm, regions, off, seg, tol)
             if off:
                 report.log(f"{len(off)} surface(s) don't follow the mesh closely enough and are fitted again")
                 inaccurate += len(off)
@@ -5853,16 +8093,37 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         # (2026-11-06: test12's 29 mm torus was a fillet strip of the segmentation's own, not a pooled surface; this rule
         # stands on its own: a join that doesn't build was wrong, and the pieces get their chance)
         back = {r for r in bad - flat if r < len(regions) and regions[r].pooled and _parts_cover(regions[r])}
+        if _NO_SAME_RETRY:
+            # (a broken freeform cell that is the same triangles among the same neighbours as one broken and split
+            # further last round would be fitted into that same cell again and fail again: it gets now what it would
+            # get after the last round)
+            cells = {r for r in bad - off - flat - back if r < len(regions) and regions[r].kind == "freeform"
+                     and not hasattr(regions[r].prim, "motion")}
+            keys = {r: _cell_key(seg, labels, regions, r) for r in cells}
+            same = {r for r in cells if rnd >= 2 and keys[r] in failed_before}
+            failed_before = {k for r, k in keys.items() if r not in same}
+            if same:
+                report.log(f"{len(same)} face(s) failed again exactly as in the round before (the same triangles among "
+                           "the same neighbours), so they are made flat faces of their own triangles now, as they would "
+                           "be after the last round, instead of being fitted again")
+                _fl.action("failed again unchanged (same triangles, same neighbours): made flat faces of its own "
+                           "triangles now, not fitted again", same, regions)
+                flat = flat | same
         if back:
             report.log(f"{len(back)} pooled surface(s) didn't build and went back to their pieces")
+            _fl.action("sent back to the pieces it was pooled from", back, regions)
             labels, regions = _unpool(labels, regions, back)
             bad, flat = _renumbered(bad, back), _renumbered(flat, back)
+        _fl.action("fitted again as freeform cells" + (" (split further)" if rnd > 0 else ""), bad - flat, regions)
+        _fl.action("made flat faces of its own triangles", flat, regions)
         labels, regions = _demote(seg, labels, regions, bad - flat, split_more=rnd > 0, facet=flat)
     # Splitting freeform faces can leave slivers too small to be valid faces;
     # those still broken at the end go to a neighbouring face (no new faces
     # are made, so this can't leave new slivers) and the shell is built once more.
+    _fl.phase("end: slivers given to their neighbours")
     tiny = {r for r in bad if r < len(regions) and _too_small_for_face(seg, labels, regions[r].faces)}
     if tiny:
+        _fl.action("given to neighbouring surfaces (too small for a face of its own)", tiny, regions)
         labels2, regions2 = _demote(seg, labels, regions, tiny)
         labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
         if len(bad2) < len(bad):
@@ -5871,8 +8132,10 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     # triangles, as stl2curves leaves a patch it can't build faceted (merged engine):
     # one 5-triangle freeform cell, the only invalid face of 356, failed Rak N-USB's
     # whole body, which then went to another method (775 faces instead of 356).
+    _fl.phase("end: faces that still fail made flat faces")
     last = {r for r in bad if r < len(regions) and _facets_ok(seg, regions[r].faces)}
     if last:
+        _fl.action("made flat faces of its own triangles (it still failed after every round)", last, regions)
         labels2, regions2 = _demote(seg, labels, regions, set(), facet=last)
         labels2, regions2, asm2, faces2, bad2 = build(labels2, regions2)
         # (the new flat faces can break the neighbour they now meet at a corner: on mount_PETG a strip's flat faces left its 9-triangle
@@ -5896,8 +8159,11 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     # flat faces of their own triangles, which follow the mesh exactly (Rak Uni-USB: two
     # freeform faces broke on read-back and the whole merged result was lost).
     only_unmeshable = set()
+    _fl.phase("end: checked as one shell, the way it is saved")
     saved = {r for r in _broken_when_saved(asm, shell=True, unmeshable=only_unmeshable) if r < len(regions)}
+    _fl.failures("broken_saved", asm, regions, saved, seg, tol)
     if saved:
+        _fl.action("built again (flat faces of its own triangles where they allow, else a surface)", saved, regions)
         # (a face that is valid but can't be meshed is rebuilt as a surface, never as flat facets:
         # Tuna, 2026-11-01, "no facets, ever"; only invalid faces keep that older last resort)
         flat = {r for r in saved - only_unmeshable if _facets_ok(seg, regions[r].faces)}
@@ -5911,6 +8177,7 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
     # its edges' tolerance, and the check fails on the tie (Solar Arm Mount: 0.0054 mm against
     # 0.0054, and the whole part was saved faceted). Those regions are built once more with
     # only truly coplanar triangles sharing a face (FACET_FLAT): a lone triangle is exactly flat.
+    _fl.phase("end: flat faces split into truly flat pieces")
     strict = {r for r, f in asm.region_faces.items()
               if r < len(regions) and getattr(regions[r].prim, "facet", False)
               and not BRepCheck_Analyzer(f).IsValid()}
@@ -5924,11 +8191,15 @@ def build_cad_shell(shell, tol, report=NULL, max_rounds=6, fit_rounds=3, detail=
         report.log(f"{replaced} surface(s) rebuilt as freeform (B-spline) faces")
     bad_faces = [f for f in faces if not BRepCheck_Analyzer(f).IsValid()]
     if bad_faces:
+        _fl.phase("end: still invalid, given to the face healer")
+        _fl.failures("invalid", asm, regions, {r for r, f in asm.region_faces.items() if not BRepCheck_Analyzer(f).IsValid()},
+                     seg, tol)
         # (the area of each face's own triangles, in the order of faces: the repair must
         # not turn a face inside out, see _heal_faces)
         mesh_area = [float(seg.fa[np.asarray(regions[r].faces)].sum()) if r < len(regions) else float("inf")
                      for r in asm.region_faces]
         faces = _heal_faces(asm, faces, bad_faces, tol, report, mesh_area)
+    _fl.build_end(labels, regions, asm)
     return asm, faces, regions
 
 
@@ -6061,16 +8332,24 @@ def _inaccurate_regions(seg, labels, asm, tol, share=0.05, count=3, far_count=No
     _chords_let_off(seg, asm.regions, own_region[qt], dq_tri, dq, near)
     _chords_let_off(seg, asm.regions, labels[pt], pt, dp, near)
     out = set()
-    for reg_of, d in ((own_region[qt], dq), (labels[pt], dp)):
+    from . import faultlog as _fl
+    for reg_of, d, _pts, _dirn in ((own_region[qt], dq, Q, "points on the face, measured to the mesh"),
+                                   (labels[pt], dp, P, "points on the mesh, measured to the face")):
         # (a surface left out of the shape above has nothing to be measured against: its triangles aren't far from it)
         ok = np.isin(reg_of, own_region)
         reg_of, d = reg_of[ok], d[ok]
+        _pts = _pts[ok] if _fl.active() else None
         if not len(d):
             continue
         cnt = np.bincount(reg_of)
         n_near = np.bincount(reg_of, weights=(d > near).astype(float), minlength=len(cnt))
         n_far = np.bincount(reg_of, weights=(d > far).astype(float), minlength=len(cnt))
-        out |= {int(r) for r in np.nonzero((n_far >= (far_count or count)) | (n_near > np.maximum(share * cnt, count)))[0]}
+        _own = (n_far >= (far_count or count)) | (n_near > np.maximum(share * cnt, count))
+        out |= {int(r) for r in np.nonzero(_own)[0]}
+        if _fl.active():
+            for _r in np.nonzero(_own)[0]:
+                _fl.off_region(_r, _dirn, reg_of, d, _pts, cnt, n_far, n_near, far, near,
+                               "its own far points" if n_far[_r] >= (far_count or count) else "its own near points")
         # the whole shell: at most 1% of the points beyond P99_K, 0.1%
         # beyond P999_K (with a little margin)
         for nk, limit in ((n_near, 0.008 * len(d)), (n_far, 0.0008 * len(d))):
@@ -6081,6 +8360,8 @@ def _inaccurate_regions(seg, labels, asm, tol, share=0.05, count=3, far_count=No
                 if int(r) not in out:
                     out.add(int(r))
                     left -= nk[r]
+                    if _fl.active():
+                        _fl.off_region(r, _dirn, reg_of, d, _pts, cnt, n_far, n_near, far, near, "the whole shell's share")
     return out
 
 
@@ -6381,6 +8662,7 @@ TURN_GAP_DEG = 15.0     # degrees: a region whose triangles leave a gap this wid
 TURN_SLACK = 0.3        # radians: a boundary loop running further than a turn plus this winds more than once
 TURN_CUTS = 72          # meridians tried for the cut, evenly round the axis
 MIN_TURN_DEG = 20.0     # degrees: a piece spanning less is a sliver, joined to the piece beside it
+TURN_AREA_SHARE = 0.25  # of a full turn's area: the cut avoids leaving a piece holding less (a band thinned to its runout)
 
 
 CURVED_KINDS = ("cylinder", "cone", "sphere", "torus")
@@ -6489,17 +8771,36 @@ def _turn_pieces(seg, faces, o, u, v, ang):
                     th[j] = th[i] + _wrap(ang[j] - ang[i])
                     stack.append(j)
     # the cut: the meridian crossing the fewest triangles, preferring one that
-    # leaves no sliver of a turn
+    # leaves no sliver of a turn, and then one that leaves no thin piece. A
+    # band of many turns has two end pieces whose angles add up to its
+    # fractional turn (or that and a turn) wherever it is cut; a thread's crest
+    # or root band narrows to nothing at its runout, so an end piece there can
+    # span past MIN_TURN_DEG and still hold a few percent of a turn's area
+    # (mppt's M3 holes: 23 degrees, 8 triangles, 4%: a 0.017 mm2 face on every
+    # hole). Measured on five threaded boards and nuts (183 bands cut): the
+    # chosen cut left such pieces of 0.016-0.199 of a turn on 62, while on
+    # every band some meridian leaves none under 0.445, and the end pieces
+    # that aren't a thinned runout hold 0.29 or more. TURN_AREA_SHARE sits in
+    # that gap. It only moves the cut among the meridians already tried, so
+    # it never joins or drops anything and no piece passes a turn; where every
+    # meridian leaves a thin piece the choice is as before.
     T = seg.V[seg.F[faces]] - o
     ta = np.arctan2(T @ v, T @ u)
+    tri_area = 0.5 * np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1)
     span = np.radians(MIN_TURN_DEG)
     best = None
     for uc in np.arange(TURN_CUTS) * (2 * np.pi / TURN_CUTS):
         rel = _wrap(ta - uc)
         cross = int(((rel.min(1) < 0) & (rel.max(1) > 0) & (np.ptp(rel, 1) < np.pi)).sum())
         turn = np.floor((th - uc) / (2 * np.pi)).astype(np.int64)
-        sliver = any(np.ptp(th[turn == k]) < span for k in np.unique(turn))
-        key = (sliver, cross)
+        ks = np.unique(turn)
+        spans = np.array([np.ptp(th[turn == k]) for k in ks])
+        areas = np.array([tri_area[turn == k].sum() for k in ks])
+        sliver = bool((spans < span).any())
+        full = areas[spans > 2 * np.pi - span]
+        ref = float(np.median(full)) if len(full) else float(areas.max())
+        thin = bool((areas < TURN_AREA_SHARE * ref).any())
+        key = (sliver, thin, cross)
         if best is None or key < best[0]:
             best = (key, turn, uc)
     _, turn, uc = best
@@ -6632,6 +8933,138 @@ def _overstated_tolerances(shape, tol):
         setter.SetTolerance(v, max(t, 1e-7), TopAbs_VERTEX)
 
 
+_PCURVE_CHECK = _os.environ.get("DESIGN_PCURVE_CHECK") == "1"
+PCURVE_CHECK_POINTS = 101   # points along an edge at which its curve on a face is checked against its 3D curve
+
+
+def _pcurve_stray(e, face, n=PCURVE_CHECK_POINTS):
+    """The largest distance between an edge's 3D curve and the surface at its curve on ``face``, at n points (each
+    curve's own range mapped onto the other's)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d, BRepAdaptor_Surface
+
+    c3, c2 = BRepAdaptor_Curve(e), BRepAdaptor_Curve2d(e, face)
+    S = BRepAdaptor_Surface(face, False)
+    a, b = c3.FirstParameter(), c3.LastParameter()
+    a2, b2 = c2.FirstParameter(), c2.LastParameter()
+    worst = 0.0
+    for k in range(n):
+        t = k / (n - 1)
+        q = c2.Value(a2 + t * (b2 - a2))
+        worst = max(worst, c3.Value(a + t * (b - a)).Distance(S.Value(q.X(), q.Y())))
+    return worst
+
+
+def _redraw_pcurve(B, e, face, n=PCURVE_CHECK_POINTS):
+    """Draws an edge's curve on ``face`` again where it strays from the 3D curve beyond the edge's tolerance: the 3D
+    curve's points projected onto the surface one after another, then interpolated on the edge's own parameters (see
+    probes/patch_pcurvecheck90.py). True if the new curve was kept."""
+    lim = BRep_Tool.Tolerance_s(e)
+    if _pcurve_stray(e, face, n) <= lim:
+        return False
+    m = n
+    for _ in range(PCURVE_MORE_ROUNDS + 1 if _PCURVE_MORE else 1):
+        kept = _redraw_through(B, e, face, m, lim)
+        if kept is not None:
+            return kept
+        m = 4 * (m - 1) + 1
+    return False
+
+
+_PCURVE_MORE = _os.environ.get("DESIGN_PCURVE_MORE") == "1"     # design-intent switch (patch 98)
+PCURVE_MORE_ROUNDS = 2      # times a refused redraw is drawn again through four times as many points (101 -> 401 -> 1601)
+
+
+def _redraw_through(B, e, face, n, lim):
+    """One redraw of an edge's curve on ``face`` through n points of the edge (see _redraw_pcurve): True if kept,
+    False if refused for good, None if refused only because it strays between its points."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d, BRepAdaptor_Surface
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.collections import HArray1_double, HArray1_gp_Pnt2d
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.Geom2dAPI import Geom2dAPI_Interpolate
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+
+    # (judged between the drawing points too: a curve drawn through n points checked at the same n points passes by
+    # construction, and an interpolant can swing between them; third form, ref 140: with the check at the drawing
+    # points a 260 mm2 freeform face no longer followed the mesh and was split, 24 -> 34 freeform patches)
+    check = 4 * (n - 1) + 1
+    before = _pcurve_stray(e, face, check)
+    c3, c2 = BRepAdaptor_Curve(e), BRepAdaptor_Curve2d(e, face)
+    a, b = c3.FirstParameter(), c3.LastParameter()
+    a2, b2 = c2.FirstParameter(), c2.LastParameter()
+    old = BRep_Tool.CurveOnSurface_s(e, face, 0.0, 0.0)
+    if old is None or b - a <= 0:
+        return False
+    sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
+    prev = c2.Value(a2)
+    pts, par = HArray1_gp_Pnt2d(1, n), HArray1_double(1, n)
+    for k in range(n):
+        t = a + (b - a) * k / (n - 1)
+        uv = sas.NextValueOfUV(prev, c3.Value(t), 1e-9)
+        if sas.Gap() > lim:
+            return False        # (the 3D curve itself is off the surface here: no curve on it can hold it)
+        pts.SetValue(k + 1, uv)
+        par.SetValue(k + 1, t)
+        prev = uv
+    it = Geom2dAPI_Interpolate(pts, par, False, 1e-9)
+    it.Perform()
+    if not it.IsDone():
+        return False
+    new = it.Curve()
+    # (the new curve must end where the old one did in (u, v): on a periodic surface a curve drawn on from the start
+    # can come round the other way and no longer meet the next edge of the outline; ref 133's tori, second form's
+    # first trial: six tori invalid that were not before)
+    S = BRepAdaptor_Surface(face, False)
+    for t_new, t_old in ((a, a2), (b, b2)):
+        q_old, q_new = c2.Value(t_old), new.Value(t_new)
+        p_, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+        S.D1(q_old.X(), q_old.Y(), p_, du, dv)
+        uvtol = 10.0 * lim / max(min(du.Magnitude(), dv.Magnitude()), 1e-12)
+        if abs(q_new.X() - q_old.X()) > uvtol or abs(q_new.Y() - q_old.Y()) > uvtol:
+            return False
+    valid_before = BRepCheck_Analyzer(face).IsValid()
+    B.UpdateEdge(e, new, face, lim)
+    B.Range(e, face, a, b)
+    after = _pcurve_stray(e, face, check)
+    # (and the face must be no worse for it)
+    if after <= lim and after < before and (BRepCheck_Analyzer(face).IsValid() or not valid_before):
+        return True
+    B.UpdateEdge(e, old, face, lim)
+    B.Range(e, face, a2, b2)
+    # (refused because it strays between its points: more points can help, patch 98)
+    return None if after > lim else False
+
+
+
+
+def _redraw_strays(shape):
+    """Every edge of a face that is not a plane whose curve on that face strays from its 3D curve beyond its
+    tolerance, drawn again (_redraw_pcurve). Returns how many were redrawn."""
+    from OCP.BRep import BRep_Builder
+    from OCP.Geom import Geom_Plane
+    from OCP.TopAbs import TopAbs_FACE
+
+    B = BRep_Builder()
+    done = 0
+    exf = TopExp_Explorer(shape, TopAbs_FACE)
+    while exf.More():
+        f = TopoDS.Face(exf.Current())
+        exf.Next()
+        if isinstance(BRep_Tool.Surface_s(f), Geom_Plane):
+            continue
+        exe = TopExp_Explorer(f, TopAbs_EDGE)
+        while exe.More():
+            e = TopoDS.Edge(exe.Current())
+            exe.Next()
+            if BRep_Tool.Degenerated_s(e) or BRep_Tool.IsClosed_s(e, f):
+                continue
+            try:
+                done += _redraw_pcurve(B, e, f)
+            except Exception as fault:
+                faults.caught(fault)
+    return done
+
+
 def _settle_tolerances(shape, tol):
     """Let OpenCASCADE measure how far each edge really is from its faces
     and raise tolerances to match (standard healing step). On some short
@@ -6648,6 +9081,8 @@ def _settle_tolerances(shape, tol):
             if not BRep_Tool.SameParameter_s(e):
                 ShapeFix_Edge().FixSameParameter(e)
             ex.Next()
+        if _PCURVE_CHECK:
+            _redraw_strays(shape)
     except Exception as fault:
         faults.caught(fault)
     # (apart: one edge OpenCASCADE can't settle, gp_Dir2d of zero length on Rak Uni, stops the above,

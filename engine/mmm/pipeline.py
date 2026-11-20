@@ -1,5 +1,9 @@
 """Conversion pipeline and presets."""
 # Part of Manifold Mesh Mix (c) 2026 Tuna-The-First and Claude, AGPL-3.0, commit 4cf72ea.
+# Modified 2026-11-17 (design intent; with DESIGN_FIX_AREA=1): a healed shape that adds surface is refused (patch 116).
+# Modified 2026-11-15 (design intent): the fault file records the repairs after saving (_save_checked, patch 101).
+# Modified 2026-11-15 (design intent): CAD faces that follow the mesh are kept when their only fault is broken faces, which are named (convert_one, convert_alt, _only_broken_faces; item 57).
+# Modified 2026-11-15 (design intent): the fault file, NAME.faults.json, records every face that fails, why, and what was done (faultlog.py; each part, each method tried, what was kept and why, the saved file).
 # Modified 2026-11-04: messages and file metadata users see name the current program (Mesh Mix-S2C).
 # Modified 2026-11-04: a failure while using the features found costs that part its features, not the whole file (convert_one).
 # Modified 2026-11-04: Precise retired, by both owners' decision: asking for it (or "exact") converts with Auto and
@@ -47,6 +51,7 @@
 # so no conversion's choices change.
 import errno
 from . import faults
+from . import faultlog
 from . import meshguard
 import os
 import time
@@ -229,6 +234,8 @@ def sew_faces(faces, tol):
 # a healed shape's volume may differ from the mesh's (or, without one, the shape's own) by
 # at most this share
 FIX_VOLUME_SHARE = 0.01
+FIX_AREA_MM2 = 1.0         # mm2 of new surface a healed shape may have (with FIX_AREA_SHARE; patch 116)
+FIX_AREA_SHARE = 0.002     # share of the original's area a healed shape may add
 NO_SMOOTH_FLAT = 0.5       # share of a body's surface in flat faces from which smooth surfaces aren't tried after failed CAD faces
 
 
@@ -260,6 +267,14 @@ def fix_acceptable(fixed, original, mesh_volume=None):
 
     if not stepio.is_valid(fixed):
         return False
+    if os.environ.get("DESIGN_FIX_AREA") == "1":
+        # (patch 116: healing that adds surface gave a one-triangle face on test12 the whole torus, 28.9 mm off)
+        try:
+            a0, a1 = stepio.area(original), stepio.area(fixed)
+            if a1 > a0 + max(FIX_AREA_MM2, FIX_AREA_SHARE * a0):
+                return False
+        except Exception as fault:
+            faults.caught(fault)
     if not stepio.count(fixed, TopAbs_SOLID):
         return True                 # (open shells: no volume to go by)
     try:
@@ -561,6 +576,15 @@ def _fewest(cands, best):
     return closest if closest.verdict.score > fewest.verdict.score + CLEARLY_CLOSER else fewest
 
 
+def _only_broken_faces(check):
+    """The read-back check found broken faces and nothing else wrong: no gaps, no wrong volume, nothing inside out,
+    no missing or open solid, no error."""
+    codes = {i["code"] for i in check.get("issues", [])
+             if i["level"] == "error" or i["code"] in ("invalid", "bad_faces", "gaps", "inside_out", "not_solid",
+                                                       "missing_solids", "volume", "not_sound", "empty", "unreadable")}
+    return bool(check.get("checked")) and bool(check.get("bad_faces")) and codes <= {"invalid", "bad_faces"}
+
+
 def _broken(check):
     """The saved file has problems that need fixing (a wrong volume means
     the shape itself is off, which no repair can fix)."""
@@ -613,6 +637,8 @@ def _fix_broken_parts(items, item_bodies, item_presets, bodies, path, check, wri
         if on_swap is not None:
             on_swap(bi)
         report.warn(f"One part was saved with {how}, because its first version had errors that couldn't be repaired.")
+        faultlog.note(f"part {bi} was converted again and saved with {how}: its first version had errors that couldn't "
+                      "be repaired in the saved file")
     if not changed:
         return items, item_presets, check, []
     new_items, check, done = _save_checked(new_items, path, write, verify, tol, report, stage)
@@ -691,7 +717,9 @@ def _save_checked(items, path, write, verify, tol, report, stage):
         report.stage(*stage[1])
         report.log("Reading the STEP file back found problems, so it is being repaired "
                    "(the way CAD programs repair files when they import them).")
+        faultlog.save_problems(check, items)
         items, check, done = repair(items, path, check, write, verify, tol, report)
+        faultlog.repaired(check)
         if done and not needs_repair(check):
             report.log("The STEP file was repaired and now reads back without problems.")
         elif needs_repair(check):
@@ -726,6 +754,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
     opts = opts or Options()
     t0 = time.time()
     check_paths(input_path, output_path)
+    faultlog.begin(input_path, output_path, opts)
     meshguard.use(report)
     seeded = {}
     with report.section(0.0, 0.08):
@@ -804,6 +833,8 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
             return True
         return flat_share(body, body_tol(body, "cad")) >= 0.3
 
+    kept_broken = set()     # bodies whose CAD faces were kept with broken faces on purpose (item 57)
+
     def convert_one(bi, body, lo, hi, label):
         """Convert one body; returns (shape or None, preset used).
 
@@ -813,6 +844,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         result wins: one that follows the mesh beats one that is merely
         valid, so a part is never saved as a wrinkled or dented shape when a
         closer one was made."""
+        faultlog.part(bi, body_names[bi] if n_bodies > 1 else None)
         preset = req
         segs = None
         body_opts = opts
@@ -852,6 +884,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
 
         def attempt(kind, make, how=None):
             """Build one candidate and judge it; None if it couldn't be built."""
+            faultlog.attempt_begin(kind, how)
             try:
                 shape = make()
             except (ConversionError, MemoryError):
@@ -859,13 +892,16 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
             except Exception as e:
                 faults.caught(e)
                 errors.append(e)
+                faultlog.attempt_end(error=e)
                 report.log(f"{how or kind} didn't work ({type(e).__name__}: {e})")
                 return None
             if shape is None:
+                faultlog.attempt_end(None)
                 return None
             c = (_judge(shape, body, max(body_tol(body, preset, judging=True), opts.judge_floor), kind, report) if opts.validate
                  else _Candidate(shape, kind, True, None))
             tried.append(c)
+            faultlog.attempt_end(c)
             return c
 
         tidied = []     # (whether regularise changed a surface in this body's CAD build)
@@ -932,12 +968,32 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
             return (first.shape, first.kind) if first is not None else (None, preset)
         borderline = first is not None and first.good and first.verdict.certainty < first.verdict.RECHECK_BELOW
         if first is not None and first.good and not borderline:
+            faultlog.chosen(first.kind, "the first method's result is valid and follows the mesh")
             _record(bi, first)
             return first.shape, first.kind
-        if (first is not None and first.verdict.ok and not borderline
-                and not _broken(_check_shape(first.shape, body, report))):
+        first_check = (_check_shape(first.shape, body, report)
+                       if first is not None and first.verdict.ok and not borderline else None)
+        if first_check is not None and not _broken(first_check):
             # it follows the mesh and its small errors disappear once saved
             # and read back (as CAD programs read it): nothing to gain
+            faultlog.chosen(first.kind, "the first method's result follows the mesh, and its errors disappear once saved "
+                                        "and read back")
+            _record(bi, first)
+            return first.shape, first.kind
+        if first_check is not None and first.kind in CAD_KINDS and _only_broken_faces(first_check):
+            # (item 57, the owner 2026-11-15: good work is not thrown away for a few broken faces. CAD faces that
+            # follow the mesh are kept; their broken faces are named, and the fault file says why each broke. The
+            # other methods would only lose the part's surfaces: part 165 went to 8,417 flat faces, long_d10_p6 to
+            # 1,644, each after several more attempts)
+            n_bad = int(first_check.get("bad_faces") or 0)
+            named = "; ".join(stepio._say_bad_face(d) for d in first_check.get("bad_face_list", [])[:stepio.NAME_FACES])
+            report.warn(("The" if name is None else f"“{name}”:") + f" CAD faces follow the mesh, but {n_bad} of their "
+                        f"faces {'are' if n_bad != 1 else 'is'} broken" + (f" ({named})" if named else "") + ". They are "
+                        "kept rather than converting the part another way, which would lose its surfaces; Fusion and "
+                        "most CAD programs repair such faces when importing.")
+            faultlog.chosen(first.kind, f"kept with {n_bad} broken face(s): it follows the mesh, and its only fault is "
+                                        "broken faces (no other method tried)")
+            kept_broken.add(bi)
             _record(bi, first)
             return first.shape, first.kind
         if borderline:
@@ -1000,6 +1056,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         if opts.fewest_faces:
             best = _fewest(tried, best)
         if best is None:
+            faultlog.chosen(None, "no method gave a result")
             if errors:
                 raise errors[0]  # a fault in the converter, not in the file
             return None, preset
@@ -1017,6 +1074,10 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
             # the user mustn't take that for a result that was checked)
             report.warn(("The" if name is None else f"“{name}”:") + " converted shape couldn't be compared with the "
                         "mesh, so how closely it follows it isn't known. Check it before relying on it.")
+        faultlog.chosen(best.kind, "the first method's result" if best is first else
+                        ("the first method gave nothing" if first is None else
+                         f"the first method's result {'does not follow the mesh' if first.verdict is not None and not first.verdict.ok else 'has errors' if not first.valid else 'lost'}"
+                         + ("; this one follows the mesh more closely" if best is closest else "; this one follows it closely enough with fewer faces")))
         _record(bi, best)
         return best.shape, best.kind
 
@@ -1033,6 +1094,12 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         also when the new shape doesn't follow the mesh closely enough (a
         valid but wrinkled shape is worse than one with small errors)."""
         body = bodies[bi]
+        if bi in kept_broken:
+            # (its CAD faces were kept with their broken faces on purpose: see convert_one)
+            report.log("This part keeps its CAD faces with their broken faces: converting it another way would lose its "
+                       "surfaces.")
+            faultlog.note(f"part {bi}: not converted again after saving; its CAD faces were kept with their broken faces")
+            return None, preset, ""
         # the other methods convert_one already tried (the same conversion
         # again would give the same result)
         done = [c for c in tried_by_body.get(bi, []) if c.kind != preset]
@@ -1152,6 +1219,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
     as_read = None
     if opts.validate:
         check, as_read = _final_word(items, output_path, check, write, verify, len(bodies) - expected, report)
+        faultlog.saved(check, output_path)
     if opts.validate and "valid" in check:
         valid = check["valid"]  # what CAD programs will find in the saved file
     st = stepio.shape_stats(result)
@@ -1195,6 +1263,7 @@ def convert(input_path, output_path, opts=None, report=NULL, front=None):
         item_bodies = shape_bodies if len(items) == len(shape_bodies) else []
         res["alternative"] = alternative_version(items, item_bodies, offered, verdicts, output_path, opts.preview,
                                                  write, verify, diag, report)
+    faultlog.finish(res, report, output_path)
     faults.attach(res, report)
     report.result(res)
     return res
@@ -1326,6 +1395,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
         as_read = None
         if opts.validate:
             check, as_read = _final_word(items, out, check, write, verify, len(groups[p]) - expected, report)
+            faultlog.saved(check, out)
         if opts.validate and "valid" in check:
             valid = check["valid"]
         prev = opts.part_previews[p] if p < len(opts.part_previews) and opts.part_previews[p] else None
@@ -1401,6 +1471,7 @@ def _convert_split(input_path, output_path, opts, report, t0, bodies, info, tol,
         "repaired": repair_steps(results),
         "fidelity": fidelity_summary([r["fidelity"] for r in results if r.get("fidelity")]),
     }
+    faultlog.finish(res, report, output_path)
     faults.attach(res, report)
     report.result(res)
     return res
